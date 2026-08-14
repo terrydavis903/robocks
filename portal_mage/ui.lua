@@ -969,7 +969,7 @@ return function(S)
 				local bounds = S.Claw.formatReachBounds and S.Claw.formatReachBounds() or "?"
 				if not best then
 					local msg = string.format(
-						"scan: %d prizes, 0 reachable (wall-blocked=%d) box=%s | %s",
+						"scan: %d prizes, 0 in machine (outside walls=%d) box=%s | %s",
 						#prizes,
 						badR,
 						bounds,
