@@ -23,17 +23,17 @@ return function(S)
 	-- P9 = pure junk (Tria currency, scrap, etc.) so unknown mats still beat them.
 	local PRIORITY_KEYWORDS = {
 		{ key = "spirit", tier = 2 }, -- spirit stones; own tier under P1
-		{ key = "enchantedbark", tier = 6 }, -- above mystic essence
+		{ key = "enchantedbark", tier = 5 },
 		{ key = "ancientheartwood", tier = 4 }, -- better wood mat (above bark/wood)
 		{ key = "heartwood", tier = 4 },
-		{ key = "enchantedwood", tier = 6 }, -- above mystic essence
-		{ key = "mysticessence", tier = 7 },
-		{ key = "briarvine", tier = 5 },
-		{ key = "memorysap", tier = 5 },
+		{ key = "enchantedwood", tier = 5 },
+		{ key = "mysticessence", tier = 6 }, -- was 7
+		{ key = "briarvine", tier = 6 }, -- was 5
+		{ key = "memorysap", tier = 6 }, -- was 5
 		{ key = "goblincoin", tier = 3 },
-		{ key = "aurorite", tier = 6 },
-		{ key = "junkcore", tier = 6 },
-		{ key = "glowingmoss", tier = 7 },
+		{ key = "aurorite", tier = 7 }, -- was 6
+		{ key = "junkcore", tier = 7 }, -- was 6
+		{ key = "glowingmoss", tier = 6 }, -- was 7
 		{ key = "grimoire", tier = 1 },
 		{ key = "circuit", tier = 1 },
 		{ key = "meteor", tier = 1 },
