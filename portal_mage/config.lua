@@ -62,9 +62,16 @@ return {
 	WALK_SPOOF_MOVE_KEYS = true,
 
 	-- Floor navigation (Walk+Atk / kill-aura)
-	NAV_CELL = 4, -- A* grid cell size (studs)
-	NAV_MAX_CELLS = 40, -- search radius in cells (~160 studs) so far stand goals path
-	NAV_MAX_EXPAND = 1200, -- A* node expand cap
+	NAV_CELL = 4, -- grid A* cell size (fallback only)
+	NAV_MAX_CELLS = 40,
+	NAV_MAX_EXPAND = 1200,
+	-- Primary pathing: Roblox PathfindingService (not homebrew A*)
+	NAV_AGENT_RADIUS = 2,
+	NAV_AGENT_HEIGHT = 5,
+	NAV_AGENT_CAN_JUMP = true,
+	NAV_WAYPOINT_SPACING = 6,
+	-- Kill aura path debug log → dumps/killaura_*.log
+	KILL_AURA_LOG = true,
 	NAV_RAY_UP = 50,
 	NAV_RAY_DOWN = 140,
 	NAV_MIN_NORMAL_Y = 0.45, -- reject steep hits as "floor" (walls/cliffs)

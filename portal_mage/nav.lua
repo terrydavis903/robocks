@@ -6,6 +6,7 @@ return function(S)
 	local C = S.Config
 	local U = S.Util
 	local Players = S.Services.Players
+	local PathfindingService = game:GetService("PathfindingService")
 	local M = {}
 
 	local function cfg(key: string, default: any): any
@@ -602,7 +603,7 @@ return function(S)
 		p.Transparency = 0.15
 	end
 
-	-- Draw path polyline: amber nodes + cyan segment cylinders (X-axis = segment).
+	-- Draw path polyline: amber nodes + cyan segments. Always draws when Path Viz is ON.
 	function M.showPathViz(points: { Vector3 }?, tag: string?)
 		if not S.pathVizEnabled then
 			return
@@ -612,40 +613,102 @@ return function(S)
 			return
 		end
 		local folder = ensurePathVizFolder()
-		-- Rebuild clean (simple, rare — only on new A* lock)
 		for _, ch in ipairs(folder:GetChildren()) do
 			ch:Destroy()
 		end
 		local label = Instance.new("StringValue")
 		label.Name = "Tag"
-		label.Value = tag or "path"
+		label.Value = string.format("%s n=%d", tag or "path", #points)
 		label.Parent = folder
 
+		local lift = 1.2 -- sit above floor so it's visible outdoors
 		for i, pt in ipairs(points) do
 			local node = Instance.new("Part")
 			node.Name = string.format("N%02d", i)
 			node.Shape = Enum.PartType.Ball
-			node.Size = Vector3.new(0.55, 0.55, 0.55)
-			styleVizPart(node, if i == 1 then Color3.fromRGB(80, 255, 120) elseif i == #points then Color3.fromRGB(255, 100, 100) else PATH_VIZ_NODE)
-			node.CFrame = CFrame.new(pt + Vector3.new(0, 0.4, 0))
+			node.Size = Vector3.new(0.9, 0.9, 0.9)
+			styleVizPart(node, if i == 1 then Color3.fromRGB(80, 255, 120) elseif i == #points then Color3.fromRGB(255, 80, 80) else PATH_VIZ_NODE)
+			node.CFrame = CFrame.new(pt + Vector3.new(0, lift, 0))
 			node.Parent = folder
 
 			if i < #points then
-				local a = pt + Vector3.new(0, 0.35, 0)
-				local b = points[i + 1] + Vector3.new(0, 0.35, 0)
+				local a = pt + Vector3.new(0, lift, 0)
+				local b = points[i + 1] + Vector3.new(0, lift, 0)
 				local delta = b - a
 				local dist = delta.Magnitude
 				if dist > 0.05 then
 					local seg = Instance.new("Part")
 					seg.Name = string.format("S%02d", i)
 					seg.Shape = Enum.PartType.Cylinder
-					seg.Size = Vector3.new(dist, 0.18, 0.18)
+					seg.Size = Vector3.new(dist, 0.35, 0.35)
 					styleVizPart(seg, PATH_VIZ_COLOR)
 					seg.CFrame = CFrame.lookAt(a + delta * 0.5, b) * CFrame.Angles(0, math.rad(90), 0)
 					seg.Parent = folder
 				end
 			end
 		end
+		if U and U.setStatus and tag then
+			-- brief breadcrumb in status is optional; pathing logs more detail
+		end
+	end
+
+	-- Roblox PathfindingService (primary). Returns world points or nil + reason.
+	function M.computeNativePath(from: Vector3, to: Vector3): ({ Vector3 }?, string)
+		local pathObj = PathfindingService:CreatePath({
+			AgentRadius = C.NAV_AGENT_RADIUS or 2,
+			AgentHeight = C.NAV_AGENT_HEIGHT or 5,
+			AgentCanJump = C.NAV_AGENT_CAN_JUMP ~= false,
+			WaypointSpacing = C.NAV_WAYPOINT_SPACING or 6,
+		})
+		local ok, err = pcall(function()
+			pathObj:ComputeAsync(from, to)
+		end)
+		if not ok then
+			return nil, "pfs_err:" .. tostring(err)
+		end
+		if pathObj.Status ~= Enum.PathStatus.Success then
+			return nil, "pfs:" .. tostring(pathObj.Status)
+		end
+		local pts: { Vector3 } = {}
+		for _, wp in ipairs(pathObj:GetWaypoints()) do
+			table.insert(pts, wp.Position)
+		end
+		if #pts == 0 then
+			return nil, "pfs:empty"
+		end
+		return pts, "pfs"
+	end
+
+	-- Prefer native PathfindingService; fall back to custom floor A*; then straight line.
+	-- Always draws when Path Viz is enabled.
+	function M.computePath(from: Vector3, to: Vector3): ({ Vector3 }, string)
+		local goal = to
+		local s = M.sampleFloor(to.X, to.Z, to.Y, { requireClear = false })
+		if s then
+			goal = s.pos
+		end
+
+		local native, nWhy = M.computeNativePath(from, goal)
+		if native and #native > 0 then
+			if S.pathVizEnabled then
+				M.showPathViz(native, "pfs")
+			end
+			return native, "pfs"
+		end
+
+		local custom = M.findPath(from, goal)
+		if custom and #custom > 0 then
+			if S.pathVizEnabled then
+				M.showPathViz(custom, "grid")
+			end
+			return custom, "grid"
+		end
+
+		local line = { from, goal }
+		if S.pathVizEnabled then
+			M.showPathViz(line, "line:" .. tostring(nWhy or "fail"))
+		end
+		return line, "line"
 	end
 
 	function M.setPathVizEnabled(on: boolean)

@@ -1,10 +1,15 @@
--- portal_mage/pathing.lua — Kill Aura movement
+-- portal_mage/pathing.lua — Kill Aura movement (reimagined)
 --
--- Kite: FAST (no A*). Approach: A* once then STICK to that path until done.
--- Path Viz (toggle): cyan/amber lines when A* runs.
+-- 1) Pick nearest schema enemy
+-- 2) Stand goal at fightRange (30)
+-- 3) Compute path ONCE (PathfindingService → grid fallback → line)
+-- 4) Stick to that path until stand / new enemy / stuck 2s
+-- 5) Path Viz draws every computed path when toggle is ON
+-- 6) Kite: fast direct steps, no path recompute spam
 return function(S)
 	local C = S.Config
 	local U = S.Util
+	local HttpService = S.Services.HttpService
 	local Players = S.Services.Players
 	local M = {}
 
@@ -31,6 +36,43 @@ return function(S)
 		local lp = Players.LocalPlayer
 		local char = lp and lp.Character
 		return char and char:FindFirstChildOfClass("Humanoid")
+	end
+
+	---------------------------------------------------------------------------
+	-- Kill-aura path log (dumps/killaura_*.log) — so we can see why no path
+	---------------------------------------------------------------------------
+
+	local logFile: string? = nil
+	local logT0 = 0
+
+	local function logOpen()
+		if C.KILL_AURA_LOG == false then
+			return
+		end
+		logT0 = os.clock()
+		local stamp = os.date("%Y-%m-%d_%H-%M-%S")
+		local dir = C.DUMP_DIR or "dumps"
+		logFile = string.format("%s/killaura_%s.log", dir, stamp)
+		pcall(function()
+			if U.ensureDir then
+				U.ensureDir(dir)
+			end
+			writefile(logFile, "# portal_mage kill aura path log\n# " .. stamp .. "\n")
+		end)
+	end
+
+	local function log(msg: string)
+		if not logFile then
+			return
+		end
+		local line = string.format("[+%.2fs] %s\n", os.clock() - logT0, msg)
+		pcall(function()
+			if appendfile then
+				appendfile(logFile, line)
+			elseif readfile and writefile and isfile and isfile(logFile) then
+				writefile(logFile, readfile(logFile) .. line)
+			end
+		end)
 	end
 
 	local function stopMove()
@@ -63,23 +105,26 @@ return function(S)
 		return hum
 	end
 
-	local function sampleFeet(x: number, z: number, yHint: number): Vector3?
+	local function sampleFeet(x: number, z: number, yHint: number): Vector3
 		local nav = Nav()
-		if not nav or not nav.sampleFloor then
-			return Vector3.new(x, yHint, z)
+		if nav and nav.sampleFloor then
+			local s = nav.sampleFloor(x, z, yHint, { requireClear = false })
+			if s then
+				return s.pos
+			end
 		end
-		local s = nav.sampleFloor(x, z, yHint, { requireClear = false })
-		return if s then s.pos else Vector3.new(x, yHint, z)
+		return Vector3.new(x, yHint, z)
 	end
 
 	---------------------------------------------------------------------------
-	-- Locked approach path (compute once, follow until clear)
+	-- Locked path state
 	---------------------------------------------------------------------------
 
 	local lockEnemy: Model? = nil
 	local lockGoal: Vector3? = nil
 	local lockPath: { Vector3 }? = nil
-	local lockBuiltAt = 0
+	local lockKind = ""
+	local lockWp = 1
 	local lockStuckAt = 0
 	local lockStuckPos: Vector3? = nil
 
@@ -87,16 +132,10 @@ return function(S)
 		lockEnemy = nil
 		lockGoal = nil
 		lockPath = nil
-		lockBuiltAt = 0
+		lockKind = ""
+		lockWp = 1
 		lockStuckAt = 0
 		lockStuckPos = nil
-		-- Keep last path drawn while Path Viz is ON (debug); clear when OFF
-		if not S.pathVizEnabled then
-			local nav = Nav()
-			if nav and nav.clearPathViz then
-				nav.clearPathViz()
-			end
-		end
 	end
 
 	local function fleeGoal(playerPos: Vector3, enemyPos: Vector3, range: number): Vector3
@@ -109,36 +148,20 @@ return function(S)
 		end
 		local dist = flatDist(playerPos, enemyPos)
 		local need = math.clamp(range - dist + 6, 6, 18)
-
-		local function tryDir(dir: Vector3): Vector3?
-			local dest = playerPos + dir * need
-			local ring = enemyPos + dir * range
-			local candidate = if flatDist(playerPos, ring) < need * 1.5 then ring else dest
-			local feet = sampleFeet(candidate.X, candidate.Z, playerPos.Y)
-			if not feet then
-				return nil
-			end
-			if nav and nav.hasClearWalk and not nav.hasClearWalk(playerPos, feet) then
-				return nil
-			end
-			return feet
-		end
-
-		local angles = { 0, 30, -30, 60, -60, 90, -90, 135, -135 }
+		local angles = { 0, 35, -35, 70, -70, 110, -110 }
 		for _, deg in ipairs(angles) do
 			local rad = math.rad(deg)
 			local c, s = math.cos(rad), math.sin(rad)
-			local dir = Vector3.new(away.X * c - away.Z * s, 0, away.X * s + away.Z * c)
-			if dir.Magnitude > 0.1 then
-				dir = dir.Unit
-				local g = tryDir(dir)
-				if g then
-					return g
-				end
+			local dir = Vector3.new(away.X * c - away.Z * s, 0, away.X * s + away.Z * c).Unit
+			local ring = enemyPos + dir * range
+			local dest = playerPos + dir * need
+			local candidate = if flatDist(playerPos, ring) < need * 1.6 then ring else dest
+			local feet = sampleFeet(candidate.X, candidate.Z, playerPos.Y)
+			if not nav or not nav.hasClearWalk or nav.hasClearWalk(playerPos, feet) then
+				return feet
 			end
 		end
 		return sampleFeet(playerPos.X + away.X * need, playerPos.Z + away.Z * need, playerPos.Y)
-			or (playerPos + away * need)
 	end
 
 	local function approachStandGoal(playerPos: Vector3, enemyPos: Vector3, range: number): Vector3
@@ -161,94 +184,106 @@ return function(S)
 			flat = flat.Unit
 		end
 		local dest = enemyPos + flat * range
-		return sampleFeet(dest.X, dest.Z, playerPos.Y) or Vector3.new(dest.X, playerPos.Y, dest.Z)
+		return sampleFeet(dest.X, dest.Z, playerPos.Y)
 	end
 
-	-- Build A* path once for this enemy/goal and lock it.
-	local function lockApproachPath(playerPos: Vector3, goal: Vector3, enemy: Model)
+	local function lockPathTo(playerPos: Vector3, goal: Vector3, enemy: Model)
 		local nav = Nav()
 		lockEnemy = enemy
 		lockGoal = goal
-		lockBuiltAt = os.clock()
+		lockWp = 1
 		lockStuckAt = 0
 		lockStuckPos = nil
 
-		local path: { Vector3 }?
-		if nav and nav.hasClearWalk and nav.hasClearWalk(playerPos, goal) and flatDist(playerPos, goal) <= 18 then
-			path = { goal }
-			if nav.showPathViz and S.pathVizEnabled then
-				nav.showPathViz({ playerPos, goal }, "direct")
-			end
+		local path: { Vector3 }
+		local kind = "line"
+		if nav and nav.computePath then
+			path, kind = nav.computePath(playerPos, goal)
 		elseif nav and nav.findPath then
-			path = nav.findPath(playerPos, goal)
-			if path and #path > 0 then
-				if nav.showPathViz and S.pathVizEnabled then
-					nav.showPathViz(path, "astar")
-				end
-			else
-				path = { goal }
-				if nav.showPathViz and S.pathVizEnabled then
-					nav.showPathViz({ playerPos, goal }, "fallback")
-				end
+			path = nav.findPath(playerPos, goal) or { goal }
+			kind = "grid"
+			if nav.showPathViz and S.pathVizEnabled then
+				nav.showPathViz(path, kind)
 			end
 		else
 			path = { goal }
+			if nav and nav.showPathViz and S.pathVizEnabled then
+				nav.showPathViz({ playerPos, goal }, "line")
+			end
 		end
 		lockPath = path
+		lockKind = kind
+		log(string.format(
+			"LOCK path kind=%s wps=%d goal=(%.1f,%.1f,%.1f) enemy=%s",
+			kind,
+			#path,
+			goal.X,
+			goal.Y,
+			goal.Z,
+			enemy.Name
+		))
+		U.setStatus(string.format(
+			"[path] LOCK %s %d wp → %s",
+			kind,
+			#path,
+			enemy.Name
+		))
 	end
 
-	local function walkLockedPath(lookAt: Vector3, timeout: number)
-		local nav = Nav()
-		local goal = lockGoal
+	-- Walk next segment of locked path only (no recompute).
+	local function followLockedPath(lookAt: Vector3)
 		local path = lockPath
-		if not goal or not path or #path == 0 then
+		local goal = lockGoal
+		if not path or #path == 0 or not goal then
 			return
 		end
-		prepHum()
-		if nav and nav.goTo then
-			nav.goTo(goal, {
-				requireWalking = true,
-				lookAt = { x = lookAt.X, y = lookAt.Y, z = lookAt.Z },
-				snapOnTimeout = false,
-				useMoveKeys = true,
-				timeout = timeout,
-				arriveStuds = C.NAV_ARRIVE_STUDS or 2.5,
-				lockedPath = path, -- do not recompute A*
-			})
-		else
-			U.walkTo(goal.X, goal.Y, goal.Z, {
-				silent = true,
-				lookAt = { x = lookAt.X, y = lookAt.Y, z = lookAt.Z },
-				requireWalking = true,
-				snapOnTimeout = false,
-				useMoveKeys = true,
-				timeout = timeout,
-			})
+		local playerPos = U.getLivePlayerVector()
+		if not playerPos then
+			return
 		end
+		local arrive = C.NAV_ARRIVE_STUDS or 2.5
+
+		-- Advance past nearby waypoints
+		while lockWp <= #path and flatDist(playerPos, path[lockWp]) <= arrive do
+			lockWp += 1
+		end
+
+		local target: Vector3
+		if lockWp > #path then
+			target = goal
+		else
+			target = path[lockWp]
+		end
+
+		prepHum()
+		-- Single short leg toward current waypoint
+		U.walkTo(target.X, target.Y, target.Z, {
+			silent = true,
+			lookAt = { x = lookAt.X, y = lookAt.Y, z = lookAt.Z },
+			requireWalking = true,
+			snapOnTimeout = false,
+			useMoveKeys = true,
+			timeout = 2.0,
+			arriveStuds = arrive,
+		})
 	end
 
 	local function walkDirect(goal: Vector3, lookAt: Vector3, timeout: number)
-		local nav = Nav()
 		prepHum()
-		if nav and nav.goTo then
-			nav.goTo(goal, {
-				requireWalking = true,
-				lookAt = { x = lookAt.X, y = lookAt.Y, z = lookAt.Z },
-				snapOnTimeout = false,
-				useMoveKeys = true,
-				timeout = timeout,
-				forceDirect = true,
-			})
-		else
-			U.walkTo(goal.X, goal.Y, goal.Z, {
-				silent = true,
-				lookAt = { x = lookAt.X, y = lookAt.Y, z = lookAt.Z },
-				requireWalking = true,
-				snapOnTimeout = false,
-				useMoveKeys = true,
-				timeout = timeout,
-			})
+		if S.pathVizEnabled and Nav() and Nav().showPathViz then
+			local p = U.getLivePlayerVector()
+			if p then
+				Nav().showPathViz({ p, goal }, "kite")
+			end
 		end
+		U.walkTo(goal.X, goal.Y, goal.Z, {
+			silent = true,
+			lookAt = { x = lookAt.X, y = lookAt.Y, z = lookAt.Z },
+			requireWalking = true,
+			snapOnTimeout = false,
+			useMoveKeys = true,
+			timeout = timeout,
+		})
 	end
 
 	local function runWalker()
@@ -258,6 +293,9 @@ return function(S)
 			U.setStatus("Kill Aura failed: Nav missing")
 			return
 		end
+
+		logOpen()
+		log("walker start")
 
 		while S.walking do
 			local ok, err = pcall(function()
@@ -315,27 +353,23 @@ return function(S)
 					dist = flatDist(playerPos, epos)
 				end
 
-				-------------------------------------------------------------------
-				-- TOO CLOSE → FAST kite (never A*, clear approach lock)
-				-------------------------------------------------------------------
+				-- KITE (close): fast, no path lock
 				if dist < range - sticky then
+					if lockPath then
+						log("clear lock → kite d=" .. string.format("%.1f", dist))
+					end
 					clearLock()
 					local goal = fleeGoal(playerPos, epos, range)
-					U.setStatus(string.format(
-						"[kite] d=%.1f →@%d %s FAST | %s",
-						dist,
-						range,
-						model.Name,
-						cds()
-					))
+					U.setStatus(string.format("[kite] d=%.1f →@%d %s | %s", dist, range, model.Name, cds()))
 					walkDirect(goal, epos, 0.85)
 					return
 				end
 
-				-------------------------------------------------------------------
-				-- IN BAND → stop + clear path lock (arrived)
-				-------------------------------------------------------------------
+				-- STAND (in band)
 				if dist <= range + sticky then
+					if lockPath then
+						log(string.format("arrived stand d=%.1f cleared lock", dist))
+					end
 					stopMove()
 					clearLock()
 					U.setStatus(string.format("[stand] d=%.1f %s | %s", dist, model.Name, cds()))
@@ -343,20 +377,15 @@ return function(S)
 					return
 				end
 
-				-------------------------------------------------------------------
-				-- APPROACH: lock A* path once, stick until stand / new enemy / stuck
-				-------------------------------------------------------------------
-				local needNewLock = lockEnemy ~= model
-					or not lockPath
-					or not lockGoal
-
-				-- Stuck: same place > 2s while locked → allow ONE recompute
+				-- APPROACH: lock once, stick
+				local needLock = lockEnemy ~= model or not lockPath or not lockGoal
 				if lockPath and lockEnemy == model then
-					if lockStuckPos and flatDist(playerPos, lockStuckPos) < 1.5 then
+					if lockStuckPos and flatDist(playerPos, lockStuckPos) < 1.4 then
 						if lockStuckAt == 0 then
 							lockStuckAt = os.clock()
-						elseif os.clock() - lockStuckAt > 2.0 then
-							needNewLock = true
+						elseif os.clock() - lockStuckAt > 2.2 then
+							log("stuck 2.2s → re-lock path")
+							needLock = true
 							lockStuckAt = 0
 							lockStuckPos = nil
 						end
@@ -366,33 +395,27 @@ return function(S)
 					end
 				end
 
-				if needNewLock then
+				if needLock then
 					local goal = approachStandGoal(playerPos, epos, range)
-					U.setStatus(string.format(
-						"[approach] d=%.1f lock A* →@%d %s | %s",
-						dist,
-						range,
-						model.Name,
-						cds()
-					))
-					lockApproachPath(playerPos, goal, model)
-				else
-					U.setStatus(string.format(
-						"[approach] d=%.1f follow locked path (%d wp) %s | %s",
-						dist,
-						lockPath and #lockPath or 0,
-						model.Name,
-						cds()
-					))
+					lockPathTo(playerPos, goal, model)
 				end
 
-				-- Follow locked path (nav.goTo will NOT re-A*)
-				walkLockedPath(epos, 3.5)
+				U.setStatus(string.format(
+					"[approach] d=%.1f %s %d/%d wp %s | %s",
+					dist,
+					lockKind,
+					math.min(lockWp, lockPath and #lockPath or 0),
+					lockPath and #lockPath or 0,
+					model.Name,
+					cds()
+				))
+				followLockedPath(epos)
 			end)
 
 			if not ok then
 				stopMove()
 				clearLock()
+				log("ERROR " .. tostring(err))
 				U.setStatus("Path error: " .. tostring(err))
 				task.wait(0.4)
 			end
@@ -400,10 +423,15 @@ return function(S)
 
 		stopMove()
 		clearLock()
+		log("walker stop")
+		if logFile then
+			U.setStatus("Kill Aura stopped — log " .. tostring(logFile))
+		else
+			U.setStatus("Kill Aura stopped")
+		end
 		S.walking = false
 		S.combatBusy = false
 		S.ui.setWalkLabel(false)
-		U.setStatus("Kill Aura stopped")
 	end
 
 	function M.togglePathViz()
@@ -418,6 +446,10 @@ return function(S)
 			if not S.pathVizEnabled and nav and nav.clearPathViz then
 				nav.clearPathViz()
 			end
+		end
+		-- Re-draw current lock if any
+		if S.pathVizEnabled and lockPath and Nav() and Nav().showPathViz then
+			Nav().showPathViz(lockPath, lockKind or "locked")
 		end
 	end
 
@@ -475,7 +507,7 @@ return function(S)
 		S.ui.setWalkLabel(true)
 
 		U.setStatus(string.format(
-			"Kill Aura ON — lock A* once, stand@%d, FAST kite | Path Viz optional",
+			"Kill Aura ON — PFS path lock, stand@%d | Path Viz + dumps/killaura_*.log",
 			T().fightRange()
 		))
 
