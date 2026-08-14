@@ -18,10 +18,34 @@ return function(S)
 	local CLAW_ROOT_NAME = "Event_ClawMachine"
 	local MAINTAIN_INTERVAL = 0.25
 
-	-- Prize tiers from portal_mage/claw_priority.lua (boot loads/creates → C.CLAW_PRIORITY_KEYWORDS).
-	-- Lower tier = higher priority. Unmatched names = P8. P9 = junk keywords.
-	local PRIORITY_KEYWORDS = (type(C.CLAW_PRIORITY_KEYWORDS) == "table" and C.CLAW_PRIORITY_KEYWORDS)
-		or {}
+	-- Prize tiers from portal_mage/claw_priority.lua (C.CLAW_PRIORITY_KEYWORDS; Config tab editable).
+	-- Lower tier = higher priority. Unmatched names = first empty tier (1–10), else 11.
+	local function getPriorityKeywords()
+		local t = C.CLAW_PRIORITY_KEYWORDS
+		if type(t) ~= "table" then
+			return {}
+		end
+		return t
+	end
+
+	local function othersTier(): number
+		if S.ClawPriority and S.ClawPriority.othersTier then
+			return S.ClawPriority.othersTier(getPriorityKeywords())
+		end
+		local used = {}
+		for _, entry in ipairs(getPriorityKeywords()) do
+			local tier = tonumber(entry.tier)
+			if tier then
+				used[tier] = true
+			end
+		end
+		for i = 1, 10 do
+			if not used[i] then
+				return i
+			end
+		end
+		return 11
+	end
 
 	local MOVE_KEYS = {
 		Enum.KeyCode.W,
@@ -251,12 +275,12 @@ return function(S)
 
 	function M.priorityForName(name: string): (number, string?)
 		local n = normalizeName(name)
-		for _, entry in ipairs(PRIORITY_KEYWORDS) do
-			if string.find(n, entry.key, 1, true) then
+		for _, entry in ipairs(getPriorityKeywords()) do
+			if type(entry.key) == "string" and entry.key ~= "" and string.find(n, entry.key, 1, true) then
 				return entry.tier, entry.key
 			end
 		end
-		return 8, nil -- unknown mats (still above P9 junk)
+		return othersTier(), nil -- first empty tier = "others"
 	end
 
 	local function isPrizeName(name: string): boolean

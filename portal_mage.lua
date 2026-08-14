@@ -153,22 +153,20 @@ if type(S.Config) ~= "table" then
 	error("config did not return table")
 end
 
--- Claw prize priority: always from disk config claw_priority.lua (never HttpGet).
--- If missing, write defaults and load them so friends can edit the local file.
+-- Claw prize priority: always from disk claw_priority.lua (never HttpGet).
+-- Create defaults if missing. Config tab edits call S.ClawPriority.save.
 do
 	local CLAW_PRIORITY_REL = "claw_priority.lua"
 	local CLAW_PRIORITY_DEFAULT = [=[-- portal_mage/claw_priority.lua — claw prize pick order (local config)
 --
--- Always loaded from disk. Edit tiers here; lower tier = grab first.
--- Unmatched prize names = tier 8. Keep longer keys before shorter substrings
--- (aurorite before aurora, triacoin before tria, enchantedbark before bark).
---
--- Boot creates this file with defaults if missing (see portal_mage.lua).
+-- Edit via the Config tab or by hand. Lower tier = grab first.
+-- Unmatched prizes ("others") use the first empty tier (1–10), else 11.
+-- Prefer longer keys before shorter substrings when hand-editing.
 
 return {
-	{ key = "spirit", tier = 2 }, -- spirit stones; own tier under P1
+	{ key = "spirit", tier = 2 },
 	{ key = "enchantedbark", tier = 5 },
-	{ key = "heartwood", tier = 4 }, -- also matches AncientHeartwood
+	{ key = "heartwood", tier = 4 },
 	{ key = "enchantedwood", tier = 5 },
 	{ key = "mysticessence", tier = 6 },
 	{ key = "briarvine", tier = 6 },
@@ -183,9 +181,8 @@ return {
 	{ key = "timber", tier = 1 },
 	{ key = "aurora", tier = 1 },
 	{ key = "amber", tier = 3 },
-	{ key = "living", tier = 3 }, -- LivingBark etc.
+	{ key = "living", tier = 3 },
 	{ key = "tome", tier = 1 },
-	-- Junk / currency (below generic mats)
 	{ key = "triacoin", tier = 9 },
 	{ key = "triapouch", tier = 9 },
 	{ key = "triasack", tier = 9 },
@@ -220,7 +217,6 @@ return {
 		for part in string.gmatch(path, "[^/\\]+") do
 			table.insert(parts, part)
 		end
-		-- drop filename
 		if #parts < 2 then
 			return
 		end
@@ -240,7 +236,36 @@ return {
 		end
 	end
 
-	local function loadClawPrioritySource(src)
+	local function normalizeKeywordList(list)
+		if type(list) ~= "table" then
+			return {}
+		end
+		local out = {}
+		local seen = {}
+		for _, e in ipairs(list) do
+			if type(e) == "table" and type(e.key) == "string" then
+				local key = string.lower((e.key:gsub("[^%w]", "")))
+				local tier = math.floor(tonumber(e.tier) or 0)
+				if key ~= "" and tier >= 1 and tier <= 10 and not seen[key] then
+					seen[key] = true
+					table.insert(out, { key = key, tier = tier })
+				end
+			end
+		end
+		-- Longer keys first so substring matches stay correct after UI edits
+		table.sort(out, function(a, b)
+			if #a.key ~= #b.key then
+				return #a.key > #b.key
+			end
+			if a.tier ~= b.tier then
+				return a.tier < b.tier
+			end
+			return a.key < b.key
+		end)
+		return out
+	end
+
+	local function parseClawPrioritySource(src)
 		local chunk, cerr = loadstring(src, "@portal_mage/claw_priority.lua")
 		if not chunk then
 			warn("[portal_mage] claw_priority compile failed: " .. tostring(cerr))
@@ -251,24 +276,124 @@ return {
 			warn("[portal_mage] claw_priority exec failed: " .. tostring(result))
 			return nil
 		end
-		if type(result) ~= "table" or #result == 0 then
-			warn("[portal_mage] claw_priority must return a non-empty { {key, tier}, ... } table")
+		if type(result) ~= "table" then
+			warn("[portal_mage] claw_priority must return a table")
 			return nil
 		end
-		return result
+		return normalizeKeywordList(result)
 	end
 
+	local function serializeClawPriority(list)
+		local lines = {
+			"-- portal_mage/claw_priority.lua — claw prize pick order (local config)",
+			"--",
+			"-- Edit via the Config tab or by hand. Lower tier = grab first.",
+			"-- Unmatched prizes (\"others\") use the first empty tier (1–10), else 11.",
+			"",
+			"return {",
+		}
+		for _, e in ipairs(list) do
+			table.insert(lines, string.format('\t{ key = %q, tier = %d },', e.key, e.tier))
+		end
+		table.insert(lines, "}")
+		return table.concat(lines, "\n") .. "\n"
+	end
+
+	local function othersTierFor(list)
+		local used = {}
+		for _, e in ipairs(list) do
+			used[e.tier] = true
+		end
+		for t = 1, 10 do
+			if not used[t] then
+				return t
+			end
+		end
+		return 11
+	end
+
+	local CP = {
+		path = nil,
+		TIER_COUNT = 10,
+	}
+
+	function CP.getKeywords()
+		return normalizeKeywordList(S.Config.CLAW_PRIORITY_KEYWORDS)
+	end
+
+	function CP.othersTier(list)
+		return othersTierFor(list or CP.getKeywords())
+	end
+
+	function CP.apply(list)
+		local normalized = normalizeKeywordList(list)
+		S.Config.CLAW_PRIORITY_KEYWORDS = normalized
+		return normalized
+	end
+
+	function CP.save(list)
+		local normalized = CP.apply(list)
+		local path = CP.path or clawPriorityWritePath()
+		CP.path = path
+		if not writefile then
+			warn("[portal_mage] claw_priority save: no writefile")
+			return false, "no writefile"
+		end
+		ensureParentFolder(path)
+		local src = serializeClawPriority(normalized)
+		local ok, err = pcall(writefile, path, src)
+		if not ok then
+			warn("[portal_mage] claw_priority save failed: " .. tostring(err))
+			return false, tostring(err)
+		end
+		return true, path
+	end
+
+	function CP.reload()
+		local src = tryReadLocal(CLAW_PRIORITY_REL)
+		if not src and CP.path and isfile and isfile(CP.path) then
+			local okR, body = pcall(readfile, CP.path)
+			if okR and type(body) == "string" then
+				src = body
+			end
+		end
+		if not src then
+			return nil, "missing"
+		end
+		local keywords = parseClawPrioritySource(src)
+		if not keywords then
+			return nil, "invalid"
+		end
+		CP.apply(keywords)
+		return keywords
+	end
+
+	-- Boot: load or create
 	local src = tryReadLocal(CLAW_PRIORITY_REL)
 	local created = false
+	CP.path = clawPriorityWritePath()
+	-- Prefer path of an existing file under CACHE_ROOTS
+	if isfile and readfile then
+		for _, root in ipairs(CACHE_ROOTS) do
+			local p = root .. CLAW_PRIORITY_REL
+			local ok, exists = pcall(function()
+				return isfile(p)
+			end)
+			if ok and exists then
+				CP.path = p
+				break
+			end
+		end
+	end
+
 	if not src then
-		local path = clawPriorityWritePath()
 		if writefile then
-			ensureParentFolder(path)
-			local wok, werr = pcall(writefile, path, CLAW_PRIORITY_DEFAULT)
+			ensureParentFolder(CP.path)
+			local wok, werr = pcall(writefile, CP.path, CLAW_PRIORITY_DEFAULT)
 			if wok then
 				created = true
 				src = CLAW_PRIORITY_DEFAULT
-				print("[portal_mage] claw_priority created: " .. path)
+				print("[portal_mage] claw_priority created: " .. CP.path)
 			else
 				warn("[portal_mage] claw_priority write failed (" .. tostring(werr) .. "); using embedded defaults")
 				src = CLAW_PRIORITY_DEFAULT
@@ -279,24 +404,26 @@ return {
 		end
 	end
 
-	local keywords = loadClawPrioritySource(src)
+	local keywords = parseClawPrioritySource(src)
 	if keywords then
-		S.Config.CLAW_PRIORITY_KEYWORDS = keywords
+		CP.apply(keywords)
 		print(
 			"[portal_mage] claw_priority loaded ("
 				.. #keywords
-				.. " keywords"
+				.. " keywords, others=T"
+				.. tostring(CP.othersTier(keywords))
 				.. (created and ", new file" or "")
 				.. ")"
 		)
 	else
-		-- last resort: try embedded defaults if disk file was corrupt
-		local fallback = loadClawPrioritySource(CLAW_PRIORITY_DEFAULT)
+		local fallback = parseClawPrioritySource(CLAW_PRIORITY_DEFAULT)
 		if fallback then
-			S.Config.CLAW_PRIORITY_KEYWORDS = fallback
+			CP.apply(fallback)
 			warn("[portal_mage] claw_priority invalid on disk; embedded defaults applied")
 		end
 	end
+
+	S.ClawPriority = CP
 end
 
 local function loadFactory(name)

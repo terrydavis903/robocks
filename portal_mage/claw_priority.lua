@@ -1,10 +1,8 @@
 -- portal_mage/claw_priority.lua — claw prize pick order (local config)
 --
--- Always loaded from disk. Edit tiers here; lower tier = grab first.
--- Unmatched prize names = tier 8. Keep longer keys before shorter substrings
--- (aurorite before aurora, triacoin before tria, enchantedbark before bark).
---
--- Boot creates this file with defaults if missing (see portal_mage.lua).
+-- Edit via the Config tab or by hand. Lower tier = grab first.
+-- Unmatched prizes ("others") use the first empty tier (1–10), else 11.
+-- Boot creates this file with defaults if missing.
 
 return {
 	{ key = "spirit", tier = 2 }, -- spirit stones; own tier under P1

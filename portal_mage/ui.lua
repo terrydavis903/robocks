@@ -1,4 +1,4 @@
--- portal_mage/ui.lua — multi-tab ScreenGui (Bot / Waypoints / Claw)
+-- portal_mage/ui.lua — multi-tab ScreenGui (Bot / Waypoints / Claw / Config)
 return function(S)
 	local CoreGui = S.Services.CoreGui
 	local UserInputService = S.Services.UserInputService
@@ -358,14 +358,14 @@ return function(S)
 		title.Text = "Portal Mage"
 		title.Parent = frame
 
-		-- Tab bar
+		-- Tab bar (4 tabs — slightly thinner so they fit without widening the panel)
 		local tabBarY = 32
-		local tabNames = { "Bot", "Waypoints", "Claw" }
+		local tabNames = { "Bot", "Waypoints", "Claw", "Config" }
 		local tabs: { [string]: Frame } = {}
 		local tabBtns: { [string]: TextButton } = {}
 		local activeTab = "Bot"
 
-		local contentTop = 64
+		local contentTop = 60
 		local contentH = PANEL_H - contentTop - 48
 
 		local function showTab(name: string)
@@ -380,21 +380,24 @@ return function(S)
 					b.BackgroundColor3 = Color3.fromRGB(36, 36, 46)
 				end
 			end
+			if name == "Config" and S.ui.refreshClawConfig then
+				pcall(S.ui.refreshClawConfig)
+			end
 		end
 
 		for i, name in ipairs(tabNames) do
-			local tw = (PANEL_W - 20) / #tabNames
+			local tw = (PANEL_W - 16) / #tabNames
 			local b = Instance.new("TextButton")
-			b.Size = UDim2.fromOffset(tw - 4, 26)
-			b.Position = UDim2.fromOffset(10 + (i - 1) * tw, tabBarY)
+			b.Size = UDim2.fromOffset(math.floor(tw - 2), 22)
+			b.Position = UDim2.fromOffset(8 + math.floor((i - 1) * tw), tabBarY)
 			b.BackgroundColor3 = Color3.fromRGB(36, 36, 46)
 			b.BorderSizePixel = 0
 			b.Font = Enum.Font.GothamMedium
-			b.TextSize = 12
+			b.TextSize = 11
 			b.TextColor3 = Color3.new(1, 1, 1)
 			b.Text = name
 			b.Parent = frame
-			corner(b, 5)
+			corner(b, 4)
 			tabBtns[name] = b
 			b.MouseButton1Click:Connect(function()
 				showTab(name)
@@ -850,7 +853,7 @@ return function(S)
 		clawInfo.TextYAlignment = Enum.TextYAlignment.Top
 		clawInfo.TextWrapped = true
 		clawInfo.Text = "Isolated from walk/combat/prox (safe map).\n"
-			.. "Priority 1→9: tome… / spirit / amber·goblin·living / heartwood / sap·briar / bark·wood·moss / other / tria\n"
+			.. "Prize priority: Config tab (10 tiers). Empty tiers = others.\n"
 			.. "W=+Z S=-Z A=+X D=-X → Space drop\n"
 			.. "Cyan=claw. Pyramids=all. Amber rod=reachable best. Green rod=global best (no walls)."
 		clawInfo.Parent = clawPage
@@ -1040,6 +1043,353 @@ return function(S)
 				end
 			end)
 		end)
+
+		---------------------------------------------------------------------------
+		-- Config tab (claw prize priority tiers)
+		---------------------------------------------------------------------------
+		local configPage = tabs.Config
+		local TIER_COUNT = (S.ClawPriority and S.ClawPriority.TIER_COUNT) or 10
+
+		local cfgHint = Instance.new("TextLabel")
+		cfgHint.Size = UDim2.new(1, -16, 0, 36)
+		cfgHint.Position = UDim2.fromOffset(8, 4)
+		cfgHint.BackgroundTransparency = 1
+		cfgHint.Font = Enum.Font.Gotham
+		cfgHint.TextSize = 11
+		cfgHint.TextColor3 = Color3.fromRGB(150, 155, 175)
+		cfgHint.TextXAlignment = Enum.TextXAlignment.Left
+		cfgHint.TextYAlignment = Enum.TextYAlignment.Top
+		cfgHint.TextWrapped = true
+		cfgHint.Text = "Claw priority — lower tier first. + adds a keyword. Empty tiers = others (unlisted prizes)."
+		cfgHint.Parent = configPage
+
+		local othersLab = Instance.new("TextLabel")
+		othersLab.Size = UDim2.new(1, -16, 0, 16)
+		othersLab.Position = UDim2.fromOffset(8, 40)
+		othersLab.BackgroundTransparency = 1
+		othersLab.Font = Enum.Font.GothamBold
+		othersLab.TextSize = 11
+		othersLab.TextColor3 = Color3.fromRGB(200, 170, 100)
+		othersLab.TextXAlignment = Enum.TextXAlignment.Left
+		othersLab.Text = "Others → T?"
+		othersLab.Parent = configPage
+
+		local cfgScroll = Instance.new("ScrollingFrame")
+		cfgScroll.Name = "ClawPriorityScroll"
+		cfgScroll.Size = UDim2.new(1, -12, 1, -64)
+		cfgScroll.Position = UDim2.fromOffset(6, 58)
+		cfgScroll.BackgroundColor3 = Color3.fromRGB(26, 26, 34)
+		cfgScroll.BorderSizePixel = 0
+		cfgScroll.ScrollBarThickness = 5
+		cfgScroll.ScrollBarImageColor3 = Color3.fromRGB(90, 90, 120)
+		cfgScroll.CanvasSize = UDim2.fromOffset(0, 0)
+		pcall(function()
+			cfgScroll.AutomaticCanvasSize = Enum.AutomaticSize.Y
+		end)
+		cfgScroll.Parent = configPage
+		corner(cfgScroll, 6)
+
+		local cfgList = Instance.new("Frame")
+		cfgList.Name = "TierList"
+		cfgList.Size = UDim2.new(1, -8, 0, 0)
+		cfgList.Position = UDim2.fromOffset(4, 4)
+		cfgList.BackgroundTransparency = 1
+		pcall(function()
+			cfgList.AutomaticSize = Enum.AutomaticSize.Y
+		end)
+		cfgList.Parent = cfgScroll
+
+		local cfgLayout = Instance.new("UIListLayout")
+		cfgLayout.SortOrder = Enum.SortOrder.LayoutOrder
+		cfgLayout.Padding = UDim.new(0, 6)
+		cfgLayout.Parent = cfgList
+		cfgLayout:GetPropertyChangedSignal("AbsoluteContentSize"):Connect(function()
+			cfgScroll.CanvasSize = UDim2.fromOffset(0, cfgLayout.AbsoluteContentSize.Y + 16)
+		end)
+
+		local cfgPad = Instance.new("UIPadding")
+		cfgPad.PaddingTop = UDim.new(0, 2)
+		cfgPad.PaddingBottom = UDim.new(0, 8)
+		cfgPad.PaddingLeft = UDim.new(0, 2)
+		cfgPad.PaddingRight = UDim.new(0, 2)
+		cfgPad.Parent = cfgList
+
+		-- Working copy: tier -> { keyword, ... }
+		local tierKeywords: { [number]: { string } } = {}
+		local openAddTier: number? = nil
+
+		local function normalizeKey(s: string): string
+			return (string.lower(s):gsub("[^%w]", ""))
+		end
+
+		local function keywordsFromTiers(): { { key: string, tier: number } }
+			local list = {}
+			for t = 1, TIER_COUNT do
+				for _, key in ipairs(tierKeywords[t] or {}) do
+					table.insert(list, { key = key, tier = t })
+				end
+			end
+			return list
+		end
+
+		local function loadTiersFromConfig()
+			for t = 1, TIER_COUNT do
+				tierKeywords[t] = {}
+			end
+			local list = (S.ClawPriority and S.ClawPriority.getKeywords and S.ClawPriority.getKeywords())
+				or (S.Config.CLAW_PRIORITY_KEYWORDS or {})
+			for _, e in ipairs(list) do
+				local t = tonumber(e.tier)
+				local key = type(e.key) == "string" and normalizeKey(e.key) or ""
+				if key ~= "" and t and t >= 1 and t <= TIER_COUNT then
+					table.insert(tierKeywords[t], key)
+				end
+			end
+			-- Stable alpha within tier for display
+			for t = 1, TIER_COUNT do
+				table.sort(tierKeywords[t])
+			end
+		end
+
+		local function updateOthersLabel()
+			local list = keywordsFromTiers()
+			local ot = 11
+			if S.ClawPriority and S.ClawPriority.othersTier then
+				ot = S.ClawPriority.othersTier(list)
+			else
+				local used = {}
+				for _, e in ipairs(list) do
+					used[e.tier] = true
+				end
+				for t = 1, TIER_COUNT do
+					if not used[t] then
+						ot = t
+						break
+					end
+				end
+			end
+			othersLab.Text = string.format("Others (unlisted) → T%d", ot)
+		end
+
+		local function persistTiers()
+			local list = keywordsFromTiers()
+			if S.ClawPriority and S.ClawPriority.save then
+				local ok, info = S.ClawPriority.save(list)
+				if ok then
+					S.Util.setStatus(string.format("Claw priority saved (%d keywords)", #list))
+				else
+					S.Util.setStatus("Claw priority save failed: " .. tostring(info))
+				end
+			else
+				S.Config.CLAW_PRIORITY_KEYWORDS = list
+				S.Util.setStatus("Claw priority applied (no disk save API)")
+			end
+			updateOthersLabel()
+		end
+
+		local rebuildTierUi: () -> ()
+
+		local function addKeywordToTier(tier: number, raw: string)
+			local key = normalizeKey(raw)
+			if key == "" then
+				return
+			end
+			-- Remove from any tier if already present
+			for t = 1, TIER_COUNT do
+				local arr = tierKeywords[t]
+				for i = #arr, 1, -1 do
+					if arr[i] == key then
+						table.remove(arr, i)
+					end
+				end
+			end
+			table.insert(tierKeywords[tier], key)
+			table.sort(tierKeywords[tier])
+			openAddTier = nil
+			persistTiers()
+			rebuildTierUi()
+		end
+
+		local function removeKeyword(tier: number, key: string)
+			local arr = tierKeywords[tier]
+			if not arr then
+				return
+			end
+			for i = #arr, 1, -1 do
+				if arr[i] == key then
+					table.remove(arr, i)
+				end
+			end
+			persistTiers()
+			rebuildTierUi()
+		end
+
+		rebuildTierUi = function()
+			for _, child in ipairs(cfgList:GetChildren()) do
+				if child:IsA("GuiObject") then
+					child:Destroy()
+				end
+			end
+
+			for t = 1, TIER_COUNT do
+				local keys = tierKeywords[t] or {}
+				local block = Instance.new("Frame")
+				block.Name = "Tier" .. t
+				block.Size = UDim2.new(1, 0, 0, 0)
+				block.AutomaticSize = Enum.AutomaticSize.Y
+				block.BackgroundColor3 = Color3.fromRGB(32, 32, 42)
+				block.BorderSizePixel = 0
+				block.LayoutOrder = t
+				block.Parent = cfgList
+				corner(block, 5)
+
+				local blockLayout = Instance.new("UIListLayout")
+				blockLayout.SortOrder = Enum.SortOrder.LayoutOrder
+				blockLayout.Padding = UDim.new(0, 3)
+				blockLayout.Parent = block
+
+				local blockPad = Instance.new("UIPadding")
+				blockPad.PaddingTop = UDim.new(0, 4)
+				blockPad.PaddingBottom = UDim.new(0, 4)
+				blockPad.PaddingLeft = UDim.new(0, 6)
+				blockPad.PaddingRight = UDim.new(0, 6)
+				blockPad.Parent = block
+
+				local header = Instance.new("Frame")
+				header.Size = UDim2.new(1, 0, 0, 22)
+				header.BackgroundTransparency = 1
+				header.LayoutOrder = 0
+				header.Parent = block
+
+				local titleLab = Instance.new("TextLabel")
+				titleLab.Size = UDim2.new(1, -28, 1, 0)
+				titleLab.BackgroundTransparency = 1
+				titleLab.Font = Enum.Font.GothamBold
+				titleLab.TextSize = 12
+				titleLab.TextColor3 = Color3.fromRGB(200, 205, 230)
+				titleLab.TextXAlignment = Enum.TextXAlignment.Left
+				local emptyMark = (#keys == 0) and "  · empty" or string.format("  (%d)", #keys)
+				titleLab.Text = "Tier " .. t .. emptyMark
+				titleLab.Parent = header
+
+				local addBtn = Instance.new("TextButton")
+				addBtn.Size = UDim2.fromOffset(22, 20)
+				addBtn.Position = UDim2.new(1, -22, 0, 1)
+				addBtn.BackgroundColor3 = Color3.fromRGB(50, 110, 80)
+				addBtn.BorderSizePixel = 0
+				addBtn.Font = Enum.Font.GothamBold
+				addBtn.TextSize = 14
+				addBtn.TextColor3 = Color3.new(1, 1, 1)
+				addBtn.Text = "+"
+				addBtn.Parent = header
+				corner(addBtn, 4)
+				addBtn.MouseButton1Click:Connect(function()
+					if openAddTier == t then
+						openAddTier = nil
+					else
+						openAddTier = t
+					end
+					rebuildTierUi()
+				end)
+
+				if openAddTier == t then
+					local addRow = Instance.new("Frame")
+					addRow.Size = UDim2.new(1, 0, 0, 26)
+					addRow.BackgroundTransparency = 1
+					addRow.LayoutOrder = 1
+					addRow.Parent = block
+
+					local box = Instance.new("TextBox")
+					box.Size = UDim2.new(1, -52, 0, 24)
+					box.Position = UDim2.fromOffset(0, 1)
+					box.BackgroundColor3 = Color3.fromRGB(22, 22, 30)
+					box.BorderSizePixel = 0
+					box.Font = Enum.Font.Gotham
+					box.TextSize = 12
+					box.TextColor3 = Color3.new(1, 1, 1)
+					box.PlaceholderText = "keyword…"
+					box.PlaceholderColor3 = Color3.fromRGB(100, 100, 120)
+					box.Text = ""
+					box.ClearTextOnFocus = false
+					box.Parent = addRow
+					corner(box, 4)
+
+					local okBtn = Instance.new("TextButton")
+					okBtn.Size = UDim2.fromOffset(46, 24)
+					okBtn.Position = UDim2.new(1, -46, 0, 1)
+					okBtn.BackgroundColor3 = Color3.fromRGB(55, 100, 150)
+					okBtn.BorderSizePixel = 0
+					okBtn.Font = Enum.Font.GothamMedium
+					okBtn.TextSize = 11
+					okBtn.TextColor3 = Color3.new(1, 1, 1)
+					okBtn.Text = "Add"
+					okBtn.Parent = addRow
+					corner(okBtn, 4)
+
+					local function commit()
+						addKeywordToTier(t, box.Text)
+					end
+					okBtn.MouseButton1Click:Connect(commit)
+					box.FocusLost:Connect(function(enter)
+						if enter then
+							commit()
+						end
+					end)
+					task.defer(function()
+						pcall(function()
+							box:CaptureFocus()
+						end)
+					end)
+				end
+
+				for i, key in ipairs(keys) do
+					local row = Instance.new("Frame")
+					row.Size = UDim2.new(1, 0, 0, 22)
+					row.BackgroundColor3 = Color3.fromRGB(40, 40, 52)
+					row.BorderSizePixel = 0
+					row.LayoutOrder = 10 + i
+					row.Parent = block
+					corner(row, 4)
+
+					local keyLab = Instance.new("TextLabel")
+					keyLab.Size = UDim2.new(1, -26, 1, 0)
+					keyLab.Position = UDim2.fromOffset(6, 0)
+					keyLab.BackgroundTransparency = 1
+					keyLab.Font = Enum.Font.Code
+					keyLab.TextSize = 11
+					keyLab.TextColor3 = Color3.fromRGB(210, 210, 225)
+					keyLab.TextXAlignment = Enum.TextXAlignment.Left
+					keyLab.Text = key
+					keyLab.Parent = row
+
+					local xBtn = Instance.new("TextButton")
+					xBtn.Size = UDim2.fromOffset(20, 18)
+					xBtn.Position = UDim2.new(1, -22, 0, 2)
+					xBtn.BackgroundColor3 = Color3.fromRGB(120, 50, 55)
+					xBtn.BorderSizePixel = 0
+					xBtn.Font = Enum.Font.GothamBold
+					xBtn.TextSize = 12
+					xBtn.TextColor3 = Color3.new(1, 1, 1)
+					xBtn.Text = "x"
+					xBtn.Parent = row
+					corner(xBtn, 4)
+					xBtn.MouseButton1Click:Connect(function()
+						removeKeyword(t, key)
+					end)
+				end
+			end
+
+			updateOthersLabel()
+		end
+
+		S.ui.refreshClawConfig = function()
+			loadTiersFromConfig()
+			openAddTier = nil
+			rebuildTierUi()
+		end
+
+		loadTiersFromConfig()
+		rebuildTierUi()
 
 		---------------------------------------------------------------------------
 		UserInputService.InputBegan:Connect(function(input, processed)

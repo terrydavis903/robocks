@@ -38,9 +38,10 @@ getgenv().ROBOCKS_OFFLINE = false -- true = never HttpGet modules
 Tiers always come from a **local disk file**: `portal_mage/claw_priority.lua`  
 (lower tier number = grab first). Never fetched from GitHub.
 
-- First boot creates the file with defaults if it is missing (under `robocks/portal_mage/` or whichever module folder already exists).
-- Edit `{ key = "...", tier = N }` and reload. Console: `claw_priority loaded (N keywords)`.
-- Keep longer keys before shorter substrings (`aurorite` before `aurora`).
+- First boot creates the file with defaults if missing.
+- **In-game:** open the **Config** tab — 10 tiers, `+` to add keywords, `x` to remove (auto-saves).
+- Unmatched prizes (“others”) use the first empty tier (1–10), else 11.
+- Hand-edit the file and reload if you prefer.
 
 ## Layout
 
