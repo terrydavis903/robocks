@@ -79,7 +79,9 @@ return function(S)
 	end
 
 	---------------------------------------------------------------------------
-	-- Walk-anim move keys (W toward reticle / S away). MoveTo alone often skips anim.
+	-- Walk move keys. With a reticle/enemy lock the body always faces the target,
+	-- so we never try to "turn then W" — WASD is computed in reticle-facing space:
+	--   W/S = along face axis, A/D = strafe, diagonals = two keys held.
 	---------------------------------------------------------------------------
 
 	local MOVE_KEYS = {
@@ -88,64 +90,123 @@ return function(S)
 		Enum.KeyCode.S,
 		Enum.KeyCode.D,
 	}
-	local heldMoveKey: Enum.KeyCode? = nil
+	local heldMoveKeys: { [Enum.KeyCode]: boolean } = {}
 
 	function M.releaseMoveKeys()
 		for _, k in ipairs(MOVE_KEYS) do
+			if heldMoveKeys[k] then
+				pcall(function()
+					VIM:SendKeyEvent(false, k, false, game)
+				end)
+			end
+			-- Always send up for safety (covers desync)
 			pcall(function()
 				VIM:SendKeyEvent(false, k, false, game)
 			end)
+			heldMoveKeys[k] = nil
 		end
-		heldMoveKey = nil
 	end
 
+	-- Hold exactly the given set of WASD keys (nil/empty = release all).
+	function M.holdMoveKeys(keys: { Enum.KeyCode }?)
+		local want: { [Enum.KeyCode]: boolean } = {}
+		if type(keys) == "table" then
+			for _, k in ipairs(keys) do
+				if k == Enum.KeyCode.W or k == Enum.KeyCode.A or k == Enum.KeyCode.S or k == Enum.KeyCode.D then
+					want[k] = true
+				end
+			end
+		end
+		for _, k in ipairs(MOVE_KEYS) do
+			local should = want[k] == true
+			local isHeld = heldMoveKeys[k] == true
+			if should and not isHeld then
+				pcall(function()
+					VIM:SendKeyEvent(true, k, false, game)
+				end)
+				heldMoveKeys[k] = true
+			elseif not should and isHeld then
+				pcall(function()
+					VIM:SendKeyEvent(false, k, false, game)
+				end)
+				heldMoveKeys[k] = nil
+			end
+		end
+	end
+
+	-- Back-compat single-key helper
 	function M.holdMoveKey(key: Enum.KeyCode?)
-		if key == heldMoveKey then
-			return
-		end
-		-- Release previous first
-		if heldMoveKey then
-			local prev = heldMoveKey
-			pcall(function()
-				VIM:SendKeyEvent(false, prev, false, game)
-			end)
-			heldMoveKey = nil
-		end
 		if key then
-			pcall(function()
-				VIM:SendKeyEvent(true, key, false, game)
-			end)
-			heldMoveKey = key
+			M.holdMoveKeys({ key })
+		else
+			M.holdMoveKeys(nil)
 		end
 	end
 
-	-- Pick W (toward face) or S (away) from movement vs face/reticle direction.
-	-- facePos = reticle/enemy; goalPos = where we're walking.
-	function M.moveKeyForWalk(playerPos: Vector3, goalPos: Vector3, facePos: Vector3?): Enum.KeyCode?
+	-- World-flat right vector for a forward look (Y-up).
+	local function flatRight(forward: Vector3): Vector3
+		-- forward × up-ish: rotate 90° so +forward → +right (Roblox look -Z → +X)
+		return Vector3.new(-forward.Z, 0, forward.X)
+	end
+
+	-- WASD relative to reticle/face direction for the walk goal.
+	-- facePos = where we must look (enemy); goalPos = path waypoint / stand point.
+	-- Returns 0–2 keys. Empty if already at goal.
+	function M.moveKeysForWalk(playerPos: Vector3, goalPos: Vector3, facePos: Vector3?): { Enum.KeyCode }
 		local toGoal = Vector3.new(goalPos.X - playerPos.X, 0, goalPos.Z - playerPos.Z)
 		if toGoal.Magnitude < 0.35 then
-			return nil
+			return {}
 		end
 		toGoal = toGoal.Unit
-		if facePos then
-			local toFace = Vector3.new(facePos.X - playerPos.X, 0, facePos.Z - playerPos.Z)
-			if toFace.Magnitude < 0.2 then
-				-- On top of target — still need some anim; prefer W
-				return Enum.KeyCode.W
-			end
-			toFace = toFace.Unit
-			local dot = toGoal:Dot(toFace)
-			-- Toward reticle/enemy → W; away (kite) → S
-			if dot >= 0.12 then
-				return Enum.KeyCode.W
-			elseif dot <= -0.12 then
-				return Enum.KeyCode.S
-			end
-			-- Mostly strafe: still use W so walk cycle plays while soft-facing
-			return Enum.KeyCode.W
+
+		-- No combat face lock: just hold W (AutoRotate / face-travel handles yaw)
+		if not facePos then
+			return { Enum.KeyCode.W }
 		end
-		-- No reticle: always "forward" relative to travel (game sees W + AutoRotate)
-		return Enum.KeyCode.W
+
+		local toFace = Vector3.new(facePos.X - playerPos.X, 0, facePos.Z - playerPos.Z)
+		if toFace.Magnitude < 0.15 then
+			-- On top of target — still need a walk cycle; nudge with W
+			return { Enum.KeyCode.W }
+		end
+		local forward = toFace.Unit
+		local right = flatRight(forward)
+		if right.Magnitude < 1e-4 then
+			return { Enum.KeyCode.W }
+		end
+		right = right.Unit
+
+		local f = toGoal:Dot(forward) -- +W / -S
+		local r = toGoal:Dot(right) -- +D / -A
+		local dead = C.WALK_KEY_DEADZONE or 0.28
+
+		local keys: { Enum.KeyCode } = {}
+		if f > dead then
+			table.insert(keys, Enum.KeyCode.W)
+		elseif f < -dead then
+			table.insert(keys, Enum.KeyCode.S)
+		end
+		if r > dead then
+			table.insert(keys, Enum.KeyCode.D)
+		elseif r < -dead then
+			table.insert(keys, Enum.KeyCode.A)
+		end
+
+		-- Pure-axis edge case (components both under deadzone): pick dominant
+		if #keys == 0 then
+			if math.abs(f) >= math.abs(r) then
+				table.insert(keys, if f >= 0 then Enum.KeyCode.W else Enum.KeyCode.S)
+			else
+				table.insert(keys, if r >= 0 then Enum.KeyCode.D else Enum.KeyCode.A)
+			end
+		end
+		return keys
+	end
+
+	-- Back-compat: single "primary" key (first of the set)
+	function M.moveKeyForWalk(playerPos: Vector3, goalPos: Vector3, facePos: Vector3?): Enum.KeyCode?
+		local keys = M.moveKeysForWalk(playerPos, goalPos, facePos)
+		return keys[1]
 	end
 
 	function M.vec3Table(v: Vector3)
@@ -379,9 +440,10 @@ return function(S)
 		return fwd:Dot(to)
 	end
 
-	-- Smooth walk: Humanoid:MoveTo + W/S spoof so walk animation plays.
-	-- With lookAt (reticle/enemy): face target; W if goal is toward it, S if away (kite).
-	-- Without lookAt: face travel + hold W.
+	-- Smooth walk: Humanoid:MoveTo + WASD spoof for walk anim / games that read keys.
+	-- With lookAt (reticle/enemy): ALWAYS face target; move with reticle-relative WASD
+	--   (path left of enemy → A, kite back → S, diagonal → W+A, etc.). Never yaw-to-path.
+	-- Without lookAt: AutoRotate toward travel + hold W.
 	-- Falls back to teleportTo on timeout if snapOnTimeout ~= false.
 	function M.walkTo(
 		x: number,
@@ -391,9 +453,9 @@ return function(S)
 	): boolean
 		opts = opts or {}
 		local silent = opts.silent == true
-		local lookAt = opts.lookAt -- optional; kite/reticle soft-face target
+		local lookAt = opts.lookAt -- optional; combat reticle / enemy face lock
 		local hardFace = opts.hardFace == true -- rare; soft lerp is default
-		local forceSoftTurn = opts.softTurn == true -- pathing reverse hint
+		local forceSoftTurn = opts.softTurn == true -- pathing reverse hint (non-combat)
 		local useMoveKeys = opts.useMoveKeys
 		if useMoveKeys == nil then
 			useMoveKeys = C.WALK_SPOOF_MOVE_KEYS ~= false
@@ -428,14 +490,18 @@ return function(S)
 		local faceY = if lookAt then (lookAt.y or y) else goal.Y
 		local faceZ = if lookAt then lookAt.z else goal.Z
 		local facePos = Vector3.new(faceX, faceY, faceZ)
+		local combatFace = lookAt ~= nil
 
 		local function needsSoftTurn(): boolean
+			if combatFace then
+				return true -- always keep yaw on reticle in combat
+			end
 			if forceSoftTurn then
 				return true
 			end
 			local d = M.facingDotTo(faceX, faceZ)
 			if d == nil then
-				return lookAt ~= nil
+				return false
 			end
 			return d < softTurnDot
 		end
@@ -450,19 +516,29 @@ return function(S)
 			end)
 		end
 
-		local softTurning = needsSoftTurn() or lookAt ~= nil
-		if softTurning then
+		local function applyMoveKeys(pos: Vector3)
+			if not useMoveKeys or S.clawBusy then
+				return
+			end
+			if S.combatBusy then
+				M.releaseMoveKeys()
+				return
+			end
+			-- Combat: keys relative to reticle. Open walk: relative to nil → W only.
+			M.holdMoveKeys(M.moveKeysForWalk(pos, goal, if combatFace then facePos else nil))
+		end
+
+		-- Combat: lock yaw on reticle. Path movement is entirely via relative WASD (+ MoveTo).
+		local softTurning = needsSoftTurn()
+		if softTurning or combatFace then
 			M.faceToward(faceX, faceY, faceZ, not hardFace, poll)
 		end
 
 		pcall(function()
-			-- Prefer AutoRotate only when not facing a combat reticle
-			hum.AutoRotate = not softTurning and lookAt == nil
+			hum.AutoRotate = not combatFace and not softTurning
 			hum:MoveTo(goal)
 		end)
-		if useMoveKeys then
-			M.holdMoveKey(M.moveKeyForWalk(hrp.Position, goal, if lookAt then facePos else nil))
-		end
+		applyMoveKeys(hrp.Position)
 
 		local t0 = os.clock()
 		local lastIssue = t0
@@ -487,32 +563,33 @@ return function(S)
 				return true
 			end
 
-			-- Soft-turn while misaligned; keep facing reticle during kite/engage
-			local d = M.facingDotTo(faceX, faceZ)
-			if lookAt ~= nil or (d ~= nil and d < softTurnDot) then
-				softTurning = true
-			elseif d ~= nil and d >= alignDot and lookAt == nil then
-				softTurning = false
-			end
-
-			if softTurning or lookAt ~= nil then
+			if combatFace then
+				-- Never yaw toward the path waypoint — only the reticle
 				pcall(function()
 					hum.AutoRotate = false
 				end)
 				M.faceToward(faceX, faceY, faceZ, not hardFace, dt)
 			else
-				pcall(function()
-					hum.AutoRotate = true
-				end)
+				local d = M.facingDotTo(faceX, faceZ)
+				if forceSoftTurn or (d ~= nil and d < softTurnDot) then
+					softTurning = true
+				elseif d ~= nil and d >= alignDot then
+					softTurning = false
+				end
+				if softTurning then
+					pcall(function()
+						hum.AutoRotate = false
+					end)
+					M.faceToward(faceX, faceY, faceZ, not hardFace, dt)
+				else
+					pcall(function()
+						hum.AutoRotate = true
+					end)
+				end
 			end
 
-			-- Keep walking during combat. Only drop W/S spoof mid-cast so 1/E aren't fighting
-			-- held move keys; Humanoid:MoveTo continues either way.
-			if useMoveKeys and not S.clawBusy and not S.combatBusy then
-				M.holdMoveKey(M.moveKeyForWalk(pos, goal, if lookAt then facePos else nil))
-			elseif useMoveKeys and S.combatBusy then
-				M.releaseMoveKeys()
-			end
+			-- Relative WASD each poll (updates as path angle vs reticle changes)
+			applyMoveKeys(pos)
 
 			if now - lastIssue >= reissue then
 				pcall(function()

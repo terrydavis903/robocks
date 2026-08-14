@@ -58,8 +58,10 @@ return {
 	SMOOTH_WALK_SOFT_TURN_DOT = 0.35,
 	-- Once look·forward >= this, re-enable AutoRotate (~25°)
 	SMOOTH_WALK_ALIGN_DOT = 0.90,
-	-- Spoof W (toward reticle) / S (away) so walk anim plays; MoveTo alone often idle-walks
+	-- Spoof WASD so walk anim plays / games that read keys. With reticle lock, keys are
+	-- relative to face (W toward enemy, A/D strafe, S kite) — not "turn then W".
 	WALK_SPOOF_MOVE_KEYS = true,
+	WALK_KEY_DEADZONE = 0.28, -- |local axis| must exceed this to hold that key
 
 	-- Floor navigation (Walk+Atk / kill-aura)
 	NAV_CELL = 4, -- grid A* cell size (fallback only)
