@@ -163,10 +163,12 @@ return function(S)
 					U.setStatus("[fight] sitting — Z to stand")
 					U.ensureStanding(2.5)
 				elseif (why == "sheathed" or why == "no_weapon") and not S.zRegenBusy then
-					-- Only when known sheathed (e.g. post Z-sit). Soft default is drawn.
-					U.setStatus("[fight] sheathed — Q to draw (no cast)")
+					U.setStatus("[fight] sheathed — force Q (no cast)")
+					if U.markWeaponSheathed then
+						U.markWeaponSheathed()
+					end
 					if U.ensureWeaponDrawn then
-						U.ensureWeaponDrawn(1.2)
+						U.ensureWeaponDrawn(1.2, true)
 					end
 				else
 					U.setStatus(string.format("[fight] paused (%s)", tostring(why)))

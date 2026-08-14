@@ -273,13 +273,15 @@ return function(S)
 					-- Post-sit: known=false → Q once. If unknown, soft isWeaponDrawn is true
 					-- so ensureWeaponDrawn no-ops unless known=false.
 					if S.weaponDrawnKnown == false then
-						U.setStatus(prefix .. ": sheathed after sit → Q draw")
-						U.ensureWeaponDrawn(C.WEAPON_EQUIP_WAIT or 1.5)
+						U.setStatus(prefix .. ": sheathed after sit → force Q")
+						U.ensureWeaponDrawn(C.WEAPON_EQUIP_WAIT or 1.5, true)
 					else
-						U.setStatus(prefix .. ": standing (weapon state soft-drawn)")
-						if U.markWeaponDrawn then
-							U.markWeaponDrawn()
+						-- Standing without hard detect: still force one unsheath
+						U.setStatus(prefix .. ": standing → force Q unsheath")
+						if U.markWeaponSheathed then
+							U.markWeaponSheathed()
 						end
+						U.ensureWeaponDrawn(C.WEAPON_EQUIP_WAIT or 1.5, true)
 					end
 				end
 			end

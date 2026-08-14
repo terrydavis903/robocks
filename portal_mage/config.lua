@@ -66,6 +66,9 @@ return {
 	SMOOTH_WALK_FACE_ALPHA = 0.12, -- fallback soft yaw lerp per poll
 	-- Time-based yaw rate (higher = snappier). Used for U-turns at path tails.
 	SMOOTH_WALK_TURN_RATE = 5.5,
+	-- Free-path (no reticle): turn toward waypoint then W only when aligned
+	PATH_WALK_TURN_RATE = 18, -- snappy yaw along A* (higher = faster face)
+	PATH_WALK_ALIGN_DOT = 0.72, -- hold W only when facing waypoint this well
 	-- If look·forward < this (~70°), disable AutoRotate and soft-lerp instead of snap
 	SMOOTH_WALK_SOFT_TURN_DOT = 0.35,
 	-- Once look·forward >= this, re-enable AutoRotate (~25°)

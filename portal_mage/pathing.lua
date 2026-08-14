@@ -345,11 +345,12 @@ return function(S)
 							task.wait(0.15)
 							return
 						elseif why == "sheathed" or why == "no_weapon" then
-							U.setStatus("[path] weapon sheathed — Q to draw")
+							U.setStatus("[path] weapon sheathed — force Q")
+							if U.markWeaponSheathed then
+								U.markWeaponSheathed()
+							end
 							if U.ensureWeaponDrawn then
-								U.ensureWeaponDrawn(1.2)
-							elseif U.ensureWeaponEquipped then
-								U.ensureWeaponEquipped()
+								U.ensureWeaponDrawn(1.2, true)
 							end
 							task.wait(0.15)
 							return
@@ -561,7 +562,7 @@ return function(S)
 			return
 		end
 
-		-- Require observed fight stance: standing + weapon drawn
+		-- Standing required
 		if U.isSeated and U.isSeated() then
 			U.setStatus("Kill Aura: sitting — Z to stand…")
 			if U.ensureStanding then
@@ -572,18 +573,19 @@ return function(S)
 				return
 			end
 		end
-		-- Only force-Q when we know sheathed (post-sit). Soft default is drawn.
-		if S.weaponDrawnKnown == false or (U.isWeaponDrawn and not U.isWeaponDrawn()) then
-			U.setStatus("Kill Aura: unsheath (Q)…")
-			if U.markWeaponSheathed and S.weaponDrawnKnown ~= false then
-				-- leave known as-is
+		-- Always force unsheath on start when hard-detect fails (this game has no Tools).
+		-- Soft "assume drawn" was skipping Q entirely → never unsheathed.
+		if U.detectWeaponDrawnHard and select(1, U.detectWeaponDrawnHard()) then
+			if U.markWeaponDrawn then
+				U.markWeaponDrawn()
+			end
+		else
+			U.setStatus("Kill Aura: force unsheath (Q)…")
+			if U.markWeaponSheathed then
+				U.markWeaponSheathed()
 			end
 			if U.ensureWeaponDrawn then
-				U.ensureWeaponDrawn(1.5)
-			end
-			if U.isWeaponDrawn and not U.isWeaponDrawn() then
-				U.setStatus("Kill Aura blocked — still sheathed after Q")
-				return
+				U.ensureWeaponDrawn(1.5, true)
 			end
 		end
 

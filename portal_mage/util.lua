@@ -485,10 +485,9 @@ return function(S)
 	-- Smooth walk: Humanoid:MoveTo + WASD spoof for walk anim / games that read keys.
 	--
 	-- TWO MODES:
-	--   lookAt set (reticle locked on enemy): face target; reticle-relative WASD
-	--     (path left of enemy → A, kite back → S, diagonal → W+A). Never yaw-to-path.
-	--   lookAt nil (no selection / free path): rotate toward waypoint + hold W
-	--     (A* approach without reticle — character turns with the path).
+	--   lookAt set (reticle on enemy): face target; reticle-relative WASD. Never yaw-to-path.
+	--   lookAt nil (free path / A*): face waypoint HARD, only hold W when aligned —
+	--     holding W while body faces elsewhere = choppy strafe.
 	--
 	-- Falls back to teleportTo on timeout if snapOnTimeout ~= false.
 	function M.walkTo(
@@ -500,8 +499,8 @@ return function(S)
 		opts = opts or {}
 		local silent = opts.silent == true
 		local lookAt = opts.lookAt -- optional; only when reticle is locked on enemy
-		local hardFace = opts.hardFace == true -- rare; soft lerp is default
-		local forceSoftTurn = opts.softTurn == true -- pathing reverse hint (non-combat)
+		local hardFace = opts.hardFace == true
+		local forceSoftTurn = opts.softTurn == true
 		local useMoveKeys = opts.useMoveKeys
 		if useMoveKeys == nil then
 			useMoveKeys = C.WALK_SPOOF_MOVE_KEYS ~= false
@@ -515,8 +514,9 @@ return function(S)
 		if snapOnTimeout == nil then
 			snapOnTimeout = true
 		end
-		local softTurnDot = C.SMOOTH_WALK_SOFT_TURN_DOT or 0.35
-		local alignDot = C.SMOOTH_WALK_ALIGN_DOT or 0.90
+		-- Free-path: only W after body faces the waypoint (else choppy)
+		local pathAlignDot = C.PATH_WALK_ALIGN_DOT or 0.72
+		local pathTurnRate = C.PATH_WALK_TURN_RATE or 16
 
 		local hum = M.getHumanoid()
 		local player = Players.LocalPlayer
@@ -531,8 +531,6 @@ return function(S)
 		end
 
 		local goal = Vector3.new(x, y, z)
-		-- Combat face-lock only when caller passed lookAt (reticle on enemy).
-		-- Free path: face the travel waypoint so A* turns rotate the character.
 		local combatFace = type(lookAt) == "table" and lookAt.x ~= nil and lookAt.z ~= nil
 		local faceX = if combatFace then lookAt.x else goal.X
 		local faceY = if combatFace then (lookAt.y or y) else goal.Y
@@ -549,7 +547,32 @@ return function(S)
 			end)
 		end
 
-		local function applyMoveKeys(pos: Vector3)
+		-- Face waypoint every tick (owns yaw; AutoRotate off so game doesn't fight us)
+		local function facePathWaypoint(dt: number): number?
+			pcall(function()
+				hum.AutoRotate = false
+			end)
+			local pos = hrp.Position
+			local look = Vector3.new(goal.X, pos.Y, goal.Z)
+			if (look - pos).Magnitude < 0.05 then
+				return 1
+			end
+			local desired = CFrame.lookAt(pos, look)
+			local d = M.facingDotTo(goal.X, goal.Z)
+			-- Snap on sharp corners; otherwise fast lerp toward path
+			local snap = hardFace or forceSoftTurn or (d ~= nil and d < 0.25)
+			pcall(function()
+				if snap then
+					hrp.CFrame = desired
+				else
+					local alpha = 1 - math.exp(-pathTurnRate * math.max(dt or poll, 0.016))
+					hrp.CFrame = hrp.CFrame:Lerp(desired, math.clamp(alpha, 0.15, 1))
+				end
+			end)
+			return M.facingDotTo(goal.X, goal.Z)
+		end
+
+		local function applyMoveKeys(pos: Vector3, faceDot: number?)
 			if not useMoveKeys or S.clawBusy then
 				return
 			end
@@ -557,17 +580,33 @@ return function(S)
 				M.releaseMoveKeys()
 				return
 			end
-			-- Reticle lock → relative WASD. Free path → W only (body rotates to path).
-			M.holdMoveKeys(M.moveKeysForWalk(pos, goal, if combatFace then facePos else nil))
+			if combatFace then
+				M.holdMoveKeys(M.moveKeysForWalk(pos, goal, facePos))
+			else
+				-- Free path: W only when facing the waypoint — no strafe-while-turning
+				if faceDot ~= nil and faceDot >= pathAlignDot then
+					M.holdMoveKeys({ Enum.KeyCode.W })
+				else
+					M.releaseMoveKeys()
+				end
+			end
 		end
 
-		-- Initial yaw: reticle or first path waypoint
-		M.faceToward(faceX, faceY, faceZ, not hardFace, poll)
+		-- Initial face
+		local d0: number? = nil
+		if combatFace then
+			M.faceToward(faceX, faceY, faceZ, not hardFace, poll)
+			pcall(function()
+				hum.AutoRotate = false
+			end)
+			d0 = 1
+		else
+			d0 = facePathWaypoint(poll)
+		end
 		pcall(function()
-			hum.AutoRotate = not combatFace
 			hum:MoveTo(goal)
 		end)
-		applyMoveKeys(hrp.Position)
+		applyMoveKeys(hrp.Position, d0)
 
 		local t0 = os.clock()
 		local lastIssue = t0
@@ -577,7 +616,6 @@ return function(S)
 				cleanupMove(true)
 				return false
 			end
-			-- Claw owns WASD fully
 			if S.clawBusy then
 				M.releaseMoveKeys()
 			end
@@ -592,36 +630,18 @@ return function(S)
 				return true
 			end
 
+			local faceDot: number? = nil
 			if combatFace then
-				-- Reticle lock: never yaw toward path waypoint
 				pcall(function()
 					hum.AutoRotate = false
 				end)
 				M.faceToward(faceX, faceY, faceZ, not hardFace, dt)
+				faceDot = 1
 			else
-				-- Free path / A*: always rotate toward current waypoint (+ AutoRotate assist)
-				local d = M.facingDotTo(goal.X, goal.Z)
-				local needTurn = forceSoftTurn or d == nil or d < alignDot
-				if needTurn then
-					pcall(function()
-						hum.AutoRotate = false
-					end)
-					-- Snapper turn on big misalignment (U-turns on path corners)
-					local soft = not hardFace
-					if d ~= nil and d < softTurnDot then
-						soft = false -- hard face for sharp path corners
-					elseif forceSoftTurn and d ~= nil and d < 0 then
-						soft = false
-					end
-					M.faceToward(goal.X, goal.Y, goal.Z, soft, dt)
-				else
-					pcall(function()
-						hum.AutoRotate = true
-					end)
-				end
+				faceDot = facePathWaypoint(dt)
 			end
 
-			applyMoveKeys(pos)
+			applyMoveKeys(pos, faceDot)
 
 			if now - lastIssue >= reissue then
 				pcall(function()
@@ -1009,9 +1029,10 @@ return function(S)
 		return 1000
 	end
 
-	-- Draw weapon: Q toggle with CD. Only press when we believe sheathed (known=false
-	-- or hard-negative after sit). Never Q when already drawn — that would sheathe.
-	function M.ensureWeaponDrawn(timeout: number?): boolean
+	-- Draw weapon via Q (toggle + CD).
+	-- force=true: always press Q once (Kill Aura start / post-sit). Soft "assume drawn"
+	-- must not skip unsheath when the weapon is actually sheathed.
+	function M.ensureWeaponDrawn(timeout: number?, force: boolean?): boolean
 		if M.isSeated() then
 			return false
 		end
@@ -1020,8 +1041,8 @@ return function(S)
 			M.markWeaponDrawn()
 			return true
 		end
-		-- Soft: already think drawn (unknown defaults to drawn while standing)
-		if M.isWeaponDrawn() and S.weaponDrawnKnown ~= false then
+		-- Soft-known drawn and not forced → skip (avoid Q-sheathing an already-out weapon)
+		if not force and S.weaponDrawnKnown == true then
 			return true
 		end
 
@@ -1029,11 +1050,12 @@ return function(S)
 		local eqKey = C.WEAPON_EQUIP_KEY or Enum.KeyCode.Q
 
 		if toggleCooldownOk(S.lastWeaponToggleAt) then
-			M.setStatus("[stance] Q → draw weapon")
+			M.setStatus("[stance] Q → unsheath/draw")
 			M.pressKey(eqKey)
 			S.lastWeaponToggleAt = os.clock()
-			-- After a deliberate draw press, trust drawn (game has no Tool signal)
 			M.markWeaponDrawn()
+		else
+			M.setStatus("[stance] Q on cooldown — wait draw…")
 		end
 
 		local t0 = os.clock()
@@ -1070,7 +1092,8 @@ return function(S)
 				return true
 			end
 		end
-		return M.isWeaponDrawn()
+		-- No hard signal in this game — after forced Q we treat as drawn
+		return force == true or S.weaponDrawnKnown == true or M.isWeaponDrawn()
 	end
 
 	M.ensureWeaponEquipped = M.ensureWeaponDrawn -- alias for older callers
