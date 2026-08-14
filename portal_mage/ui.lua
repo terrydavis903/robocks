@@ -257,7 +257,7 @@ return function(S)
 		end)
 		parentGui(gui)
 
-		local PANEL_W, PANEL_H = 432, 720 -- ~20% wider than 360
+		local PANEL_W, PANEL_H = 500, 740
 		local frame = Instance.new("Frame")
 		frame.Name = "Panel"
 		frame.Size = UDim2.fromOffset(PANEL_W, PANEL_H)
@@ -1049,19 +1049,19 @@ return function(S)
 		---------------------------------------------------------------------------
 		local configPage = tabs.Config
 		local TIER_COUNT = (S.ClawPriority and S.ClawPriority.TIER_COUNT) or 10
-		-- Fixed pixel sizes avoid ScrollingFrame canvas-X=0 scale bugs (misplaced +/x)
-		local CFG_ROW_H = 28
-		local CFG_HDR_H = 30
-		local CFG_BTN = 26
-		local CFG_GAP = 4
-		local CFG_PAD = 8
+		-- All pixel sizes (no scale). Large hit targets so hover matches the box.
+		local CFG_ROW_H = 36
+		local CFG_HDR_H = 38
+		local CFG_BTN = 34
+		local CFG_GAP = 6
+		local CFG_PAD = 10
 
 		local cfgHint = Instance.new("TextLabel")
-		cfgHint.Size = UDim2.new(1, -16, 0, 40)
+		cfgHint.Size = UDim2.new(1, -16, 0, 44)
 		cfgHint.Position = UDim2.fromOffset(8, 4)
 		cfgHint.BackgroundTransparency = 1
 		cfgHint.Font = Enum.Font.Gotham
-		cfgHint.TextSize = 13
+		cfgHint.TextSize = 15
 		cfgHint.TextColor3 = Color3.fromRGB(150, 155, 175)
 		cfgHint.TextXAlignment = Enum.TextXAlignment.Left
 		cfgHint.TextYAlignment = Enum.TextYAlignment.Top
@@ -1070,11 +1070,11 @@ return function(S)
 		cfgHint.Parent = configPage
 
 		local othersLab = Instance.new("TextLabel")
-		othersLab.Size = UDim2.new(1, -16, 0, 18)
-		othersLab.Position = UDim2.fromOffset(8, 44)
+		othersLab.Size = UDim2.new(1, -16, 0, 20)
+		othersLab.Position = UDim2.fromOffset(8, 48)
 		othersLab.BackgroundTransparency = 1
 		othersLab.Font = Enum.Font.GothamBold
-		othersLab.TextSize = 13
+		othersLab.TextSize = 15
 		othersLab.TextColor3 = Color3.fromRGB(200, 170, 100)
 		othersLab.TextXAlignment = Enum.TextXAlignment.Left
 		othersLab.Text = "Others → T?"
@@ -1082,8 +1082,8 @@ return function(S)
 
 		local cfgScroll = Instance.new("ScrollingFrame")
 		cfgScroll.Name = "ClawPriorityScroll"
-		cfgScroll.Size = UDim2.new(1, -12, 1, -70)
-		cfgScroll.Position = UDim2.fromOffset(6, 66)
+		cfgScroll.Size = UDim2.new(1, -12, 1, -76)
+		cfgScroll.Position = UDim2.fromOffset(6, 72)
 		cfgScroll.BackgroundColor3 = Color3.fromRGB(26, 26, 34)
 		cfgScroll.BorderSizePixel = 0
 		cfgScroll.ScrollBarThickness = 6
@@ -1217,12 +1217,24 @@ return function(S)
 			rebuildTierUi()
 		end
 
-		-- Right-aligned control using AnchorPoint (stable, no scale-from-zero canvas)
-		local function placeRightBtn(btn: GuiObject, size: number, midY: number, inset: number?)
-			local pad = inset or 2
-			btn.AnchorPoint = Vector2.new(1, 0.5)
-			btn.Position = UDim2.new(1, -pad, 0, midY)
+		-- Absolute left/top pixel placement only (no UDim scale / AnchorPoint right tricks)
+		local function mkCfgBtn(parent: Instance, x: number, y: number, size: number, text: string, color: Color3): TextButton
+			local btn = Instance.new("TextButton")
 			btn.Size = UDim2.fromOffset(size, size)
+			btn.Position = UDim2.fromOffset(x, y)
+			btn.BackgroundColor3 = color
+			btn.BorderSizePixel = 0
+			btn.Font = Enum.Font.GothamBold
+			btn.TextSize = math.floor(size * 0.55)
+			btn.TextColor3 = Color3.new(1, 1, 1)
+			btn.Text = text
+			btn.AutoButtonColor = true
+			btn.Active = true
+			btn.Selectable = false
+			btn.ZIndex = 5
+			btn.Parent = parent
+			corner(btn, 6)
+			return btn
 		end
 
 		rebuildTierUi = function()
@@ -1250,43 +1262,45 @@ return function(S)
 				block.Position = UDim2.fromOffset(CFG_PAD, y)
 				block.BackgroundColor3 = Color3.fromRGB(32, 32, 42)
 				block.BorderSizePixel = 0
+				block.ClipsDescendants = false
 				block.Parent = cfgList
-				corner(block, 5)
+				corner(block, 6)
 
 				local innerW = width - CFG_PAD * 4
 				local rowY = CFG_PAD
+				local btnX = innerW - CFG_BTN
 
 				-- Header
 				local header = Instance.new("Frame")
 				header.Size = UDim2.fromOffset(innerW, CFG_HDR_H)
 				header.Position = UDim2.fromOffset(CFG_PAD, rowY)
 				header.BackgroundTransparency = 1
+				header.ClipsDescendants = false
 				header.Parent = block
 
 				local titleLab = Instance.new("TextLabel")
-				titleLab.Size = UDim2.new(1, -(CFG_BTN + 8), 1, 0)
+				titleLab.Size = UDim2.fromOffset(math.max(btnX - 8, 40), CFG_HDR_H)
 				titleLab.Position = UDim2.fromOffset(2, 0)
 				titleLab.BackgroundTransparency = 1
 				titleLab.Font = Enum.Font.GothamBold
-				titleLab.TextSize = 14
+				titleLab.TextSize = 16
 				titleLab.TextColor3 = Color3.fromRGB(200, 205, 230)
 				titleLab.TextXAlignment = Enum.TextXAlignment.Left
 				titleLab.TextYAlignment = Enum.TextYAlignment.Center
+				titleLab.Active = false
+				titleLab.ZIndex = 1
 				local emptyMark = (#keys == 0) and "  · empty" or string.format("  (%d)", #keys)
 				titleLab.Text = "Tier " .. t .. emptyMark
 				titleLab.Parent = header
 
-				local addBtn = Instance.new("TextButton")
-				addBtn.BackgroundColor3 = Color3.fromRGB(50, 110, 80)
-				addBtn.BorderSizePixel = 0
-				addBtn.Font = Enum.Font.GothamBold
-				addBtn.TextSize = 18
-				addBtn.TextColor3 = Color3.new(1, 1, 1)
-				addBtn.Text = "+"
-				addBtn.AutoButtonColor = true
-				addBtn.Parent = header
-				placeRightBtn(addBtn, CFG_BTN, CFG_HDR_H / 2, 0)
-				corner(addBtn, 5)
+				local addBtn = mkCfgBtn(
+					header,
+					btnX,
+					math.floor((CFG_HDR_H - CFG_BTN) / 2),
+					CFG_BTN,
+					"+",
+					Color3.fromRGB(50, 110, 80)
+				)
 				addBtn.MouseButton1Click:Connect(function()
 					if openAddTier == t then
 						openAddTier = nil
@@ -1305,21 +1319,21 @@ return function(S)
 					addRow.BackgroundTransparency = 1
 					addRow.Parent = block
 
-					local addW = 52
+					local addW = 64
 					local box = Instance.new("TextBox")
-					box.Size = UDim2.fromOffset(innerW - addW - 6, CFG_ROW_H)
+					box.Size = UDim2.fromOffset(innerW - addW - 8, CFG_ROW_H)
 					box.Position = UDim2.fromOffset(0, 0)
 					box.BackgroundColor3 = Color3.fromRGB(22, 22, 30)
 					box.BorderSizePixel = 0
 					box.Font = Enum.Font.Gotham
-					box.TextSize = 13
+					box.TextSize = 15
 					box.TextColor3 = Color3.new(1, 1, 1)
 					box.PlaceholderText = "keyword…"
 					box.PlaceholderColor3 = Color3.fromRGB(100, 100, 120)
 					box.Text = ""
 					box.ClearTextOnFocus = false
 					box.Parent = addRow
-					corner(box, 4)
+					corner(box, 5)
 
 					local okBtn = Instance.new("TextButton")
 					okBtn.Size = UDim2.fromOffset(addW, CFG_ROW_H)
@@ -1327,11 +1341,13 @@ return function(S)
 					okBtn.BackgroundColor3 = Color3.fromRGB(55, 100, 150)
 					okBtn.BorderSizePixel = 0
 					okBtn.Font = Enum.Font.GothamMedium
-					okBtn.TextSize = 13
+					okBtn.TextSize = 14
 					okBtn.TextColor3 = Color3.new(1, 1, 1)
 					okBtn.Text = "Add"
+					okBtn.AutoButtonColor = true
+					okBtn.ZIndex = 5
 					okBtn.Parent = addRow
-					corner(okBtn, 4)
+					corner(okBtn, 5)
 
 					local function commit()
 						addKeywordToTier(t, box.Text)
@@ -1357,32 +1373,32 @@ return function(S)
 					row.Position = UDim2.fromOffset(CFG_PAD, rowY)
 					row.BackgroundColor3 = Color3.fromRGB(40, 40, 52)
 					row.BorderSizePixel = 0
+					row.ClipsDescendants = false
 					row.Parent = block
-					corner(row, 4)
+					corner(row, 5)
 
 					local keyLab = Instance.new("TextLabel")
-					keyLab.Size = UDim2.new(1, -(CFG_BTN + 12), 1, 0)
-					keyLab.Position = UDim2.fromOffset(8, 0)
+					keyLab.Size = UDim2.fromOffset(math.max(btnX - 12, 40), CFG_ROW_H)
+					keyLab.Position = UDim2.fromOffset(10, 0)
 					keyLab.BackgroundTransparency = 1
 					keyLab.Font = Enum.Font.Code
-					keyLab.TextSize = 13
+					keyLab.TextSize = 15
 					keyLab.TextColor3 = Color3.fromRGB(210, 210, 225)
 					keyLab.TextXAlignment = Enum.TextXAlignment.Left
 					keyLab.TextYAlignment = Enum.TextYAlignment.Center
 					keyLab.Text = key
+					keyLab.Active = false
+					keyLab.ZIndex = 1
 					keyLab.Parent = row
 
-					local xBtn = Instance.new("TextButton")
-					xBtn.BackgroundColor3 = Color3.fromRGB(120, 50, 55)
-					xBtn.BorderSizePixel = 0
-					xBtn.Font = Enum.Font.GothamBold
-					xBtn.TextSize = 14
-					xBtn.TextColor3 = Color3.new(1, 1, 1)
-					xBtn.Text = "×"
-					xBtn.AutoButtonColor = true
-					xBtn.Parent = row
-					placeRightBtn(xBtn, CFG_BTN - 2, CFG_ROW_H / 2, 4)
-					corner(xBtn, 5)
+					local xBtn = mkCfgBtn(
+						row,
+						btnX,
+						math.floor((CFG_ROW_H - CFG_BTN) / 2),
+						CFG_BTN,
+						"×",
+						Color3.fromRGB(120, 50, 55)
+					)
 					xBtn.MouseButton1Click:Connect(function()
 						removeKeyword(t, key)
 					end)
