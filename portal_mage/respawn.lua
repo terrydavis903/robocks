@@ -215,15 +215,20 @@ return function(S)
 		return full
 	end
 
-	-- Z once → wait full → Z once → wait → Q  (shared by respawn + low-mana recover)
+	-- Z once → wait full → Z once → wait → Q/equip weapon  (respawn + low-mana)
+	-- While zRegenBusy, Kill Aura pathing/combat must hard-idle (sitting, no weapon).
 	function M.runZRegenSequence(statusPrefix: string?): boolean
 		if S.zRegenBusy then
 			return false
 		end
 		S.zRegenBusy = true
+		-- Freeze walk/combat ownership while recovering
+		if U.releaseMoveKeys then
+			U.releaseMoveKeys()
+		end
 		local prefix = statusPrefix or "Z-regen"
 		local ok, err = pcall(function()
-			U.setStatus(prefix .. ": Z (enter recover)")
+			U.setStatus(prefix .. ": Z (enter recover / sit)")
 			pcall(function()
 				U.pressKey(Enum.KeyCode.Z)
 			end)
@@ -235,11 +240,23 @@ return function(S)
 				U.pressKey(Enum.KeyCode.Z)
 			end)
 			task.wait(C.RESPAWN_AFTER_MAX_WAIT or 0.5)
-			U.setStatus(prefix .. ": Q")
+
+			-- Stand + draw weapon before Kill Aura may move again
+			if U.standUp then
+				U.standUp()
+			end
+			U.setStatus(prefix .. ": equip weapon (Q / tool)")
 			pcall(function()
-				U.pressKey(Enum.KeyCode.Q)
+				U.pressKey(C.WEAPON_EQUIP_KEY or Enum.KeyCode.Q)
 			end)
-			U.setStatus(prefix .. ": done")
+			task.wait(C.RESPAWN_POST_EQUIP_WAIT or 0.45)
+			if U.ensureWeaponEquipped then
+				U.ensureWeaponEquipped()
+			end
+			if U.standUp then
+				U.standUp()
+			end
+			U.setStatus(prefix .. ": done (standing, weapon)")
 		end)
 		if not ok then
 			U.setStatus(prefix .. " error: " .. tostring(err))
@@ -273,15 +290,32 @@ return function(S)
 		S.resourceRecoverPhase = nil
 		S.holdTarget = nil
 		S.waitAllCds = false -- death cleared CDs; reloop immediately after resume
+		if S.Abilities and S.Abilities.clearSyntheticCds then
+			S.Abilities.clearSyntheticCds()
+		else
+			S.slotCdUntil = {}
+			S.lastCastAt = 0
+			S.lastCastSlot = nil
+		end
 
 		if not shouldResumeWalk then
 			S.respawnResumeWalk = false
 			return
 		end
 
-		-- Walk+Atk was active: resume only after Z→Z→Q fully finished
+		-- Kill Aura was active: resume only after Z→Z→Q + stand + weapon
 		S.respawnResumeWalk = false
 		if S.walking then
+			return
+		end
+
+		if U.isSeated and U.isSeated() then
+			if U.standUp then
+				U.standUp()
+			end
+		end
+		if U.ensureWeaponEquipped and not U.ensureWeaponEquipped() then
+			U.setStatus("Auto-respawn done — weapon equip failed; enable Kill Aura manually")
 			return
 		end
 
@@ -298,7 +332,7 @@ return function(S)
 			end
 		end
 
-		U.setStatus("Auto-respawn done — resuming Walk+Atk…")
+		U.setStatus("Auto-respawn done — resuming Kill Aura…")
 		if S.Pathing and S.Pathing.toggleWalk then
 			S.Pathing.toggleWalk()
 		end
@@ -319,7 +353,7 @@ return function(S)
 		end
 		lastRespawnClickAt = now
 
-		-- If Walk+Atk was running, stop it until Z→Z→Q completes.
+		-- If Kill Aura was running, stop it until Z→Z→Q + equip completes.
 		-- Death resets ability CDs — do not waitAllCds after respawn.
 		if S.walking then
 			S.respawnResumeWalk = true
@@ -327,11 +361,17 @@ return function(S)
 			S.combatBusy = false
 			S.waitAllCds = false
 			S.holdTarget = nil
+			if U.releaseMoveKeys then
+				U.releaseMoveKeys()
+			end
 			S.ui.setWalkLabel(false)
-			U.setStatus("Auto-respawn: Walk+Atk paused — clicking Respawn")
+			U.setStatus("Auto-respawn: Kill Aura paused — clicking Respawn")
 		else
 			S.waitAllCds = false
 			U.setStatus("Auto-respawn: clicking Respawn")
+		end
+		if S.Abilities and S.Abilities.clearSyntheticCds then
+			S.Abilities.clearSyntheticCds()
 		end
 
 		pcall(function()

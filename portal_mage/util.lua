@@ -683,6 +683,155 @@ return function(S)
 		return char:FindFirstChildOfClass("Humanoid")
 	end
 
+	---------------------------------------------------------------------------
+	-- Sit / weapon readiness (Kill Aura must not walk while seated or unarmed)
+	---------------------------------------------------------------------------
+
+	function M.isSeated(): boolean
+		local hum = M.getHumanoid()
+		if not hum then
+			return false
+		end
+		if hum.Sit == true then
+			return true
+		end
+		local ok, seat = pcall(function()
+			return hum.SeatPart
+		end)
+		return ok and seat ~= nil
+	end
+
+	function M.standUp(): boolean
+		local hum = M.getHumanoid()
+		if not hum then
+			return false
+		end
+		pcall(function()
+			hum.Sit = false
+			hum.PlatformStand = false
+		end)
+		-- Jump nudge if still glued to a seat
+		if M.isSeated() then
+			pcall(function()
+				hum.Jump = true
+			end)
+			task.wait(0.12)
+			pcall(function()
+				hum.Sit = false
+				hum.Jump = false
+			end)
+		end
+		return not M.isSeated()
+	end
+
+	function M.getEquippedTools(): { Tool }
+		local out: { Tool } = {}
+		local lp = Players.LocalPlayer
+		local char = lp and lp.Character
+		if not char then
+			return out
+		end
+		for _, c in ipairs(char:GetChildren()) do
+			if c:IsA("Tool") then
+				table.insert(out, c)
+			end
+		end
+		return out
+	end
+
+	function M.hasWeaponEquipped(): boolean
+		return #M.getEquippedTools() > 0
+	end
+
+	local function toolPreferScore(tool: Tool): number
+		local n = string.lower(tool.Name)
+		local kws = C.WEAPON_NAME_KEYWORDS or {}
+		for i, kw in ipairs(kws) do
+			if type(kw) == "string" and kw ~= "" and string.find(n, string.lower(kw), 1, true) then
+				return i
+			end
+		end
+		return 1000
+	end
+
+	function M.ensureWeaponEquipped(): boolean
+		if M.hasWeaponEquipped() then
+			return true
+		end
+		local lp = Players.LocalPlayer
+		if not lp then
+			return false
+		end
+		local hum = M.getHumanoid()
+		local bp = lp:FindFirstChildOfClass("Backpack")
+		local candidates: { Tool } = {}
+		if bp then
+			for _, t in ipairs(bp:GetChildren()) do
+				if t:IsA("Tool") then
+					table.insert(candidates, t)
+				end
+			end
+		end
+		table.sort(candidates, function(a, b)
+			return toolPreferScore(a) < toolPreferScore(b)
+		end)
+
+		if hum and #candidates > 0 then
+			pcall(function()
+				hum:EquipTool(candidates[1])
+			end)
+			task.wait(C.WEAPON_EQUIP_WAIT or 0.35)
+			if M.hasWeaponEquipped() then
+				return true
+			end
+		end
+
+		-- Game "draw weapon" after sit-recover (same as post-Z Q)
+		local eqKey = C.WEAPON_EQUIP_KEY or Enum.KeyCode.Q
+		M.pressKey(eqKey)
+		task.wait(C.WEAPON_EQUIP_WAIT or 0.35)
+		if M.hasWeaponEquipped() then
+			return true
+		end
+
+		-- Retry any backpack tool
+		if hum and #candidates > 0 then
+			for _, t in ipairs(candidates) do
+				pcall(function()
+					hum:EquipTool(t)
+				end)
+				task.wait(0.2)
+				if M.hasWeaponEquipped() then
+					return true
+				end
+			end
+		end
+		return M.hasWeaponEquipped()
+	end
+
+	-- True when Kill Aura must idle (respawn Z-loop, sit-recover, dead, unarmed).
+	-- reason string for status/logs.
+	function M.killAuraBlocked(): (boolean, string?)
+		if S.zRegenBusy then
+			return true, "z_regen"
+		end
+		if S.resourceRecoverPhase == "regen" then
+			return true, "mana_regen"
+		end
+		-- Death UI / no living character
+		local hum = M.getHumanoid()
+		if not hum or hum.Health <= 0 then
+			return true, "dead"
+		end
+		if M.isSeated() then
+			return true, "sitting"
+		end
+		if not M.hasWeaponEquipped() then
+			return true, "no_weapon"
+		end
+		return false, nil
+	end
+
 	function M.applyWalkSpeed(speed: number?): boolean
 		local hum = M.getHumanoid()
 		if not hum then

@@ -103,7 +103,8 @@ return function(S)
 		return tonumber(cleaned)
 	end
 
-	function M.getCooldownRemaining(slot: number): number
+	-- UI-only CD (CooldownTimer label). 0 if hidden / unreadable.
+	function M.getUiCooldownRemaining(slot: number): number
 		local frame = M.getSlotFrame(slot)
 		local timer = frame and frame:FindFirstChild("CooldownTimer")
 		if not (timer and timer:IsA("TextLabel")) then
@@ -119,17 +120,64 @@ return function(S)
 		return math.max(0, secs)
 	end
 
+	-- Effective CD = max(UI timer, synthetic post-cast floor, overlay hint).
+	-- Synthetic covers CooldownTimer lag that used to re-arm and spam toggles.
+	function M.getCooldownRemaining(slot: number): number
+		local ui = M.getUiCooldownRemaining(slot)
+		local syn = 0
+		local untilT = S.slotCdUntil and S.slotCdUntil[slot]
+		if type(untilT) == "number" then
+			syn = math.max(0, untilT - os.clock())
+			if syn <= 0.05 then
+				S.slotCdUntil[slot] = nil
+				syn = 0
+			end
+		end
+		local overlayBump = 0
+		local frame = M.getSlotFrame(slot)
+		local overlay = frame and frame:FindFirstChild("CooldownOverlay")
+		if overlay and overlay:IsA("GuiObject") and overlay.Visible == true then
+			if ui < 0.25 and syn < 0.25 then
+				overlayBump = 0.45
+			end
+		end
+		return math.max(ui, syn, overlayBump)
+	end
+
 	M.getSlotCooldownRemaining = M.getCooldownRemaining
 
+	-- After a cast: remember CD so we don't re-arm before UI updates.
+	function M.noteCastCooldown(slot: number?, handler: any?)
+		if type(slot) ~= "number" then
+			return
+		end
+		task.wait(0.2)
+		local ui = M.getUiCooldownRemaining(slot)
+		local minCd = (handler and tonumber(handler.minCd)) or C.ABILITY_MIN_CD or 1.5
+		local lock = C.CAST_LOCKOUT or 0.85
+		local rem = math.max(ui, minCd, lock)
+		S.slotCdUntil = S.slotCdUntil or {}
+		S.slotCdUntil[slot] = os.clock() + rem
+		S.lastCastAt = os.clock()
+		S.lastCastSlot = slot
+	end
+
+	function M.clearSyntheticCds()
+		S.slotCdUntil = {}
+		S.lastCastAt = 0
+		S.lastCastSlot = nil
+	end
+
 	function M.isSlotReady(slot: number): boolean
-		return M.getCooldownRemaining(slot) <= 0
+		return M.getCooldownRemaining(slot) <= 0.35
 	end
 
 	function M.isHandlerReady(handler): boolean
 		if not handler or not handler.slot then
 			return false
 		end
-		return M.isSlotReady(handler.slot) or M.isSlotOn(handler.slot)
+		-- ON-diamond does not mean ready — CD can still be running
+		return M.isSlotReady(handler.slot)
 	end
 
 	-- Unique slots used by COMBAT_HANDLERS (meteor 1, aqua 4, …)
@@ -146,9 +194,34 @@ return function(S)
 		return out
 	end
 
-	-- True when every combat-schema slot is off cooldown (ready to reloop).
-	function M.allCombatCdsReady(): boolean
+	-- Slots that currently matter for post-kill wait (active CDs / last cast).
+	function M.activeCooldownSlots(): { number }
+		if C.WAIT_CDS_ONLY_ACTIVE == false then
+			return M.combatSlots()
+		end
+		local seen = {}
+		local out = {}
+		local function add(slot: number?)
+			if type(slot) == "number" and not seen[slot] then
+				seen[slot] = true
+				table.insert(out, slot)
+			end
+		end
+		add(S.lastCastSlot)
 		for _, slot in ipairs(M.combatSlots()) do
+			if M.getCooldownRemaining(slot) > 0.35 then
+				add(slot)
+			end
+		end
+		if #out == 0 then
+			return M.combatSlots()
+		end
+		return out
+	end
+
+	-- True when relevant combat CDs are ready (reloop after kill).
+	function M.allCombatCdsReady(): boolean
+		for _, slot in ipairs(M.activeCooldownSlots()) do
 			if M.getCooldownRemaining(slot) > 0.35 then
 				return false
 			end
@@ -158,7 +231,7 @@ return function(S)
 
 	function M.maxCombatCdRemaining(): number
 		local best = 0
-		for _, slot in ipairs(M.combatSlots()) do
+		for _, slot in ipairs(M.activeCooldownSlots()) do
 			local r = M.getCooldownRemaining(slot)
 			if r > best then
 				best = r
@@ -360,9 +433,12 @@ return function(S)
 		if not Targets.isAlive(model) and Targets.clearHold then
 			Targets.clearHold("post_cast_dead")
 		end
-		-- Post-cast lockout: CooldownTimer often lags 0.3–1s after E; without this
-		-- combat re-enters cast and re-toggles 1/4 before CD UI updates.
-		S.lastCastAt = os.clock()
+		-- Synthetic + UI CD so we never re-arm while timer is still catching up
+		if ok then
+			M.noteCastCooldown(handler.slot, handler)
+		else
+			S.lastCastAt = os.clock()
+		end
 		S.combatBusy = false
 		return ok == true
 	end

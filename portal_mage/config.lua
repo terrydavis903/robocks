@@ -4,7 +4,15 @@ return {
 	HOLD_DURATION = 6,
 	SLOT_SELECT_WAIT = 0.55, -- max wait for diamond after ONE arm press (never double-tap)
 	SLOT_FIRE_SETTLE = 0.12, -- pause after arm before E so toggle registers
-	CAST_LOCKOUT = 0.85, -- min seconds between casts (CooldownTimer UI lag)
+	CAST_LOCKOUT = 0.85, -- min settle after cast even if UI timer still 0
+	ABILITY_MIN_CD = 1.5, -- synthetic CD floor after cast when CooldownTimer lags
+	-- After kill: wait only slots that were used / still show CD (not every idle slot)
+	WAIT_CDS_ONLY_ACTIVE = true,
+
+	-- Weapon equip (Kill Aura + post Z→Z→Q). Q is game "draw weapon" after sit-recover.
+	WEAPON_EQUIP_KEY = Enum.KeyCode.Q,
+	WEAPON_EQUIP_WAIT = 0.4,
+	WEAPON_NAME_KEYWORDS = { "staff", "wand", "tome", "sword", "blade", "bow", "weapon", "mage", "rod" },
 
 	DUMP_DIR = "dumps",
 	WAYPOINT_DIR = "waypoints",
@@ -112,6 +120,7 @@ return {
 	RESPAWN_Z_POLL_INTERVAL = 0.35, -- poll HP/MP while recovering (no extra Z spam)
 	RESPAWN_Z_MAX_SECONDS = 90, -- safety cap waiting for full HP/MP
 	RESPAWN_AFTER_MAX_WAIT = 0.5, -- after second Z, before Q
+	RESPAWN_POST_EQUIP_WAIT = 0.45, -- after Q / EquipTool before resuming Kill Aura
 
 	-- Low mana: stop fighting, kite until reds clear, then Z regen
 	MANA_RECOVER_FRACTION = 0.20, -- enter recover when mp/maxMp below this

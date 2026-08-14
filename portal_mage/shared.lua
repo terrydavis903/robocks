@@ -38,10 +38,12 @@ S.walkThread = nil
 S.combatThread = nil
 S.Nav = nil :: any
 S.combatBusy = false -- true only while a handler is mid-cast
-S.lastCastAt = 0 -- os.clock() of last cast (UI CD lag lockout)
+S.lastCastAt = 0 -- os.clock() of last cast
+S.lastCastSlot = nil :: number? -- slot used by last cast
+S.slotCdUntil = {} :: { [number]: number } -- synthetic CD end times (UI lag)
 S.holdTarget = nil :: Model? -- single shared focus (targets + pathing + combat)
 S.combatPhase = "fight" :: string
--- After a kill: wait until all combat-schema CDs are ready before picking next enemy.
+-- After a kill: wait until combat-schema CDs are ready before picking next enemy.
 -- Player death/respawn clears this (death resets CDs).
 S.waitAllCds = false
 -- Barrel: open with meteor once, then aqua

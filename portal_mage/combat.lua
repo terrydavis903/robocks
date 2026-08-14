@@ -155,31 +155,38 @@ return function(S)
 			return
 		end
 
-		-- After a kill: wait for ALL combat-schema CDs before reloop.
-		-- (Player death clears waitAllCds — death resets CDs.)
+		-- Respawn Z-loop / sit / dead — never cast
+		if U.killAuraBlocked then
+			local blocked, why = U.killAuraBlocked()
+			if blocked then
+				if why == "sitting" and not S.zRegenBusy and U.standUp then
+					U.standUp()
+				elseif why == "no_weapon" and U.ensureWeaponEquipped then
+					U.setStatus("[fight] equip weapon…")
+					U.ensureWeaponEquipped()
+				else
+					U.setStatus(string.format("[fight] paused (%s)", tostring(why)))
+					task.wait(0.15)
+				end
+				return
+			end
+		end
+
+		-- After a kill: wait active CDs before reloop (death clears waitAllCds).
 		if S.waitAllCds then
 			T().clearHold("wait_cds")
 			if A().allCombatCdsReady() then
 				S.waitAllCds = false
-				U.setStatus("[cds] all ready — reloop")
+				U.setStatus("[cds] ready — reloop")
 				task.wait(0.05)
 				return
 			end
 			U.setStatus(string.format(
-				"[cds] wait all ready… max %.1fs | %s",
+				"[cds] wait… max %.1fs | %s",
 				A().maxCombatCdRemaining(),
 				A().formatCds()
 			))
 			task.wait(0.15)
-			return
-		end
-
-		-- Grace after any cast while CooldownTimer UI catches up (avoids re-arm spam)
-		local lockout = C.CAST_LOCKOUT or 0.85
-		if type(S.lastCastAt) == "number" and (os.clock() - S.lastCastAt) < lockout then
-			local left = lockout - (os.clock() - S.lastCastAt)
-			U.setStatus(string.format("[fight] cast settle %.1fs…", left))
-			task.wait(math.min(0.12, left))
 			return
 		end
 
@@ -206,7 +213,6 @@ return function(S)
 		end
 
 		-- Cast whenever mob is within reach — including when they close in on us.
-		-- (Old minFight gate refused casts while pathing tried slow A* kite.)
 		local maxFight = range + sticky + 10 -- e.g. ~45
 		if dist > maxFight then
 			U.setStatus(string.format("[fight] wait approach d=%.1f | %s", dist, hold.Name))
@@ -242,7 +248,7 @@ return function(S)
 		if not T().isAlive(hold) then
 			T().clearHold("killed")
 			S.waitAllCds = true
-			U.setStatus("[fight] target down — wait all CDs then reloop")
+			U.setStatus("[fight] target down — wait CDs then reloop")
 		end
 	end
 

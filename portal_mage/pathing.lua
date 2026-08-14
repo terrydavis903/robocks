@@ -305,11 +305,45 @@ return function(S)
 					return
 				end
 
+				-- Respawn Z-loop / mana sit-recover: hard stop (no MoveTo while seated)
 				if S.resourceRecoverPhase == "regen" or S.zRegenBusy then
 					stopMove()
 					clearLock()
+					U.setStatus("[path] paused — recover (Z loop)")
 					task.wait(0.15)
 					return
+				end
+
+				-- Sit / dead / no weapon: fix or wait (never path while seated/unarmed)
+				if U.killAuraBlocked then
+					local blocked, why = U.killAuraBlocked()
+					if blocked then
+						stopMove()
+						clearLock()
+						if why == "sitting" then
+							U.setStatus("[path] seated — standing…")
+							if U.standUp then
+								U.standUp()
+							end
+							task.wait(0.2)
+							return
+						elseif why == "no_weapon" then
+							U.setStatus("[path] equip weapon…")
+							if U.ensureWeaponEquipped then
+								U.ensureWeaponEquipped()
+							end
+							task.wait(0.2)
+							return
+						elseif why == "dead" then
+							U.setStatus("[path] dead — wait respawn")
+							task.wait(0.25)
+							return
+						else
+							U.setStatus(string.format("[path] paused (%s)", tostring(why)))
+							task.wait(0.15)
+							return
+						end
+					end
 				end
 
 				if S.waitAllCds then
@@ -497,6 +531,19 @@ return function(S)
 			return
 		end
 
+		-- Never start while seated / recovering; stand + draw weapon first
+		if U.standUp then
+			U.standUp()
+		end
+		if U.isSeated and U.isSeated() then
+			U.setStatus("Kill Aura blocked — still seated (finish Z recover)")
+			return
+		end
+		if U.ensureWeaponEquipped and not U.ensureWeaponEquipped() then
+			U.setStatus("Kill Aura blocked — equip a weapon (tool / Q)")
+			return
+		end
+
 		clearLock()
 		S.holdTarget = nil
 		S.combatBusy = false
@@ -507,7 +554,7 @@ return function(S)
 		S.ui.setWalkLabel(true)
 
 		U.setStatus(string.format(
-			"Kill Aura ON — PFS path lock, stand@%d | Path Viz + dumps/killaura_*.log",
+			"Kill Aura ON — stand@%d | weapon ready | dumps/killaura_*.log",
 			T().fightRange()
 		))
 
