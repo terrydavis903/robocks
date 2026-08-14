@@ -1,51 +1,42 @@
 # robocks
 
-Roblox executor scripts (Portal Mage / kill aura, claw, dumps).
+Roblox executor scripts (Portal Mage).
 
-## Load (executor)
+## Load
 
 ```lua
 loadstring(game:HttpGet("https://raw.githubusercontent.com/terrydavis903/robocks/main/loader.lua"))()
 ```
 
-That pulls `portal_mage.lua` + every module under `portal_mage/` from this repo.
+If that freezes, try once after a rejoin (first run downloads ~15 modules).
 
-### Options (set before loadstring)
+### Local-only (no GitHub)
+
+Put `portal_mage.lua` + `portal_mage/*.lua` in the executor workspace and run `portal_mage.lua`,  
+**or** set before loading:
 
 ```lua
-getgenv().ROBOCKS_BRANCH = "main"   -- branch
-getgenv().ROBOCKS_CACHE  = true     -- write modules to workspace/robocks/ (default true)
-getgenv().ROBOCKS_OFFLINE = false   -- true = only local isfile/readfile, no HttpGet
+getgenv().ROBOCKS_OFFLINE = true
 ```
+
+### Options
+
+```lua
+getgenv().ROBOCKS_BRANCH = "main"
+getgenv().ROBOCKS_CACHE  = true   -- save under robocks/portal_mage/
+getgenv().ROBOCKS_OFFLINE = false -- true = never HttpGet modules
+```
+
+## Notes
+
+- Loader runs bootstrap in `task.spawn` so loads can `task.wait` (avoids client freeze).
+- Local `portal_mage.lua` prefers **disk files first**; GitHub loader prefers **remote then cache**.
+- Heavy modules (claw, dump, …) are optional — failure won’t kill the whole boot.
 
 ## Layout
 
 ```
-loader.lua              -- one-line entry (HttpGet bootstrap)
-portal_mage.lua         -- modular bootstrap
-portal_mage/
-  config.lua            -- constants & COMBAT_HANDLERS
-  shared.lua            -- services + state
-  util.lua              -- keys, positions, walk
-  targets.lua           -- mobs, reticle, hold, path pick
-  abilities.lua         -- handlers, slot toggle, cast
-  combat.lua            -- fight loop
-  nav.lua               -- floor A* + path viz
-  pathing.lua           -- Kill Aura walk / kite
-  ui.lua / claw / dump / …
-```
-
-## Local Potassium
-
-Same tree can live under the executor workspace:
-
-```
+loader.lua
 portal_mage.lua
 portal_mage/*.lua
 ```
-
-Or after first remote load, cache at `robocks/portal_mage/`.
-
-## License
-
-Private / personal use unless noted otherwise.

@@ -1,64 +1,78 @@
 --[[
   robocks loader
-  Repo: https://github.com/terrydavis903/robocks
+  https://github.com/terrydavis903/robocks
 
-  Executor usage (one line):
+  Run in executor:
     loadstring(game:HttpGet("https://raw.githubusercontent.com/terrydavis903/robocks/main/loader.lua"))()
-
-  Optional before load:
-    getgenv().ROBOCKS_BRANCH = "main"          -- default main
-    getgenv().ROBOCKS_CACHE  = true            -- write modules under workspace/robocks/ (default true)
-    getgenv().ROBOCKS_OFFLINE = true           -- prefer local cache / scripts only (no HttpGet)
 ]]
 
 local OWNER = "terrydavis903"
 local REPO = "robocks"
-local BRANCH = (getgenv and getgenv().ROBOCKS_BRANCH) or "main"
-local BASE = string.format(
-	"https://raw.githubusercontent.com/%s/%s/%s/",
-	OWNER,
-	REPO,
-	BRANCH
-)
+local BRANCH = "main"
+if getgenv and type(getgenv().ROBOCKS_BRANCH) == "string" and getgenv().ROBOCKS_BRANCH ~= "" then
+	BRANCH = getgenv().ROBOCKS_BRANCH
+end
+
+local BASE = "https://raw.githubusercontent.com/" .. OWNER .. "/" .. REPO .. "/" .. BRANCH .. "/"
 
 if getgenv then
 	getgenv().ROBOCKS_BASE = BASE
 	getgenv().ROBOCKS_OWNER = OWNER
 	getgenv().ROBOCKS_REPO = REPO
 	getgenv().ROBOCKS_BRANCH = BRANCH
+	getgenv().ROBOCKS_FROM_LOADER = true
 end
 
-local function httpGet(url: string): string
-	local body: string? = nil
-	local ok, err = pcall(function()
-		if typeof(game.HttpGet) == "function" then
-			body = game:HttpGet(url)
-		elseif typeof(game.HttpGetAsync) == "function" then
-			body = game:HttpGetAsync(url)
-		else
-			error("HttpGet not available")
+local function httpGet(url)
+	-- Prefer request libraries that some executors need; fall back to game:HttpGet
+	if syn and syn.request then
+		local res = syn.request({ Url = url, Method = "GET" })
+		if res and res.Body and res.StatusCode == 200 then
+			return res.Body
 		end
-	end)
-	if not ok or type(body) ~= "string" or body == "" then
-		error("HttpGet failed: " .. tostring(url) .. " — " .. tostring(err or body))
+		error("syn.request failed: " .. tostring(res and res.StatusCode))
 	end
-	-- GitHub soft-404 HTML
+	if request then
+		local res = request({ Url = url, Method = "GET" })
+		if res and res.Body and (res.StatusCode == 200 or res.StatusCode == nil) then
+			return res.Body
+		end
+	end
+	if http_request then
+		local res = http_request({ Url = url, Method = "GET" })
+		if res and res.Body then
+			return res.Body
+		end
+	end
+	local body = game:HttpGet(url)
+	if type(body) ~= "string" or body == "" then
+		error("HttpGet empty: " .. url)
+	end
 	if string.find(body, "404: Not Found", 1, true) then
-		error("404 Not Found: " .. url)
+		error("404: " .. url)
 	end
 	return body
 end
 
-local function bootstrapUrl(): string
-	return BASE .. "portal_mage.lua"
+local url = BASE .. "portal_mage.lua"
+print("[robocks] fetching " .. url)
+
+local ok, src = pcall(httpGet, url)
+if not ok then
+	error("[robocks] fetch failed: " .. tostring(src))
 end
 
-print(string.format("[robocks] loading portal_mage from %s", bootstrapUrl()))
-
-local src = httpGet(bootstrapUrl())
 local chunk, err = loadstring(src, "@robocks/portal_mage.lua")
 if not chunk then
 	error("[robocks] loadstring failed: " .. tostring(err))
 end
-chunk()
-print("[robocks] portal_mage loaded")
+
+-- Run in a fresh thread so module loads can task.wait (avoids hard freeze/crash)
+task.spawn(function()
+	local okRun, runErr = pcall(chunk)
+	if not okRun then
+		warn("[robocks] portal_mage error: " .. tostring(runErr))
+	else
+		print("[robocks] portal_mage loaded OK")
+	end
+end)

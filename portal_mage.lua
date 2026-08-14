@@ -1,23 +1,24 @@
 --[[
   Portal Mage — modular bootstrap (robocks)
 
-  Prefer loading via loader.lua:
+  Loader:
     loadstring(game:HttpGet("https://raw.githubusercontent.com/terrydavis903/robocks/main/loader.lua"))()
 
-  Modules: portal_mage/*.lua (GitHub raw or local isfile/readfile)
+  Local (no network): put portal_mage.lua + portal_mage/*.lua in executor workspace
+  and execute portal_mage.lua, or set getgenv().ROBOCKS_OFFLINE = true
 ]]
 
+local FROM_LOADER = getgenv and getgenv().ROBOCKS_FROM_LOADER == true
 local OWNER = (getgenv and getgenv().ROBOCKS_OWNER) or "terrydavis903"
 local REPO = (getgenv and getgenv().ROBOCKS_REPO) or "robocks"
 local BRANCH = (getgenv and getgenv().ROBOCKS_BRANCH) or "main"
 local REMOTE_BASE = (getgenv and getgenv().ROBOCKS_BASE)
-	or string.format("https://raw.githubusercontent.com/%s/%s/%s/", OWNER, REPO, BRANCH)
+	or ("https://raw.githubusercontent.com/" .. OWNER .. "/" .. REPO .. "/" .. BRANCH .. "/")
 
-local USE_CACHE = true
-if getgenv and getgenv().ROBOCKS_CACHE == false then
-	USE_CACHE = false
-end
+local USE_CACHE = not (getgenv and getgenv().ROBOCKS_CACHE == false)
 local OFFLINE = getgenv and getgenv().ROBOCKS_OFFLINE == true
+-- Local execution: prefer files on disk. Loader: prefer GitHub, cache after fetch.
+local PREFER_LOCAL = OFFLINE or not FROM_LOADER
 
 local CACHE_ROOTS = {
 	"robocks/portal_mage/",
@@ -26,78 +27,57 @@ local CACHE_ROOTS = {
 	"scripts/portal_mage/",
 }
 
-local MODULE_ORDER_HINT = {
-	"shared",
-	"config",
-	"util",
-	"dump",
-	"targets",
-	"abilities",
-	"combat",
-	"nav",
-	"pathing",
-	"waypoints",
-	"respawn",
-	"proximity",
-	"claw",
-	"farm",
-	"ore",
-	"mesh_outline",
-	"ui",
-}
-
-local function httpGet(url: string): string
-	local body: string? = nil
-	local ok, err = pcall(function()
-		if typeof(game.HttpGet) == "function" then
-			body = game:HttpGet(url)
-		elseif typeof(game.HttpGetAsync) == "function" then
-			body = game:HttpGetAsync(url)
-		else
-			error("HttpGet not available")
+local function httpGet(url)
+	if syn and syn.request then
+		local res = syn.request({ Url = url, Method = "GET" })
+		if res and type(res.Body) == "string" and res.StatusCode == 200 then
+			return res.Body
 		end
-	end)
-	if not ok or type(body) ~= "string" or body == "" then
-		error("HttpGet failed: " .. tostring(url) .. " — " .. tostring(err or body))
+		error("syn.request " .. tostring(res and res.StatusCode))
+	end
+	if request then
+		local res = request({ Url = url, Method = "GET" })
+		if res and type(res.Body) == "string" then
+			return res.Body
+		end
+	end
+	local body = game:HttpGet(url)
+	if type(body) ~= "string" or body == "" then
+		error("HttpGet empty")
 	end
 	if string.find(body, "404: Not Found", 1, true) then
-		error("404 Not Found: " .. url)
+		error("404")
 	end
 	return body
 end
 
-local function ensureDir(path: string)
+local function ensureCacheDirs()
 	if not makefolder then
 		return
 	end
-	local parts = string.split(path, "/")
-	local acc = ""
-	for _, p in ipairs(parts) do
-		if p ~= "" and not string.find(p, "%.lua$") then
-			acc = if acc == "" then p else (acc .. "/" .. p)
-			pcall(function()
-				if isfolder and not isfolder(acc) then
-					makefolder(acc)
-				elseif not isfolder then
-					makefolder(acc)
-				end
-			end)
-		end
-	end
-end
-
-local function cacheWrite(relPath: string, src: string)
-	if not USE_CACHE or not writefile then
-		return
-	end
-	local path = "robocks/portal_mage/" .. relPath
 	pcall(function()
-		ensureDir(path)
-		writefile(path, src)
+		if not isfolder or not isfolder("robocks") then
+			makefolder("robocks")
+		end
+	end)
+	pcall(function()
+		if not isfolder or not isfolder("robocks/portal_mage") then
+			makefolder("robocks/portal_mage")
+		end
 	end)
 end
 
-local function tryReadLocal(relName: string): string?
+local function cacheWrite(relPath, src)
+	if not USE_CACHE or not writefile then
+		return
+	end
+	pcall(function()
+		ensureCacheDirs()
+		writefile("robocks/portal_mage/" .. relPath, src)
+	end)
+end
+
+local function tryReadLocal(relName)
 	if not (isfile and readfile) then
 		return nil
 	end
@@ -107,10 +87,8 @@ local function tryReadLocal(relName: string): string?
 			return isfile(path)
 		end)
 		if ok and exists then
-			local okR, src = pcall(function()
-				return readfile(path)
-			end)
-			if okR and type(src) == "string" and src ~= "" then
+			local okR, src = pcall(readfile, path)
+			if okR and type(src) == "string" and #src > 0 then
 				return src
 			end
 		end
@@ -118,160 +96,170 @@ local function tryReadLocal(relName: string): string?
 	return nil
 end
 
-local function fetchModule(name: string): string
+local function fetchModule(name)
 	local rel = name .. ".lua"
 
-	if OFFLINE then
+	if PREFER_LOCAL then
 		local localSrc = tryReadLocal(rel)
 		if localSrc then
-			return localSrc
+			return localSrc, "local"
 		end
-		error("[portal_mage] offline: missing " .. rel)
+		if OFFLINE then
+			error("[portal_mage] offline missing: " .. rel)
+		end
 	end
 
-	-- Prefer remote (always fresh from GitHub), then fall back to cache/local
+	-- Remote (loader / missing local)
 	local url = REMOTE_BASE .. "portal_mage/" .. rel
-	local ok, srcOrErr = pcall(httpGet, url)
-	if ok and type(srcOrErr) == "string" then
-		cacheWrite(rel, srcOrErr)
-		return srcOrErr
+	local ok, src = pcall(httpGet, url)
+	if ok and type(src) == "string" then
+		cacheWrite(rel, src)
+		return src, "remote"
 	end
 
 	local localSrc = tryReadLocal(rel)
 	if localSrc then
-		warn("[portal_mage] remote fail, using local: " .. rel .. " (" .. tostring(srcOrErr) .. ")")
-		return localSrc
+		warn("[portal_mage] remote fail, local fallback: " .. rel)
+		return localSrc, "local-fallback"
 	end
 
-	error("[portal_mage] module not found: " .. name .. " — " .. tostring(srcOrErr))
+	error("[portal_mage] missing module: " .. name .. " (" .. tostring(src) .. ")")
 end
 
-local function import(name: string)
+local function import(name)
 	local src = fetchModule(name)
+	-- Yield so 17× HttpGet does not freeze/crash the client
+	task.wait()
 	local chunk, err = loadstring(src, "@portal_mage/" .. name .. ".lua")
 	if not chunk then
-		error("load failed portal_mage/" .. name .. ".lua: " .. tostring(err))
+		error("compile failed " .. name .. ": " .. tostring(err))
 	end
-	return chunk()
+	local ok, result = pcall(chunk)
+	if not ok then
+		error("exec failed " .. name .. ": " .. tostring(result))
+	end
+	return result
 end
 
--- 1) shared state + config
+print("[portal_mage] boot prefer_local=" .. tostring(PREFER_LOCAL) .. " base=" .. REMOTE_BASE)
+
+-- 1) shared + config
 local S = import("shared")
+if type(S) ~= "table" then
+	error("shared did not return state table")
+end
 S.Config = import("config")
-
--- 2) leaf modules (factories taking S)
-S.Util = import("util")(S)
-S.Dump = import("dump")(S)
-S.Targets = import("targets")(S)
-S.Abilities = import("abilities")(S)
-S.Combat = import("combat")(S)
-do
-	local okNav, navMod = pcall(function()
-		return import("nav")(S)
-	end)
-	if okNav then
-		S.Nav = navMod
-	else
-		S.Nav = nil
-		warn("[portal_mage] nav module failed to load: " .. tostring(navMod))
-	end
-end
-S.Pathing = import("pathing")(S)
-S.Waypoints = import("waypoints")(S)
-S.Respawn = import("respawn")(S)
-S.Proximity = import("proximity")(S)
-do
-	local okClaw, clawMod = pcall(function()
-		return import("claw")(S)
-	end)
-	if okClaw then
-		S.Claw = clawMod
-	else
-		S.Claw = nil
-		warn("[portal_mage] claw module failed to load: " .. tostring(clawMod))
-	end
-end
-do
-	local okFarm, farmMod = pcall(function()
-		return import("farm")(S)
-	end)
-	if okFarm then
-		S.Farm = farmMod
-	else
-		S.Farm = nil
-		warn("[portal_mage] farm module failed to load: " .. tostring(farmMod))
-	end
-end
-do
-	local okOre, oreMod = pcall(function()
-		return import("ore")(S)
-	end)
-	if okOre then
-		S.Ore = oreMod
-	else
-		S.Ore = nil
-		warn("[portal_mage] ore module failed to load: " .. tostring(oreMod))
-	end
-end
-do
-	local okMesh, meshMod = pcall(function()
-		return import("mesh_outline")(S)
-	end)
-	if okMesh then
-		S.MeshOutline = meshMod
-	else
-		S.MeshOutline = nil
-		warn("[portal_mage] mesh_outline module failed to load: " .. tostring(meshMod))
-	end
-end
-S.UI = import("ui")(S)
-
--- 3) start
-S.UI.build()
-S.Respawn.start()
-S.Util.startAntiAfk() -- default ON; toggle on Bot tab
-S.Proximity.start()
-S.ui.setProxLabel(S.proximityGuardEnabled)
-if S.ui.setAntiAfkLabel then
-	S.ui.setAntiAfkLabel(S.antiAfkEnabled)
-end
-if S.ui.setEmptyPlotLabel then
-	S.ui.setEmptyPlotLabel(S.farmEmptyHighlightEnabled)
-end
-if S.ui.setOreEspLabel then
-	S.ui.setOreEspLabel(S.oreEspEnabled)
-end
-if S.ui.setMeshOutlineLabel then
-	S.ui.setMeshOutlineLabel(S.meshOutlineEnabled)
-end
-if S.ui.setPathVizLabel then
-	S.ui.setPathVizLabel(S.pathVizEnabled == true)
-end
-S.walkSpeedValue = S.Config.WALK_SPEED_DEFAULT or 32
-if S.ui.setWalkSpeedLabel then
-	S.ui.setWalkSpeedLabel(S.walkSpeedEnabled, S.walkSpeedValue)
-end
-if S.ui.setClawBeamLabel then
-	S.ui.setClawBeamLabel(S.clawBeamEnabled)
-end
-if S.ui.setClawPrizeBeamsLabel then
-	S.ui.setClawPrizeBeamsLabel(S.clawPrizeBeamsEnabled)
-end
-if S.ui.setClawBestPrizeLabel then
-	S.ui.setClawBestPrizeLabel(S.clawPrizeBeamsBestOnly)
-end
-if not S.Claw then
-	S.ui.setStatus("Claw module failed to load — check executor console for warn")
-end
-if not S.Nav then
-	S.ui.setStatus("Nav module failed — Kill Aura needs floor pathfinding")
-else
-	S.ui.setStatus("Ready — robocks loader | Kill Aura: path→@30→R→schema→CDs")
+if type(S.Config) ~= "table" then
+	error("config did not return table")
 end
 
--- expose for debug
+local function loadFactory(name)
+	local factory = import(name)
+	if type(factory) ~= "function" then
+		error(name .. " is not a factory")
+	end
+	local ok, mod = pcall(factory, S)
+	if not ok then
+		error(name .. " factory error: " .. tostring(mod))
+	end
+	return mod
+end
+
+local function tryFactory(name)
+	local ok, mod = pcall(loadFactory, name)
+	if ok then
+		return mod
+	end
+	warn("[portal_mage] optional module failed: " .. name .. " — " .. tostring(mod))
+	return nil
+end
+
+-- 2) core modules (required)
+S.Util = loadFactory("util")
+S.Dump = tryFactory("dump")
+S.Targets = loadFactory("targets")
+S.Abilities = loadFactory("abilities")
+S.Combat = loadFactory("combat")
+S.Nav = tryFactory("nav")
+S.Pathing = loadFactory("pathing")
+S.Waypoints = tryFactory("waypoints")
+S.Respawn = loadFactory("respawn")
+S.Proximity = loadFactory("proximity")
+
+-- 3) optional / heavy (claw is large — isolate failures)
+S.Claw = tryFactory("claw")
+S.Farm = tryFactory("farm")
+S.Ore = tryFactory("ore")
+S.MeshOutline = tryFactory("mesh_outline")
+S.UI = loadFactory("ui")
+
+-- 4) start (guarded)
+local function start()
+	S.UI.build()
+	if S.Respawn and S.Respawn.start then
+		S.Respawn.start()
+	end
+	if S.Util and S.Util.startAntiAfk then
+		S.Util.startAntiAfk()
+	end
+	if S.Proximity and S.Proximity.start then
+		S.Proximity.start()
+	end
+
+	if S.ui.setProxLabel then
+		S.ui.setProxLabel(S.proximityGuardEnabled)
+	end
+	if S.ui.setAntiAfkLabel then
+		S.ui.setAntiAfkLabel(S.antiAfkEnabled)
+	end
+	if S.ui.setEmptyPlotLabel then
+		S.ui.setEmptyPlotLabel(S.farmEmptyHighlightEnabled)
+	end
+	if S.ui.setOreEspLabel then
+		S.ui.setOreEspLabel(S.oreEspEnabled)
+	end
+	if S.ui.setMeshOutlineLabel then
+		S.ui.setMeshOutlineLabel(S.meshOutlineEnabled)
+	end
+	if S.ui.setPathVizLabel then
+		S.ui.setPathVizLabel(S.pathVizEnabled == true)
+	end
+	S.walkSpeedValue = (S.Config and S.Config.WALK_SPEED_DEFAULT) or 32
+	if S.ui.setWalkSpeedLabel then
+		S.ui.setWalkSpeedLabel(S.walkSpeedEnabled, S.walkSpeedValue)
+	end
+	if S.ui.setClawBeamLabel then
+		S.ui.setClawBeamLabel(S.clawBeamEnabled)
+	end
+	if S.ui.setClawPrizeBeamsLabel then
+		S.ui.setClawPrizeBeamsLabel(S.clawPrizeBeamsEnabled)
+	end
+	if S.ui.setClawBestPrizeLabel then
+		S.ui.setClawBestPrizeLabel(S.clawPrizeBeamsBestOnly)
+	end
+
+	if not S.Nav then
+		S.ui.setStatus("Nav failed — Kill Aura pathing limited")
+	elseif not S.Claw then
+		S.ui.setStatus("Ready (claw optional failed) — Kill Aura OK")
+	else
+		S.ui.setStatus("Ready — robocks | Kill Aura path→@30→R→schema")
+	end
+end
+
+local okStart, startErr = pcall(start)
+if not okStart then
+	warn("[portal_mage] start failed: " .. tostring(startErr))
+	pcall(function()
+		if S.ui and S.ui.setStatus then
+			S.ui.setStatus("START ERROR: " .. tostring(startErr))
+		end
+	end)
+end
+
 if getgenv then
 	getgenv().PortalMage = S
 end
 
+print("[portal_mage] boot complete")
 return S
