@@ -33,6 +33,18 @@ getgenv().ROBOCKS_OFFLINE = false -- true = never HttpGet modules
 - Local `portal_mage.lua` prefers **disk files first**; GitHub loader prefers **remote then cache**.
 - Heavy modules (claw, dump, …) are optional — failure won’t kill the whole boot.
 
+### Claw prize priority (local override)
+
+Default tiers live in `portal_mage/config.lua` → `CLAW_PRIORITY_KEYWORDS` (lower = better).
+
+To change priorities **without forking GitHub** (e.g. a friend on the loader):
+
+1. Copy `portal_mage/claw_priority.example.lua` → `portal_mage/claw_priority.lua`
+2. Edit `{ key = "...", tier = N }` rows (keep longer keys before shorter substrings)
+3. Reload — console should show `claw_priority local override (N keywords)`
+
+`claw_priority.lua` is **always read from disk only** (never downloaded), so the loader cache will not overwrite your list.
+
 ## Layout
 
 ```

@@ -18,39 +18,11 @@ return function(S)
 	local CLAW_ROOT_NAME = "Event_ClawMachine"
 	local MAINTAIN_INTERVAL = 0.25
 
-	-- Longest keyword first so "aurorite" beats "aurora", "enchantedbark" beats "bark"
-	-- Lower tier number = higher priority. Unmatched names = P8 other.
-	-- P9 = pure junk (Tria currency, scrap, etc.) so unknown mats still beat them.
-	local PRIORITY_KEYWORDS = {
-		{ key = "spirit", tier = 2 }, -- spirit stones; own tier under P1
-		{ key = "enchantedbark", tier = 5 },
-		{ key = "heartwood", tier = 4 }, -- also matches AncientHeartwood
-		{ key = "enchantedwood", tier = 5 },
-		{ key = "mysticessence", tier = 6 }, -- was 7
-		{ key = "briarvine", tier = 6 }, -- was 5
-		{ key = "memorysap", tier = 6 }, -- was 5
-		{ key = "goblincoin", tier = 3 },
-		{ key = "aurorite", tier = 7 }, -- was 6
-		{ key = "junkcore", tier = 7 }, -- was 6
-		{ key = "glowingmoss", tier = 6 }, -- was 7
-		{ key = "grimoire", tier = 1 },
-		{ key = "circuit", tier = 1 },
-		{ key = "meteor", tier = 1 },
-		{ key = "timber", tier = 1 },
-		{ key = "aurora", tier = 1 },
-		{ key = "amber", tier = 3 },
-		{ key = "living", tier = 3 }, -- LivingBark etc.
-		{ key = "tome", tier = 1 },
-		-- Junk / currency (below generic mats)
-		{ key = "triacoin", tier = 9 },
-		{ key = "triapouch", tier = 9 },
-		{ key = "triasack", tier = 9 },
-		{ key = "tria", tier = 9 },
-		{ key = "scrapmetal", tier = 9 },
-		{ key = "rustygear", tier = 9 },
-		{ key = "solite", tier = 9 },
-		{ key = "lumite", tier = 9 },
-	}
+	-- Prize tiers live in config (C.CLAW_PRIORITY_KEYWORDS). Optional local file
+	-- portal_mage/claw_priority.lua overrides that at boot (see portal_mage.lua).
+	-- Lower tier = higher priority. Unmatched names = P8. P9 = junk keywords.
+	local PRIORITY_KEYWORDS = (type(C.CLAW_PRIORITY_KEYWORDS) == "table" and C.CLAW_PRIORITY_KEYWORDS)
+		or {}
 
 	local MOVE_KEYS = {
 		Enum.KeyCode.W,

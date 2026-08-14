@@ -153,6 +153,29 @@ if type(S.Config) ~= "table" then
 	error("config did not return table")
 end
 
+-- Optional local claw priority override (always disk-only — never HttpGet).
+-- Friend: copy claw_priority.example.lua → claw_priority.lua and edit tiers.
+-- Paths: portal_mage/claw_priority.lua, scripts/portal_mage/, robocks/portal_mage/, …
+do
+	local src = tryReadLocal("claw_priority.lua")
+	if src then
+		local chunk, cerr = loadstring(src, "@portal_mage/claw_priority.lua")
+		if not chunk then
+			warn("[portal_mage] claw_priority compile failed: " .. tostring(cerr))
+		else
+			local ok, result = pcall(chunk)
+			if not ok then
+				warn("[portal_mage] claw_priority exec failed: " .. tostring(result))
+			elseif type(result) == "table" and #result > 0 then
+				S.Config.CLAW_PRIORITY_KEYWORDS = result
+				print("[portal_mage] claw_priority local override (" .. #result .. " keywords)")
+			else
+				warn("[portal_mage] claw_priority must return a non-empty { {key, tier}, ... } table")
+			end
+		end
+	end
+end
+
 local function loadFactory(name)
 	local factory = import(name)
 	if type(factory) ~= "function" then
