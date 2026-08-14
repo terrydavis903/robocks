@@ -253,31 +253,56 @@ return function(S)
 					U.setStatus(prefix .. ": still sitting after Z — retry")
 					U.ensureStanding(3.0)
 				end
+				-- Standing after sit-recover ⇒ sheathed (game); force draw next
+				if U.markWeaponSheathed then
+					U.markWeaponSheathed()
+				end
 			end
 
-			-- 3) Draw weapon only when standing and sheathed
+			-- 3) Draw when we know sheathed (post-sit) or hard-negative
 			if U.isSeated() then
 				U.setStatus(prefix .. ": cannot draw — still sitting")
-			elseif U.isWeaponDrawn() then
-				U.setStatus(prefix .. ": weapon already drawn")
 			else
-				U.setStatus(prefix .. ": sheathed → draw (Q)")
-				U.ensureWeaponDrawn(C.WEAPON_EQUIP_WAIT or 1.5)
+				local hard = U.detectWeaponDrawnHard and select(1, U.detectWeaponDrawnHard())
+				if hard then
+					if U.markWeaponDrawn then
+						U.markWeaponDrawn()
+					end
+					U.setStatus(prefix .. ": weapon hard-detected drawn")
+				elseif S.weaponDrawnKnown == false or not hard then
+					-- Post-sit: known=false → Q once. If unknown, soft isWeaponDrawn is true
+					-- so ensureWeaponDrawn no-ops unless known=false.
+					if S.weaponDrawnKnown == false then
+						U.setStatus(prefix .. ": sheathed after sit → Q draw")
+						U.ensureWeaponDrawn(C.WEAPON_EQUIP_WAIT or 1.5)
+					else
+						U.setStatus(prefix .. ": standing (weapon state soft-drawn)")
+						if U.markWeaponDrawn then
+							U.markWeaponDrawn()
+						end
+					end
+				end
 			end
 
-			-- 4) Honest status from observed state only
+			-- 4) Status from stance snapshot
 			local stance = U.getStance and U.getStance() or {}
 			local seated = stance.seated == true or U.isSeated()
 			local drawn = stance.weaponDrawn == true or U.isWeaponDrawn()
 			if not seated and drawn then
-				U.setStatus(prefix .. ": ready — standing + weapon drawn")
+				U.setStatus(string.format(
+					"%s: ready — stand + drawn (hard=%s known=%s)",
+					prefix,
+					tostring(stance.weaponHard),
+					tostring(stance.weaponKnown)
+				))
 			else
 				U.setStatus(string.format(
-					"%s: incomplete (sit=%s drawn=%s tools=%s)",
+					"%s: incomplete (sit=%s drawn=%s hard=%s known=%s)",
 					prefix,
 					tostring(seated),
 					tostring(drawn),
-					table.concat(stance.equippedTools or {}, ",")
+					tostring(stance.weaponHard),
+					tostring(stance.weaponKnown)
 				))
 			end
 		end)
@@ -285,7 +310,6 @@ return function(S)
 			U.setStatus(prefix .. " error: " .. tostring(err))
 		end
 		S.zRegenBusy = false
-		-- Success = observed ready, not just "sequence finished"
 		return ok and (not U.isSeated()) and U.isWeaponDrawn()
 	end
 

@@ -58,6 +58,10 @@ S.zRegenBusy = false
 S.respawnResumeWalk = false
 S.lastSitToggleAt = 0 -- Z sit/stand toggle cooldown
 S.lastWeaponToggleAt = 0 -- Q sheathe/draw toggle cooldown
+-- nil = unknown (standing defaults to drawn — this game has no Tool while unsheathed)
+-- false = sheathed (e.g. just stood from Z) → Kill Aura will Q to draw
+-- true = drawn
+S.weaponDrawnKnown = nil :: boolean?
 
 -- Anti-AFK (Space every ANTI_AFK_INTERVAL)
 S.antiAfkEnabled = false

@@ -312,13 +312,41 @@ return function(S)
 		end
 		-- Stance (from dumps 2026-08-14: sit walkSpeed=0; stand sheathed/drawn via tools/Q)
 		out.seated = M.isSeated and M.isSeated() or false
+		local hard, hardWhy = false, nil
+		if M.detectWeaponDrawnHard then
+			hard, hardWhy = M.detectWeaponDrawnHard()
+		end
+		out.weaponHard = hard
+		out.weaponHardWhy = hardWhy
 		out.weaponDrawn = M.isWeaponDrawn and M.isWeaponDrawn() or false
+		out.weaponKnown = S.weaponDrawnKnown
 		local tools = M.getEquippedTools and M.getEquippedTools() or {}
 		local names = {}
 		for _, t in ipairs(tools) do
 			table.insert(names, t.Name)
 		end
 		out.equippedToolNames = names
+		-- Character inventory snapshot (for dump debugging draw/sheathe)
+		local charKids = {}
+		if character then
+			for _, c in ipairs(character:GetChildren()) do
+				table.insert(charKids, {
+					name = c.Name,
+					className = c.ClassName,
+				})
+			end
+		end
+		out.characterChildren = charKids
+		local bp = player:FindFirstChildOfClass("Backpack")
+		local bpTools = {}
+		if bp then
+			for _, t in ipairs(bp:GetChildren()) do
+				if t:IsA("Tool") then
+					table.insert(bpTools, t.Name)
+				end
+			end
+		end
+		out.backpackTools = bpTools
 		local cam = workspace.CurrentCamera
 		if cam then
 			local cl = cam.CFrame.LookVector
@@ -736,33 +764,151 @@ return function(S)
 		return false
 	end
 
-	-- Weapon drawn: Tool parented to character (sheathed = backpack only).
-	-- Also accept weapon-named Models under character (non-Accessory).
-	function M.isWeaponDrawn(): boolean
-		local tools = M.getEquippedTools()
-		if #tools > 0 then
-			return true
-		end
+	-- Body parts we ignore when looking for a gripped weapon mesh/weld.
+	local BODY_PART_NAMES: { [string]: boolean } = {
+		HumanoidRootPart = true,
+		Head = true,
+		UpperTorso = true,
+		LowerTorso = true,
+		Torso = true,
+		LeftUpperArm = true,
+		LeftLowerArm = true,
+		LeftHand = true,
+		RightUpperArm = true,
+		RightLowerArm = true,
+		RightHand = true,
+		LeftUpperLeg = true,
+		LeftLowerLeg = true,
+		LeftFoot = true,
+		RightUpperLeg = true,
+		RightLowerLeg = true,
+		RightFoot = true,
+		["Left Arm"] = true,
+		["Right Arm"] = true,
+		["Left Leg"] = true,
+		["Right Leg"] = true,
+	}
+
+	-- Hard evidence only (Tools / grip / attrs). This game often has NO Tools while drawn
+	-- (dumps 19-41-18 + 19-50-44: equippedToolNames=[], weapon still out).
+	function M.detectWeaponDrawnHard(): (boolean, string?)
 		local lp = Players.LocalPlayer
 		local char = lp and lp.Character
 		if not char then
-			return false
+			return false, "no_char"
 		end
-		local kws = C.WEAPON_NAME_KEYWORDS or {}
-		for _, c in ipairs(char:GetChildren()) do
-			if c:IsA("Accessory") or c:IsA("Tool") then
-				continue
-			end
-			if c:IsA("Model") or c:IsA("BasePart") or c:IsA("Folder") then
-				local n = string.lower(c.Name)
-				for _, kw in ipairs(kws) do
-					if type(kw) == "string" and kw ~= "" and string.find(n, string.lower(kw), 1, true) then
-						return true
+		local tools = M.getEquippedTools()
+		if #tools > 0 then
+			return true, "tool:" .. tools[1].Name
+		end
+
+		local hum = char:FindFirstChildOfClass("Humanoid")
+		local attrNames = {
+			"WeaponDrawn",
+			"WeaponEquipped",
+			"IsWeaponOut",
+			"WeaponOut",
+			"CombatReady",
+			"Sheathed",
+			"IsSheathed",
+			"WeaponSheathed",
+		}
+		for _, inst in ipairs({ char, hum }) do
+			if inst then
+				for _, an in ipairs(attrNames) do
+					local ok, v = pcall(function()
+						return (inst :: any):GetAttribute(an)
+					end)
+					if ok and v ~= nil then
+						local al = string.lower(an)
+						if string.find(al, "sheath", 1, true) then
+							-- Sheathed=false ⇒ drawn; Sheathed=true ⇒ sheathed
+							if v == false or v == 0 or v == "false" then
+								return true, "attr:" .. an .. "=false"
+							elseif v == true or v == 1 or v == "true" then
+								S.weaponDrawnKnown = false
+								return false, "attr:" .. an .. "=true"
+							end
+						else
+							if v == true or v == 1 or v == "true" then
+								return true, "attr:" .. an
+							end
+						end
 					end
 				end
 			end
 		end
-		return false
+
+		-- RightGrip / hand motors gripping a non-body part (classic + many custom weapons)
+		for _, d in ipairs(char:GetDescendants()) do
+			if d:IsA("Motor6D") then
+				local n = string.lower(d.Name)
+				if n == "rightgrip" or n == "leftgrip" or string.find(n, "grip", 1, true) then
+					return true, "motor:" .. d.Name
+				end
+				local p0, p1 = d.Part0, d.Part1
+				local handish = p0 and (string.find(p0.Name, "Hand", 1, true) or string.find(p0.Name, "Arm", 1, true))
+				if handish and p1 and not BODY_PART_NAMES[p1.Name] then
+					return true, "grip:" .. p1.Name
+				end
+			end
+		end
+
+		-- Handle part under a character child (tool-like without Tool class)
+		for _, c in ipairs(char:GetChildren()) do
+			if c:IsA("Accessory") then
+				continue
+			end
+			if c:IsA("Model") or c:IsA("Folder") or c:IsA("BasePart") then
+				local handle = c:FindFirstChild("Handle", true)
+				if handle and handle:IsA("BasePart") then
+					return true, "handle:" .. c.Name
+				end
+				local n = string.lower(c.Name)
+				local kws = C.WEAPON_NAME_KEYWORDS or {}
+				for _, kw in ipairs(kws) do
+					if type(kw) == "string" and kw ~= "" and string.find(n, string.lower(kw), 1, true) then
+						return true, "name:" .. c.Name
+					end
+				end
+			end
+		end
+		return false, nil
+	end
+
+	function M.markWeaponDrawn()
+		S.weaponDrawnKnown = true
+	end
+
+	function M.markWeaponSheathed()
+		S.weaponDrawnKnown = false
+	end
+
+	-- Effective drawn state for Kill Aura / recover.
+	-- Dumps prove Tool detection alone is wrong (empty tools while unsheathed).
+	-- Soft rules:
+	--   hard evidence → drawn
+	--   known=false (e.g. just stood from Z-sit) → sheathed
+	--   known=true → drawn
+	--   unknown + standing → assume drawn (never false-"sheathed" / spam Q off)
+	--   sitting → sheathed
+	function M.isWeaponDrawn(): boolean
+		local hard, _why = M.detectWeaponDrawnHard()
+		if hard then
+			S.weaponDrawnKnown = true
+			return true
+		end
+		if M.isSeated() then
+			return false
+		end
+		if S.weaponDrawnKnown == false then
+			return false
+		end
+		if S.weaponDrawnKnown == true then
+			return true
+		end
+		-- Unknown while standing: assume drawn so we don't toggle Q on an already-out weapon
+		return true
 	end
 
 	M.hasWeaponEquipped = M.isWeaponDrawn -- alias
@@ -770,6 +916,7 @@ return function(S)
 	function M.getStance(): any
 		local hum = M.getHumanoid()
 		local seated = M.isSeated()
+		local hard, hardWhy = M.detectWeaponDrawnHard()
 		local drawn = M.isWeaponDrawn()
 		local tools = M.getEquippedTools()
 		local names = {}
@@ -779,6 +926,9 @@ return function(S)
 		return {
 			seated = seated,
 			weaponDrawn = drawn,
+			weaponHard = hard,
+			weaponHardWhy = hardWhy,
+			weaponKnown = S.weaponDrawnKnown,
 			walkSpeed = hum and hum.WalkSpeed or nil,
 			autoRotate = hum and hum.AutoRotate or nil,
 			sitFlag = hum and hum.Sit or nil,
@@ -797,11 +947,13 @@ return function(S)
 	end
 
 	-- Press Z once to flip sit/stand, then wait for observed state.
+	-- Standing up from Z-recover leaves weapon sheathed → mark for auto-draw.
 	function M.ensureStanding(timeout: number?): boolean
 		if not M.isSeated() then
 			return true
 		end
 		local waitFor = timeout or 3.0
+		local wasSeated = true
 		if toggleCooldownOk(S.lastSitToggleAt) then
 			M.setStatus("[stance] Z → stand")
 			M.pressKey(Enum.KeyCode.Z)
@@ -810,11 +962,19 @@ return function(S)
 		local t0 = os.clock()
 		while os.clock() - t0 < waitFor do
 			if not M.isSeated() then
+				if wasSeated then
+					-- Game sheathes on sit-recover exit; need Q before fight
+					M.markWeaponSheathed()
+				end
 				return true
 			end
 			task.wait(0.08)
 		end
-		return not M.isSeated()
+		if not M.isSeated() then
+			M.markWeaponSheathed()
+			return true
+		end
+		return false
 	end
 
 	-- Enter sit-recover via Z if not already seated (for HP/MP regen).
@@ -849,14 +1009,22 @@ return function(S)
 		return 1000
 	end
 
-	-- Draw weapon: Q is the game toggle (cooldown). Never claim success without isWeaponDrawn().
+	-- Draw weapon: Q toggle with CD. Only press when we believe sheathed (known=false
+	-- or hard-negative after sit). Never Q when already drawn — that would sheathe.
 	function M.ensureWeaponDrawn(timeout: number?): boolean
-		if M.isWeaponDrawn() then
+		if M.isSeated() then
+			return false
+		end
+		local hard = select(1, M.detectWeaponDrawnHard())
+		if hard then
+			M.markWeaponDrawn()
 			return true
 		end
-		if M.isSeated() then
-			return false -- cannot draw while sitting
+		-- Soft: already think drawn (unknown defaults to drawn while standing)
+		if M.isWeaponDrawn() and S.weaponDrawnKnown ~= false then
+			return true
 		end
+
 		local waitFor = timeout or (C.WEAPON_EQUIP_WAIT or 1.2)
 		local eqKey = C.WEAPON_EQUIP_KEY or Enum.KeyCode.Q
 
@@ -864,37 +1032,42 @@ return function(S)
 			M.setStatus("[stance] Q → draw weapon")
 			M.pressKey(eqKey)
 			S.lastWeaponToggleAt = os.clock()
+			-- After a deliberate draw press, trust drawn (game has no Tool signal)
+			M.markWeaponDrawn()
 		end
 
 		local t0 = os.clock()
 		while os.clock() - t0 < waitFor do
-			if M.isWeaponDrawn() then
+			if select(1, M.detectWeaponDrawnHard()) then
+				M.markWeaponDrawn()
 				return true
 			end
 			task.wait(0.08)
 		end
 
-		-- Fallback: EquipTool from backpack (some builds still use Tools)
-		if not M.isWeaponDrawn() then
-			local lp = Players.LocalPlayer
-			local hum = M.getHumanoid()
-			local bp = lp and lp:FindFirstChildOfClass("Backpack")
-			local candidates: { Tool } = {}
-			if bp then
-				for _, t in ipairs(bp:GetChildren()) do
-					if t:IsA("Tool") then
-						table.insert(candidates, t)
-					end
+		-- Fallback EquipTool if backpack tools exist
+		local lp = Players.LocalPlayer
+		local hum = M.getHumanoid()
+		local bp = lp and lp:FindFirstChildOfClass("Backpack")
+		local candidates: { Tool } = {}
+		if bp then
+			for _, t in ipairs(bp:GetChildren()) do
+				if t:IsA("Tool") then
+					table.insert(candidates, t)
 				end
 			end
-			table.sort(candidates, function(a, b)
-				return toolPreferScore(a) < toolPreferScore(b)
+		end
+		table.sort(candidates, function(a, b)
+			return toolPreferScore(a) < toolPreferScore(b)
+		end)
+		if hum and #candidates > 0 then
+			pcall(function()
+				hum:EquipTool(candidates[1])
 			end)
-			if hum and #candidates > 0 then
-				pcall(function()
-					hum:EquipTool(candidates[1])
-				end)
-				task.wait(0.25)
+			task.wait(0.25)
+			if select(1, M.detectWeaponDrawnHard()) then
+				M.markWeaponDrawn()
+				return true
 			end
 		end
 		return M.isWeaponDrawn()

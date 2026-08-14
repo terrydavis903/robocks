@@ -572,13 +572,17 @@ return function(S)
 				return
 			end
 		end
-		if U.isWeaponDrawn and not U.isWeaponDrawn() then
-			U.setStatus("Kill Aura: sheathed — Q to draw…")
+		-- Only force-Q when we know sheathed (post-sit). Soft default is drawn.
+		if S.weaponDrawnKnown == false or (U.isWeaponDrawn and not U.isWeaponDrawn()) then
+			U.setStatus("Kill Aura: unsheath (Q)…")
+			if U.markWeaponSheathed and S.weaponDrawnKnown ~= false then
+				-- leave known as-is
+			end
 			if U.ensureWeaponDrawn then
 				U.ensureWeaponDrawn(1.5)
 			end
-			if not U.isWeaponDrawn() then
-				U.setStatus("Kill Aura blocked — weapon still sheathed (press Q)")
+			if U.isWeaponDrawn and not U.isWeaponDrawn() then
+				U.setStatus("Kill Aura blocked — still sheathed after Q")
 				return
 			end
 		end
