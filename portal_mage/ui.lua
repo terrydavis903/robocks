@@ -257,7 +257,7 @@ return function(S)
 		end)
 		parentGui(gui)
 
-		local PANEL_W, PANEL_H = 360, 720
+		local PANEL_W, PANEL_H = 432, 720 -- ~20% wider than 360
 		local frame = Instance.new("Frame")
 		frame.Name = "Panel"
 		frame.Size = UDim2.fromOffset(PANEL_W, PANEL_H)
@@ -1049,13 +1049,19 @@ return function(S)
 		---------------------------------------------------------------------------
 		local configPage = tabs.Config
 		local TIER_COUNT = (S.ClawPriority and S.ClawPriority.TIER_COUNT) or 10
+		-- Fixed pixel sizes avoid ScrollingFrame canvas-X=0 scale bugs (misplaced +/x)
+		local CFG_ROW_H = 28
+		local CFG_HDR_H = 30
+		local CFG_BTN = 26
+		local CFG_GAP = 4
+		local CFG_PAD = 8
 
 		local cfgHint = Instance.new("TextLabel")
-		cfgHint.Size = UDim2.new(1, -16, 0, 36)
+		cfgHint.Size = UDim2.new(1, -16, 0, 40)
 		cfgHint.Position = UDim2.fromOffset(8, 4)
 		cfgHint.BackgroundTransparency = 1
 		cfgHint.Font = Enum.Font.Gotham
-		cfgHint.TextSize = 11
+		cfgHint.TextSize = 13
 		cfgHint.TextColor3 = Color3.fromRGB(150, 155, 175)
 		cfgHint.TextXAlignment = Enum.TextXAlignment.Left
 		cfgHint.TextYAlignment = Enum.TextYAlignment.Top
@@ -1064,11 +1070,11 @@ return function(S)
 		cfgHint.Parent = configPage
 
 		local othersLab = Instance.new("TextLabel")
-		othersLab.Size = UDim2.new(1, -16, 0, 16)
-		othersLab.Position = UDim2.fromOffset(8, 40)
+		othersLab.Size = UDim2.new(1, -16, 0, 18)
+		othersLab.Position = UDim2.fromOffset(8, 44)
 		othersLab.BackgroundTransparency = 1
 		othersLab.Font = Enum.Font.GothamBold
-		othersLab.TextSize = 11
+		othersLab.TextSize = 13
 		othersLab.TextColor3 = Color3.fromRGB(200, 170, 100)
 		othersLab.TextXAlignment = Enum.TextXAlignment.Left
 		othersLab.Text = "Others → T?"
@@ -1076,43 +1082,24 @@ return function(S)
 
 		local cfgScroll = Instance.new("ScrollingFrame")
 		cfgScroll.Name = "ClawPriorityScroll"
-		cfgScroll.Size = UDim2.new(1, -12, 1, -64)
-		cfgScroll.Position = UDim2.fromOffset(6, 58)
+		cfgScroll.Size = UDim2.new(1, -12, 1, -70)
+		cfgScroll.Position = UDim2.fromOffset(6, 66)
 		cfgScroll.BackgroundColor3 = Color3.fromRGB(26, 26, 34)
 		cfgScroll.BorderSizePixel = 0
-		cfgScroll.ScrollBarThickness = 5
+		cfgScroll.ScrollBarThickness = 6
 		cfgScroll.ScrollBarImageColor3 = Color3.fromRGB(90, 90, 120)
+		cfgScroll.ScrollingDirection = Enum.ScrollingDirection.Y
 		cfgScroll.CanvasSize = UDim2.fromOffset(0, 0)
-		pcall(function()
-			cfgScroll.AutomaticCanvasSize = Enum.AutomaticSize.Y
-		end)
 		cfgScroll.Parent = configPage
 		corner(cfgScroll, 6)
 
 		local cfgList = Instance.new("Frame")
 		cfgList.Name = "TierList"
-		cfgList.Size = UDim2.new(1, -8, 0, 0)
-		cfgList.Position = UDim2.fromOffset(4, 4)
 		cfgList.BackgroundTransparency = 1
-		pcall(function()
-			cfgList.AutomaticSize = Enum.AutomaticSize.Y
-		end)
+		cfgList.BorderSizePixel = 0
+		cfgList.Position = UDim2.fromOffset(0, 0)
+		cfgList.Size = UDim2.fromOffset(100, 0)
 		cfgList.Parent = cfgScroll
-
-		local cfgLayout = Instance.new("UIListLayout")
-		cfgLayout.SortOrder = Enum.SortOrder.LayoutOrder
-		cfgLayout.Padding = UDim.new(0, 6)
-		cfgLayout.Parent = cfgList
-		cfgLayout:GetPropertyChangedSignal("AbsoluteContentSize"):Connect(function()
-			cfgScroll.CanvasSize = UDim2.fromOffset(0, cfgLayout.AbsoluteContentSize.Y + 16)
-		end)
-
-		local cfgPad = Instance.new("UIPadding")
-		cfgPad.PaddingTop = UDim.new(0, 2)
-		cfgPad.PaddingBottom = UDim.new(0, 8)
-		cfgPad.PaddingLeft = UDim.new(0, 2)
-		cfgPad.PaddingRight = UDim.new(0, 2)
-		cfgPad.Parent = cfgList
 
 		-- Working copy: tier -> { keyword, ... }
 		local tierKeywords: { [number]: { string } } = {}
@@ -1145,7 +1132,6 @@ return function(S)
 					table.insert(tierKeywords[t], key)
 				end
 			end
-			-- Stable alpha within tier for display
 			for t = 1, TIER_COUNT do
 				table.sort(tierKeywords[t])
 			end
@@ -1187,6 +1173,14 @@ return function(S)
 			updateOthersLabel()
 		end
 
+		local function listInnerWidth(): number
+			local w = cfgScroll.AbsoluteSize.X - cfgScroll.ScrollBarThickness - 4
+			if w < 120 then
+				w = math.max(PANEL_W - 40, 120)
+			end
+			return math.floor(w)
+		end
+
 		local rebuildTierUi: () -> ()
 
 		local function addKeywordToTier(tier: number, raw: string)
@@ -1194,7 +1188,6 @@ return function(S)
 			if key == "" then
 				return
 			end
-			-- Remove from any tier if already present
 			for t = 1, TIER_COUNT do
 				local arr = tierKeywords[t]
 				for i = #arr, 1, -1 do
@@ -1224,6 +1217,14 @@ return function(S)
 			rebuildTierUi()
 		end
 
+		-- Right-aligned control using AnchorPoint (stable, no scale-from-zero canvas)
+		local function placeRightBtn(btn: GuiObject, size: number, midY: number, inset: number?)
+			local pad = inset or 2
+			btn.AnchorPoint = Vector2.new(1, 0.5)
+			btn.Position = UDim2.new(1, -pad, 0, midY)
+			btn.Size = UDim2.fromOffset(size, size)
+		end
+
 		rebuildTierUi = function()
 			for _, child in ipairs(cfgList:GetChildren()) do
 				if child:IsA("GuiObject") then
@@ -1231,58 +1232,61 @@ return function(S)
 				end
 			end
 
+			local width = listInnerWidth()
+			local y = CFG_PAD
+
 			for t = 1, TIER_COUNT do
 				local keys = tierKeywords[t] or {}
+				local showAdd = openAddTier == t
+				local innerH = CFG_HDR_H
+					+ (showAdd and (CFG_ROW_H + CFG_GAP) or 0)
+					+ #keys * (CFG_ROW_H + CFG_GAP)
+					+ CFG_PAD
+				local blockH = innerH + CFG_PAD
+
 				local block = Instance.new("Frame")
 				block.Name = "Tier" .. t
-				block.Size = UDim2.new(1, 0, 0, 0)
-				block.AutomaticSize = Enum.AutomaticSize.Y
+				block.Size = UDim2.fromOffset(width - CFG_PAD * 2, blockH)
+				block.Position = UDim2.fromOffset(CFG_PAD, y)
 				block.BackgroundColor3 = Color3.fromRGB(32, 32, 42)
 				block.BorderSizePixel = 0
-				block.LayoutOrder = t
 				block.Parent = cfgList
 				corner(block, 5)
 
-				local blockLayout = Instance.new("UIListLayout")
-				blockLayout.SortOrder = Enum.SortOrder.LayoutOrder
-				blockLayout.Padding = UDim.new(0, 3)
-				blockLayout.Parent = block
+				local innerW = width - CFG_PAD * 4
+				local rowY = CFG_PAD
 
-				local blockPad = Instance.new("UIPadding")
-				blockPad.PaddingTop = UDim.new(0, 4)
-				blockPad.PaddingBottom = UDim.new(0, 4)
-				blockPad.PaddingLeft = UDim.new(0, 6)
-				blockPad.PaddingRight = UDim.new(0, 6)
-				blockPad.Parent = block
-
+				-- Header
 				local header = Instance.new("Frame")
-				header.Size = UDim2.new(1, 0, 0, 22)
+				header.Size = UDim2.fromOffset(innerW, CFG_HDR_H)
+				header.Position = UDim2.fromOffset(CFG_PAD, rowY)
 				header.BackgroundTransparency = 1
-				header.LayoutOrder = 0
 				header.Parent = block
 
 				local titleLab = Instance.new("TextLabel")
-				titleLab.Size = UDim2.new(1, -28, 1, 0)
+				titleLab.Size = UDim2.new(1, -(CFG_BTN + 8), 1, 0)
+				titleLab.Position = UDim2.fromOffset(2, 0)
 				titleLab.BackgroundTransparency = 1
 				titleLab.Font = Enum.Font.GothamBold
-				titleLab.TextSize = 12
+				titleLab.TextSize = 14
 				titleLab.TextColor3 = Color3.fromRGB(200, 205, 230)
 				titleLab.TextXAlignment = Enum.TextXAlignment.Left
+				titleLab.TextYAlignment = Enum.TextYAlignment.Center
 				local emptyMark = (#keys == 0) and "  · empty" or string.format("  (%d)", #keys)
 				titleLab.Text = "Tier " .. t .. emptyMark
 				titleLab.Parent = header
 
 				local addBtn = Instance.new("TextButton")
-				addBtn.Size = UDim2.fromOffset(22, 20)
-				addBtn.Position = UDim2.new(1, -22, 0, 1)
 				addBtn.BackgroundColor3 = Color3.fromRGB(50, 110, 80)
 				addBtn.BorderSizePixel = 0
 				addBtn.Font = Enum.Font.GothamBold
-				addBtn.TextSize = 14
+				addBtn.TextSize = 18
 				addBtn.TextColor3 = Color3.new(1, 1, 1)
 				addBtn.Text = "+"
+				addBtn.AutoButtonColor = true
 				addBtn.Parent = header
-				corner(addBtn, 4)
+				placeRightBtn(addBtn, CFG_BTN, CFG_HDR_H / 2, 0)
+				corner(addBtn, 5)
 				addBtn.MouseButton1Click:Connect(function()
 					if openAddTier == t then
 						openAddTier = nil
@@ -1292,20 +1296,23 @@ return function(S)
 					rebuildTierUi()
 				end)
 
-				if openAddTier == t then
+				rowY += CFG_HDR_H + CFG_GAP
+
+				if showAdd then
 					local addRow = Instance.new("Frame")
-					addRow.Size = UDim2.new(1, 0, 0, 26)
+					addRow.Size = UDim2.fromOffset(innerW, CFG_ROW_H)
+					addRow.Position = UDim2.fromOffset(CFG_PAD, rowY)
 					addRow.BackgroundTransparency = 1
-					addRow.LayoutOrder = 1
 					addRow.Parent = block
 
+					local addW = 52
 					local box = Instance.new("TextBox")
-					box.Size = UDim2.new(1, -52, 0, 24)
-					box.Position = UDim2.fromOffset(0, 1)
+					box.Size = UDim2.fromOffset(innerW - addW - 6, CFG_ROW_H)
+					box.Position = UDim2.fromOffset(0, 0)
 					box.BackgroundColor3 = Color3.fromRGB(22, 22, 30)
 					box.BorderSizePixel = 0
 					box.Font = Enum.Font.Gotham
-					box.TextSize = 12
+					box.TextSize = 13
 					box.TextColor3 = Color3.new(1, 1, 1)
 					box.PlaceholderText = "keyword…"
 					box.PlaceholderColor3 = Color3.fromRGB(100, 100, 120)
@@ -1315,12 +1322,12 @@ return function(S)
 					corner(box, 4)
 
 					local okBtn = Instance.new("TextButton")
-					okBtn.Size = UDim2.fromOffset(46, 24)
-					okBtn.Position = UDim2.new(1, -46, 0, 1)
+					okBtn.Size = UDim2.fromOffset(addW, CFG_ROW_H)
+					okBtn.Position = UDim2.fromOffset(innerW - addW, 0)
 					okBtn.BackgroundColor3 = Color3.fromRGB(55, 100, 150)
 					okBtn.BorderSizePixel = 0
 					okBtn.Font = Enum.Font.GothamMedium
-					okBtn.TextSize = 11
+					okBtn.TextSize = 13
 					okBtn.TextColor3 = Color3.new(1, 1, 1)
 					okBtn.Text = "Add"
 					okBtn.Parent = addRow
@@ -1340,47 +1347,62 @@ return function(S)
 							box:CaptureFocus()
 						end)
 					end)
+
+					rowY += CFG_ROW_H + CFG_GAP
 				end
 
-				for i, key in ipairs(keys) do
+				for _, key in ipairs(keys) do
 					local row = Instance.new("Frame")
-					row.Size = UDim2.new(1, 0, 0, 22)
+					row.Size = UDim2.fromOffset(innerW, CFG_ROW_H)
+					row.Position = UDim2.fromOffset(CFG_PAD, rowY)
 					row.BackgroundColor3 = Color3.fromRGB(40, 40, 52)
 					row.BorderSizePixel = 0
-					row.LayoutOrder = 10 + i
 					row.Parent = block
 					corner(row, 4)
 
 					local keyLab = Instance.new("TextLabel")
-					keyLab.Size = UDim2.new(1, -26, 1, 0)
-					keyLab.Position = UDim2.fromOffset(6, 0)
+					keyLab.Size = UDim2.new(1, -(CFG_BTN + 12), 1, 0)
+					keyLab.Position = UDim2.fromOffset(8, 0)
 					keyLab.BackgroundTransparency = 1
 					keyLab.Font = Enum.Font.Code
-					keyLab.TextSize = 11
+					keyLab.TextSize = 13
 					keyLab.TextColor3 = Color3.fromRGB(210, 210, 225)
 					keyLab.TextXAlignment = Enum.TextXAlignment.Left
+					keyLab.TextYAlignment = Enum.TextYAlignment.Center
 					keyLab.Text = key
 					keyLab.Parent = row
 
 					local xBtn = Instance.new("TextButton")
-					xBtn.Size = UDim2.fromOffset(20, 18)
-					xBtn.Position = UDim2.new(1, -22, 0, 2)
 					xBtn.BackgroundColor3 = Color3.fromRGB(120, 50, 55)
 					xBtn.BorderSizePixel = 0
 					xBtn.Font = Enum.Font.GothamBold
-					xBtn.TextSize = 12
+					xBtn.TextSize = 14
 					xBtn.TextColor3 = Color3.new(1, 1, 1)
-					xBtn.Text = "x"
+					xBtn.Text = "×"
+					xBtn.AutoButtonColor = true
 					xBtn.Parent = row
-					corner(xBtn, 4)
+					placeRightBtn(xBtn, CFG_BTN - 2, CFG_ROW_H / 2, 4)
+					corner(xBtn, 5)
 					xBtn.MouseButton1Click:Connect(function()
 						removeKeyword(t, key)
 					end)
+
+					rowY += CFG_ROW_H + CFG_GAP
 				end
+
+				y += blockH + CFG_GAP + 2
 			end
 
+			cfgList.Size = UDim2.fromOffset(width, y + CFG_PAD)
+			cfgScroll.CanvasSize = UDim2.fromOffset(0, y + CFG_PAD)
 			updateOthersLabel()
 		end
+
+		cfgScroll:GetPropertyChangedSignal("AbsoluteSize"):Connect(function()
+			if activeTab == "Config" then
+				rebuildTierUi()
+			end
+		end)
 
 		S.ui.refreshClawConfig = function()
 			loadTiersFromConfig()
