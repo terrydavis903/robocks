@@ -230,8 +230,22 @@ return function(S)
 		))
 	end
 
+	-- Face-lock (reticle-relative WASD) only when reticle is ON the target.
+	-- Otherwise A* / approach rotates along the path (no lookAt).
+	local function combatLookAt(model: Model?, epos: Vector3?): any?
+		if not model or not epos then
+			return nil
+		end
+		local Targets = T()
+		if Targets and Targets.hasReticleOn and Targets.hasReticleOn(model) then
+			return { x = epos.X, y = epos.Y, z = epos.Z }
+		end
+		return nil
+	end
+
 	-- Walk next segment of locked path only (no recompute).
-	local function followLockedPath(lookAt: Vector3)
+	-- lookAtTbl: reticle face lock, or nil → rotate toward waypoint.
+	local function followLockedPath(lookAtTbl: any?)
 		local path = lockPath
 		local goal = lockGoal
 		if not path or #path == 0 or not goal then
@@ -259,7 +273,7 @@ return function(S)
 		-- Single short leg toward current waypoint
 		U.walkTo(target.X, target.Y, target.Z, {
 			silent = true,
-			lookAt = { x = lookAt.X, y = lookAt.Y, z = lookAt.Z },
+			lookAt = lookAtTbl, -- nil = path-follow rotate + W
 			requireWalking = true,
 			snapOnTimeout = false,
 			useMoveKeys = true,
@@ -268,7 +282,7 @@ return function(S)
 		})
 	end
 
-	local function walkDirect(goal: Vector3, lookAt: Vector3, timeout: number)
+	local function walkDirect(goal: Vector3, lookAtTbl: any?, timeout: number)
 		prepHum()
 		if S.pathVizEnabled and Nav() and Nav().showPathViz then
 			local p = U.getLivePlayerVector()
@@ -278,7 +292,7 @@ return function(S)
 		end
 		U.walkTo(goal.X, goal.Y, goal.Z, {
 			silent = true,
-			lookAt = { x = lookAt.X, y = lookAt.Y, z = lookAt.Z },
+			lookAt = lookAtTbl,
 			requireWalking = true,
 			snapOnTimeout = false,
 			useMoveKeys = true,
@@ -387,15 +401,25 @@ return function(S)
 					dist = flatDist(playerPos, epos)
 				end
 
-				-- KITE (close): fast, no path lock
+				-- Face lock only with reticle on target; else rotate along path
+				local faceLock = combatLookAt(model, epos)
+
+				-- KITE (close): fast, no path lock — keep face lock if reticle on
 				if dist < range - sticky then
 					if lockPath then
 						log("clear lock → kite d=" .. string.format("%.1f", dist))
 					end
 					clearLock()
 					local goal = fleeGoal(playerPos, epos, range)
-					U.setStatus(string.format("[kite] d=%.1f →@%d %s | %s", dist, range, model.Name, cds()))
-					walkDirect(goal, epos, 0.85)
+					U.setStatus(string.format(
+						"[kite] d=%.1f →@%d %s face=%s | %s",
+						dist,
+						range,
+						model.Name,
+						faceLock and "reticle" or "path",
+						cds()
+					))
+					walkDirect(goal, faceLock, 0.85)
 					return
 				end
 
@@ -435,15 +459,16 @@ return function(S)
 				end
 
 				U.setStatus(string.format(
-					"[approach] d=%.1f %s %d/%d wp %s | %s",
+					"[approach] d=%.1f %s %d/%d wp %s face=%s | %s",
 					dist,
 					lockKind,
 					math.min(lockWp, lockPath and #lockPath or 0),
 					lockPath and #lockPath or 0,
 					model.Name,
+					faceLock and "reticle" or "path",
 					cds()
 				))
-				followLockedPath(epos)
+				followLockedPath(faceLock)
 			end)
 
 			if not ok then

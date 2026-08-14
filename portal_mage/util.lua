@@ -441,9 +441,13 @@ return function(S)
 	end
 
 	-- Smooth walk: Humanoid:MoveTo + WASD spoof for walk anim / games that read keys.
-	-- With lookAt (reticle/enemy): ALWAYS face target; move with reticle-relative WASD
-	--   (path left of enemy → A, kite back → S, diagonal → W+A, etc.). Never yaw-to-path.
-	-- Without lookAt: AutoRotate toward travel + hold W.
+	--
+	-- TWO MODES:
+	--   lookAt set (reticle locked on enemy): face target; reticle-relative WASD
+	--     (path left of enemy → A, kite back → S, diagonal → W+A). Never yaw-to-path.
+	--   lookAt nil (no selection / free path): rotate toward waypoint + hold W
+	--     (A* approach without reticle — character turns with the path).
+	--
 	-- Falls back to teleportTo on timeout if snapOnTimeout ~= false.
 	function M.walkTo(
 		x: number,
@@ -453,7 +457,7 @@ return function(S)
 	): boolean
 		opts = opts or {}
 		local silent = opts.silent == true
-		local lookAt = opts.lookAt -- optional; combat reticle / enemy face lock
+		local lookAt = opts.lookAt -- optional; only when reticle is locked on enemy
 		local hardFace = opts.hardFace == true -- rare; soft lerp is default
 		local forceSoftTurn = opts.softTurn == true -- pathing reverse hint (non-combat)
 		local useMoveKeys = opts.useMoveKeys
@@ -485,26 +489,13 @@ return function(S)
 		end
 
 		local goal = Vector3.new(x, y, z)
-		-- Face reticle/enemy when provided; else face travel goal
-		local faceX = if lookAt then lookAt.x else goal.X
-		local faceY = if lookAt then (lookAt.y or y) else goal.Y
-		local faceZ = if lookAt then lookAt.z else goal.Z
+		-- Combat face-lock only when caller passed lookAt (reticle on enemy).
+		-- Free path: face the travel waypoint so A* turns rotate the character.
+		local combatFace = type(lookAt) == "table" and lookAt.x ~= nil and lookAt.z ~= nil
+		local faceX = if combatFace then lookAt.x else goal.X
+		local faceY = if combatFace then (lookAt.y or y) else goal.Y
+		local faceZ = if combatFace then lookAt.z else goal.Z
 		local facePos = Vector3.new(faceX, faceY, faceZ)
-		local combatFace = lookAt ~= nil
-
-		local function needsSoftTurn(): boolean
-			if combatFace then
-				return true -- always keep yaw on reticle in combat
-			end
-			if forceSoftTurn then
-				return true
-			end
-			local d = M.facingDotTo(faceX, faceZ)
-			if d == nil then
-				return false
-			end
-			return d < softTurnDot
-		end
 
 		local function cleanupMove(restoreAutoRotate: boolean?)
 			M.releaseMoveKeys()
@@ -524,18 +515,14 @@ return function(S)
 				M.releaseMoveKeys()
 				return
 			end
-			-- Combat: keys relative to reticle. Open walk: relative to nil → W only.
+			-- Reticle lock → relative WASD. Free path → W only (body rotates to path).
 			M.holdMoveKeys(M.moveKeysForWalk(pos, goal, if combatFace then facePos else nil))
 		end
 
-		-- Combat: lock yaw on reticle. Path movement is entirely via relative WASD (+ MoveTo).
-		local softTurning = needsSoftTurn()
-		if softTurning or combatFace then
-			M.faceToward(faceX, faceY, faceZ, not hardFace, poll)
-		end
-
+		-- Initial yaw: reticle or first path waypoint
+		M.faceToward(faceX, faceY, faceZ, not hardFace, poll)
 		pcall(function()
-			hum.AutoRotate = not combatFace and not softTurning
+			hum.AutoRotate = not combatFace
 			hum:MoveTo(goal)
 		end)
 		applyMoveKeys(hrp.Position)
@@ -564,23 +551,27 @@ return function(S)
 			end
 
 			if combatFace then
-				-- Never yaw toward the path waypoint — only the reticle
+				-- Reticle lock: never yaw toward path waypoint
 				pcall(function()
 					hum.AutoRotate = false
 				end)
 				M.faceToward(faceX, faceY, faceZ, not hardFace, dt)
 			else
-				local d = M.facingDotTo(faceX, faceZ)
-				if forceSoftTurn or (d ~= nil and d < softTurnDot) then
-					softTurning = true
-				elseif d ~= nil and d >= alignDot then
-					softTurning = false
-				end
-				if softTurning then
+				-- Free path / A*: always rotate toward current waypoint (+ AutoRotate assist)
+				local d = M.facingDotTo(goal.X, goal.Z)
+				local needTurn = forceSoftTurn or d == nil or d < alignDot
+				if needTurn then
 					pcall(function()
 						hum.AutoRotate = false
 					end)
-					M.faceToward(faceX, faceY, faceZ, not hardFace, dt)
+					-- Snapper turn on big misalignment (U-turns on path corners)
+					local soft = not hardFace
+					if d ~= nil and d < softTurnDot then
+						soft = false -- hard face for sharp path corners
+					elseif forceSoftTurn and d ~= nil and d < 0 then
+						soft = false
+					end
+					M.faceToward(goal.X, goal.Y, goal.Z, soft, dt)
 				else
 					pcall(function()
 						hum.AutoRotate = true
@@ -588,7 +579,6 @@ return function(S)
 				end
 			end
 
-			-- Relative WASD each poll (updates as path angle vs reticle changes)
 			applyMoveKeys(pos)
 
 			if now - lastIssue >= reissue then
