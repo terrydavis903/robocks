@@ -1,0 +1,6 @@
+.DS_Store
+*.bak
+*.log
+dumps/
+workspace/
+.Potassium/
