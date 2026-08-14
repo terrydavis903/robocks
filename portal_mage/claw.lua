@@ -149,20 +149,20 @@ return function(S)
 	end
 
 	---------------------------------------------------------------------------
-	-- Reachable bounds (claw hitbox hits walls before prize-pit edges)
-	-- D jam 18-03: claw stopped ~(-81.74, 36.05) while prize needed further -X.
+	-- Reachable bounds = machine wall box (flush). No imaginary inset hitbox.
+	-- Claw travel limits from W/A/S/D max dumps; prizes on the glass are valid.
 	---------------------------------------------------------------------------
 
-	-- Absolute W/A/S/D box from config (never mutated at runtime).
+	-- Absolute wall-flush AABB (never shrink with margin — margin kept for compat only).
 	function M.getReachBounds()
 		if C.CLAW_REACH_ENABLED == false then
 			return nil
 		end
-		local margin = C.CLAW_REACH_MARGIN or 0
-		local xMin = (C.CLAW_REACH_X_MIN or -math.huge) + margin
-		local xMax = (C.CLAW_REACH_X_MAX or math.huge) - margin
-		local zMin = (C.CLAW_REACH_Z_MIN or -math.huge) + margin
-		local zMax = (C.CLAW_REACH_Z_MAX or math.huge) - margin
+		-- Do NOT apply CLAW_REACH_MARGIN as an inset — that was the false inner hitbox.
+		local xMin = C.CLAW_REACH_X_MIN or -math.huge
+		local xMax = C.CLAW_REACH_X_MAX or math.huge
+		local zMin = C.CLAW_REACH_Z_MIN or -math.huge
+		local zMax = C.CLAW_REACH_Z_MAX or math.huge
 		if xMin > xMax or zMin > zMax then
 			return nil
 		end
@@ -203,7 +203,7 @@ return function(S)
 		end
 	end
 
-	-- Distance from prize center to nearest point on the claw AABB (0 if inside).
+	-- Distance from prize center to nearest point on the wall-flush AABB (0 if inside).
 	function M.prizeDistanceToReachBox(x: number, z: number): number
 		local xMin, xMax, zMin, zMax = M.getReachBounds()
 		if xMin == nil then
@@ -216,7 +216,7 @@ return function(S)
 		return math.sqrt(dx * dx + dz * dz)
 	end
 
-	-- Positive = inside (min edge dist). Negative = -distance outside box.
+	-- Kept for logs/dumps only (positive = center inside box). NOT used to reject edge prizes.
 	function M.prizeInsetScore(x: number, z: number): number
 		local xMin, xMax, zMin, zMax = M.getReachBounds()
 		if xMin == nil then
@@ -230,12 +230,18 @@ return function(S)
 	end
 
 	function M.reachSlack(): number
-		return C.CLAW_OUTSIDE_REACH_SLACK or 0.40
+		return C.CLAW_OUTSIDE_REACH_SLACK or 0
 	end
 
-	-- REACH = inside the fixed wall box, or within OUTSIDE_REACH_SLACK past an edge.
-	-- priority arg kept for call-site compatibility (no per-tier expansion).
-	function M.isPrizeReachable(x: number, z: number, _priority: number?): boolean
+	function M.defaultPrizeRadius(): number
+		return C.CLAW_PRIZE_DEFAULT_RADIUS_XZ or 0.375
+	end
+
+	-- REACH = prize *body* intersects wall-flush machine box.
+	-- Center may sit slightly outside the claw AABB when the ball is pressed on glass;
+	-- if center is within radius of the box edge, it is still grabbable.
+	-- Optional 4th arg: radiusXZ (or pass prize table as 1st via isPrizeReachablePrize).
+	function M.isPrizeReachable(x: number, z: number, _priority: number?, radiusXZ: number?): boolean
 		if C.CLAW_REACH_ENABLED == false then
 			return true
 		end
@@ -243,7 +249,19 @@ return function(S)
 		if xMin == nil then
 			return false
 		end
-		return M.prizeDistanceToReachBox(x, z) <= M.reachSlack()
+		local r = radiusXZ
+		if type(r) ~= "number" or r < 0 then
+			r = M.defaultPrizeRadius()
+		end
+		local slack = M.reachSlack()
+		return M.prizeDistanceToReachBox(x, z) <= (r + slack + 1e-4)
+	end
+
+	function M.isPrizeEntryReachable(p: any): boolean
+		if not p then
+			return false
+		end
+		return M.isPrizeReachable(p.x, p.z, p.priority, p.radiusXZ)
 	end
 
 	function M.formatReachBounds(): string
@@ -252,12 +270,12 @@ return function(S)
 			return "disabled"
 		end
 		return string.format(
-			"X[%.2f,%.2f] Z[%.2f,%.2f] slack=%.2f",
+			"walls X[%.2f,%.2f] Z[%.2f,%.2f] flush r=%.2f",
 			xMin,
 			xMax,
 			zMin,
 			zMax,
-			M.reachSlack()
+			M.defaultPrizeRadius()
 		)
 	end
 
@@ -435,8 +453,7 @@ return function(S)
 	end
 
 	-- Pick highest priority reachable prize.
-	-- Same priority: prefer more *inset* (center of pool), then closer to claw.
-	-- Never prefer a wall-hugging duplicate just because it is nearer the claw.
+	-- Same priority: closer to claw wins. Wall-edge prizes are valid (no inset bias).
 	function M.pickBestPrize(prizes: { any }, clawPos: Vector3?, opts: any?): any?
 		opts = opts or {}
 		local requireReachable = opts.requireReachable ~= false
@@ -445,8 +462,8 @@ return function(S)
 			return nil
 		end
 		local best = nil
-		local bestWallHigh = nil -- best P1..P5 that is still WALL (for dump/log)
-		local skippedWall = 0
+		local bestOutside = nil -- best high-prio truly outside machine (for logs)
+		local skippedOutside = 0
 		local skippedBlocked = 0
 		for _, p in ipairs(prizes) do
 			if excludeInst and p.inst == excludeInst then
@@ -461,20 +478,18 @@ return function(S)
 					dist = math.sqrt(dx * dx + dz * dz)
 				end
 				p.distXZ = dist
-				local reachable = M.isPrizeReachable(p.x, p.z, p.priority)
+				local reachable = M.isPrizeEntryReachable(p)
 				p.reachable = reachable
-				p.inset = M.prizeInsetScore(p.x, p.z)
+				p.inset = M.prizeInsetScore(p.x, p.z) -- debug only
 				if requireReachable and not reachable then
-					skippedWall += 1
-					-- Track best high-prio WALL skip for intention diagnostics
+					skippedOutside += 1
 					local hiMax = C.CLAW_HIGH_PRIORITY_TIER_MAX or 5
 					if (p.priority or 99) <= hiMax then
-						if not bestWallHigh
-							or p.priority < bestWallHigh.priority
-							or (p.priority == bestWallHigh.priority
-								and (p.inset or -math.huge) > (bestWallHigh.inset or -math.huge))
+						if not bestOutside
+							or p.priority < bestOutside.priority
+							or (p.priority == bestOutside.priority and dist < (bestOutside.distXZ or math.huge))
 						then
-							bestWallHigh = p
+							bestOutside = p
 						end
 					end
 				else
@@ -483,15 +498,8 @@ return function(S)
 						better = true
 					elseif p.priority < best.priority then
 						better = true
-					elseif p.priority == best.priority then
-						-- Prefer center-of-pool (inset), then nearer claw as tiebreak
-						local bi = best.inset or 0
-						local pi = p.inset or 0
-						if pi > bi + 0.05 then
-							better = true
-						elseif math.abs(pi - bi) <= 0.05 and dist < (best.distXZ or math.huge) then
-							better = true
-						end
+					elseif p.priority == best.priority and dist < (best.distXZ or math.huge) then
+						better = true
 					end
 					if better then
 						best = p
@@ -500,9 +508,9 @@ return function(S)
 			end
 		end
 		if best then
-			best._skippedUnreachable = skippedWall
+			best._skippedUnreachable = skippedOutside
 			best._skippedBlocked = skippedBlocked
-			best._bestWallHigh = bestWallHigh
+			best._bestWallHigh = bestOutside -- legacy field name for logs
 		end
 		return best
 	end
@@ -512,7 +520,7 @@ return function(S)
 		for _, p in ipairs(prizes) do
 			if M.isPrizeBlocked(p) then
 				blocked += 1
-			elseif M.isPrizeReachable(p.x, p.z, p.priority) then
+			elseif M.isPrizeEntryReachable(p) then
 				ok += 1
 			else
 				bad += 1
@@ -2136,16 +2144,16 @@ return function(S)
 					dist = math.sqrt(dx * dx + dz * dz)
 				end
 				p.distXZ = dist
-				p.reachable = M.isPrizeReachable(p.x, p.z, p.priority)
+				p.reachable = M.isPrizeEntryReachable(p)
 				p.inset = M.prizeInsetScore(p.x, p.z)
 				p.blocked = M.isPrizeBlocked(p)
 				local why = "candidate"
 				if p.blocked then
 					why = "blocked_this_run"
 				elseif not p.reachable then
-					why = "outside_reach_box"
+					why = "outside_machine_walls"
 				elseif (p.inset or 0) < 0 then
-					why = "edge_slack"
+					why = "wall_edge_ok" -- center slightly outside, body still in box
 				end
 				table.insert(dumpList, {
 					name = p.name,
@@ -2225,7 +2233,7 @@ return function(S)
 			})
 			if not target then
 				fail(string.format(
-					"no reachable prize in center box %s (all %d past walls/blocked) | %s",
+					"no grabbable prize in machine walls %s (all %d outside/blocked) | %s",
 					M.formatReachBounds(),
 					#prizes,
 					tostring(lockTag)
@@ -2257,15 +2265,14 @@ return function(S)
 				tostring(target._skippedBlocked),
 				prizeDumpPath
 			))
-			-- If we fell back to junk while a high-value ball is outside the wall box.
-			local wallHigh = target._bestWallHigh
-			if wallHigh and (target.priority or 99) > (wallHigh.priority or 99) then
+			-- High-prio prize truly outside machine walls (not wall-edge).
+			local outsideHigh = target._bestWallHigh
+			if outsideHigh and (target.priority or 99) > (outsideHigh.priority or 99) then
 				M.log("WARN", string.format(
-					"high-prio WALL (inset=%.2f) — skipped P%d %s @%s; fell back to %s",
-					wallHigh.inset or 0,
-					wallHigh.priority or -1,
-					tostring(wallHigh.name),
-					fmtXZ(wallHigh.x, wallHigh.z),
+					"high-prio outside machine — skipped P%d %s @%s; using %s",
+					outsideHigh.priority or -1,
+					tostring(outsideHigh.name),
+					fmtXZ(outsideHigh.x, outsideHigh.z),
 					prizeTag(target)
 				), false)
 			end
