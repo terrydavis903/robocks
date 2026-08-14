@@ -24,8 +24,7 @@ return function(S)
 	local PRIORITY_KEYWORDS = {
 		{ key = "spirit", tier = 2 }, -- spirit stones; own tier under P1
 		{ key = "enchantedbark", tier = 5 },
-		{ key = "ancientheartwood", tier = 4 }, -- better wood mat (above bark/wood)
-		{ key = "heartwood", tier = 4 },
+		{ key = "heartwood", tier = 4 }, -- also matches AncientHeartwood
 		{ key = "enchantedwood", tier = 5 },
 		{ key = "mysticessence", tier = 6 }, -- was 7
 		{ key = "briarvine", tier = 6 }, -- was 5
