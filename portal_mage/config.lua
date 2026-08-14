@@ -222,15 +222,17 @@ return {
 	AQUA_SLOT = 4,
 
 	-- Ability readiness comes from QuickSlotN.CooldownTimer (not hardset seconds).
-	-- R is for reticle cycle only (not in steps).
+	-- ALL abilities are TOGGLES: press slot key (1–4) to arm (Slot_Select diamond ON).
+	-- Cast pipeline (abilities.lua): ensure slot ON once → settle → steps fire only.
+	-- Do NOT put One/Two/… in steps (re-pressing toggles OFF). Use handler.slot to arm.
+	-- R is reticle cycle only (not in steps).
 	-- Red-name (aggro) mobs with no match use the first `aqua` handler as default.
 	COMBAT_HANDLERS = {
 		{
 			id = "meteor",
 			match = "ScarecrowGoblin",
-			slot = 1, -- QuickSlot1
+			slot = 1, -- toggle arm QuickSlot1
 			steps = {
-				{ key = Enum.KeyCode.One },
 				{ key = Enum.KeyCode.E },
 			},
 		},
@@ -240,7 +242,6 @@ return {
 			match = "PatchHound",
 			slot = 1,
 			steps = {
-				{ key = Enum.KeyCode.One },
 				{ key = Enum.KeyCode.E },
 			},
 		},
@@ -249,16 +250,14 @@ return {
 			match = "KettleBeetle",
 			slot = 1,
 			steps = {
-				{ key = Enum.KeyCode.One },
 				{ key = Enum.KeyCode.E },
 			},
 		},
 		{
 			id = "aqua",
 			match = "JunkKing",
-			slot = 4,
+			slot = 4, -- toggle arm QuickSlot4
 			steps = {
-				{ key = Enum.KeyCode.Four },
 				{ hold = Enum.KeyCode.E, duration = 6 },
 			},
 		},
@@ -267,16 +266,14 @@ return {
 			match = "TinTortoise",
 			slot = 4,
 			steps = {
-				{ key = Enum.KeyCode.Four },
 				{ hold = Enum.KeyCode.E, duration = 6 },
 			},
 		},
 		{
 			id = "aqua",
 			match = "BucketheadGoblin",
-			slot = 4, -- QuickSlot4
+			slot = 4,
 			steps = {
-				{ key = Enum.KeyCode.Four },
 				{ hold = Enum.KeyCode.E, duration = 6 },
 			},
 		},
@@ -286,7 +283,6 @@ return {
 			match = "CritterGoblin",
 			slot = 1,
 			steps = {
-				{ key = Enum.KeyCode.One },
 				{ key = Enum.KeyCode.E },
 			},
 		},

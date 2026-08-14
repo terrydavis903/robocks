@@ -1,4 +1,6 @@
--- portal_mage/abilities.lua — handlers, quickslot toggle (keys 1–4), cast
+-- portal_mage/abilities.lua — handlers, quickslot TOGGLE arm, cast
+-- ALL combat abilities are toggles: number key arms/disarms (Slot_Select diamond).
+-- Cast = arm once if off → settle → fire steps (E / hold E). Never re-press slot key.
 -- Standalone: needs Targets for reticle/alive checks. Never freefires.
 return function(S)
 	local C = S.Config
@@ -55,7 +57,7 @@ return function(S)
 
 	M.getQuickSlotFrame = M.getSlotFrame
 
-	-- Keys 1–4 toggle; yellow diamond Slot_Select visible = ability armed/ON
+	-- Every ability slot is a toggle. Slot_Select diamond visible = armed/ON.
 	local function guiLooksOn(g: Instance?): boolean
 		if not (g and g:IsA("GuiObject")) then
 			return false
@@ -229,10 +231,9 @@ return function(S)
 	end
 
 	---------------------------------------------------------------------------
-	-- Toggle slot ON (key only — never mouse). Already ON → do nothing.
-	-- IMPORTANT: press the hotbar key AT MOST ONCE per ensure. A second press
-	-- when Slot_Select UI lags flips the ability back OFF → endless 1/4 spam
-	-- with E firing into an unarmed slot (looks like "toggle forever, no E").
+	-- Arm toggle ON (key only — never mouse). Already ON → do nothing.
+	-- EVERY ability is a toggle: one press arms, a second press disarms.
+	-- Never press the slot key twice in one ensure (UI lag → off→on→off).
 	---------------------------------------------------------------------------
 
 	function M.ensureSlotOn(slot: number): boolean
@@ -246,7 +247,7 @@ return function(S)
 		if U.releaseMoveKeys then
 			U.releaseMoveKeys()
 		end
-		U.setStatus(string.format("[cast] arm slot %d (%s)…", slot, key.Name))
+		U.setStatus(string.format("[cast] toggle-arm slot %d (%s)…", slot, key.Name))
 		U.pressKey(key)
 		local waitFor = C.SLOT_SELECT_WAIT or 0.55
 		local t0 = os.clock()
@@ -256,15 +257,14 @@ return function(S)
 			end
 			task.wait(0.04)
 		end
-		-- Still dark: do NOT second-toggle (that was the off→on→off bug).
-		-- Caller still fires E; game sometimes accepts arm with delayed diamond.
+		-- Still dark: do NOT second-toggle. Fire E anyway; diamond can lag.
 		return M.isSlotOn(slot)
 	end
 
 	M.selectAbilitySlot = M.ensureSlotOn
 
 	---------------------------------------------------------------------------
-	-- Run handler steps (fire only — slot toggle handled separately)
+	-- Fire steps only. Slot arming is exclusively ensureSlotOn(handler.slot).
 	---------------------------------------------------------------------------
 
 	local function isHotbarKey(key: Enum.KeyCode): boolean
@@ -277,13 +277,13 @@ return function(S)
 	end
 
 	local function runSteps(handler): boolean
+		-- 1) Toggle-arm via handler.slot (all abilities)
 		if handler.slot then
 			local armed = M.ensureSlotOn(handler.slot)
-			-- Always settle after arm attempt so E is not same-frame as "1"
 			task.wait(C.SLOT_FIRE_SETTLE or 0.12)
 			if not armed and not M.isSlotOn(handler.slot) then
 				U.setStatus(string.format(
-					"[cast] slot %d diamond still off — firing E anyway",
+					"[cast] slot %d still off after arm — firing anyway",
 					handler.slot
 				))
 			end
@@ -291,16 +291,21 @@ return function(S)
 		if U.releaseMoveKeys then
 			U.releaseMoveKeys()
 		end
+		-- 2) Fire / channel only — never hotbar (would toggle OFF)
 		for _, step in ipairs(handler.steps or {}) do
 			if not isWalking() then
 				return false
 			end
 			if step.hold then
-				U.setStatus(string.format("[cast] HOLD %s %.1fs", tostring(step.hold.Name), step.duration or C.HOLD_DURATION or 6))
+				U.setStatus(string.format(
+					"[cast] HOLD %s %.1fs",
+					tostring(step.hold.Name),
+					step.duration or C.HOLD_DURATION or 6
+				))
 				U.holdKeyCharge(step.hold, isWalking, step.duration or C.HOLD_DURATION)
 			elseif step.key then
 				if isHotbarKey(step.key) then
-					-- already handled by ensureSlotOn — never re-press (would toggle OFF)
+					-- Legacy configs may still list One/Four in steps — skip always
 					continue
 				end
 				U.setStatus(string.format("[cast] press %s", tostring(step.key.Name)))
