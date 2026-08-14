@@ -33,17 +33,14 @@ getgenv().ROBOCKS_OFFLINE = false -- true = never HttpGet modules
 - Local `portal_mage.lua` prefers **disk files first**; GitHub loader prefers **remote then cache**.
 - Heavy modules (claw, dump, …) are optional — failure won’t kill the whole boot.
 
-### Claw prize priority (local override)
+### Claw prize priority
 
-Default tiers live in `portal_mage/config.lua` → `CLAW_PRIORITY_KEYWORDS` (lower = better).
+Tiers always come from a **local disk file**: `portal_mage/claw_priority.lua`  
+(lower tier number = grab first). Never fetched from GitHub.
 
-To change priorities **without forking GitHub** (e.g. a friend on the loader):
-
-1. Copy `portal_mage/claw_priority.example.lua` → `portal_mage/claw_priority.lua`
-2. Edit `{ key = "...", tier = N }` rows (keep longer keys before shorter substrings)
-3. Reload — console should show `claw_priority local override (N keywords)`
-
-`claw_priority.lua` is **always read from disk only** (never downloaded), so the loader cache will not overwrite your list.
+- First boot creates the file with defaults if it is missing (under `robocks/portal_mage/` or whichever module folder already exists).
+- Edit `{ key = "...", tier = N }` and reload. Console: `claw_priority loaded (N keywords)`.
+- Keep longer keys before shorter substrings (`aurorite` before `aurora`).
 
 ## Layout
 

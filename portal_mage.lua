@@ -153,25 +153,148 @@ if type(S.Config) ~= "table" then
 	error("config did not return table")
 end
 
--- Optional local claw priority override (always disk-only — never HttpGet).
--- Friend: copy claw_priority.example.lua → claw_priority.lua and edit tiers.
--- Paths: portal_mage/claw_priority.lua, scripts/portal_mage/, robocks/portal_mage/, …
+-- Claw prize priority: always from disk config claw_priority.lua (never HttpGet).
+-- If missing, write defaults and load them so friends can edit the local file.
 do
-	local src = tryReadLocal("claw_priority.lua")
-	if src then
+	local CLAW_PRIORITY_REL = "claw_priority.lua"
+	local CLAW_PRIORITY_DEFAULT = [=[-- portal_mage/claw_priority.lua — claw prize pick order (local config)
+--
+-- Always loaded from disk. Edit tiers here; lower tier = grab first.
+-- Unmatched prize names = tier 8. Keep longer keys before shorter substrings
+-- (aurorite before aurora, triacoin before tria, enchantedbark before bark).
+--
+-- Boot creates this file with defaults if missing (see portal_mage.lua).
+
+return {
+	{ key = "spirit", tier = 2 }, -- spirit stones; own tier under P1
+	{ key = "enchantedbark", tier = 5 },
+	{ key = "heartwood", tier = 4 }, -- also matches AncientHeartwood
+	{ key = "enchantedwood", tier = 5 },
+	{ key = "mysticessence", tier = 6 },
+	{ key = "briarvine", tier = 6 },
+	{ key = "memorysap", tier = 6 },
+	{ key = "goblincoin", tier = 3 },
+	{ key = "aurorite", tier = 7 },
+	{ key = "junkcore", tier = 7 },
+	{ key = "glowingmoss", tier = 6 },
+	{ key = "grimoire", tier = 1 },
+	{ key = "circuit", tier = 1 },
+	{ key = "meteor", tier = 1 },
+	{ key = "timber", tier = 1 },
+	{ key = "aurora", tier = 1 },
+	{ key = "amber", tier = 3 },
+	{ key = "living", tier = 3 }, -- LivingBark etc.
+	{ key = "tome", tier = 1 },
+	-- Junk / currency (below generic mats)
+	{ key = "triacoin", tier = 9 },
+	{ key = "triapouch", tier = 9 },
+	{ key = "triasack", tier = 9 },
+	{ key = "tria", tier = 9 },
+	{ key = "scrapmetal", tier = 9 },
+	{ key = "rustygear", tier = 9 },
+	{ key = "solite", tier = 9 },
+	{ key = "lumite", tier = 9 },
+}
+]=]
+
+	local function clawPriorityWritePath()
+		if isfolder then
+			for _, root in ipairs(CACHE_ROOTS) do
+				local dir = string.gsub(root, "/$", "")
+				local ok, exists = pcall(function()
+					return isfolder(dir)
+				end)
+				if ok and exists then
+					return root .. CLAW_PRIORITY_REL
+				end
+			end
+		end
+		return "robocks/portal_mage/" .. CLAW_PRIORITY_REL
+	end
+
+	local function ensureParentFolder(path)
+		if not makefolder then
+			return
+		end
+		local parts = {}
+		for part in string.gmatch(path, "[^/\\]+") do
+			table.insert(parts, part)
+		end
+		-- drop filename
+		if #parts < 2 then
+			return
+		end
+		local acc = parts[1]
+		pcall(function()
+			if not isfolder or not isfolder(acc) then
+				makefolder(acc)
+			end
+		end)
+		for i = 2, #parts - 1 do
+			acc = acc .. "/" .. parts[i]
+			pcall(function()
+				if not isfolder or not isfolder(acc) then
+					makefolder(acc)
+				end
+			end)
+		end
+	end
+
+	local function loadClawPrioritySource(src)
 		local chunk, cerr = loadstring(src, "@portal_mage/claw_priority.lua")
 		if not chunk then
 			warn("[portal_mage] claw_priority compile failed: " .. tostring(cerr))
-		else
-			local ok, result = pcall(chunk)
-			if not ok then
-				warn("[portal_mage] claw_priority exec failed: " .. tostring(result))
-			elseif type(result) == "table" and #result > 0 then
-				S.Config.CLAW_PRIORITY_KEYWORDS = result
-				print("[portal_mage] claw_priority local override (" .. #result .. " keywords)")
+			return nil
+		end
+		local ok, result = pcall(chunk)
+		if not ok then
+			warn("[portal_mage] claw_priority exec failed: " .. tostring(result))
+			return nil
+		end
+		if type(result) ~= "table" or #result == 0 then
+			warn("[portal_mage] claw_priority must return a non-empty { {key, tier}, ... } table")
+			return nil
+		end
+		return result
+	end
+
+	local src = tryReadLocal(CLAW_PRIORITY_REL)
+	local created = false
+	if not src then
+		local path = clawPriorityWritePath()
+		if writefile then
+			ensureParentFolder(path)
+			local wok, werr = pcall(writefile, path, CLAW_PRIORITY_DEFAULT)
+			if wok then
+				created = true
+				src = CLAW_PRIORITY_DEFAULT
+				print("[portal_mage] claw_priority created: " .. path)
 			else
-				warn("[portal_mage] claw_priority must return a non-empty { {key, tier}, ... } table")
+				warn("[portal_mage] claw_priority write failed (" .. tostring(werr) .. "); using embedded defaults")
+				src = CLAW_PRIORITY_DEFAULT
 			end
+		else
+			warn("[portal_mage] no writefile; claw_priority missing — using embedded defaults")
+			src = CLAW_PRIORITY_DEFAULT
+		end
+	end
+
+	local keywords = loadClawPrioritySource(src)
+	if keywords then
+		S.Config.CLAW_PRIORITY_KEYWORDS = keywords
+		print(
+			"[portal_mage] claw_priority loaded ("
+				.. #keywords
+				.. " keywords"
+				.. (created and ", new file" or "")
+				.. ")"
+		)
+	else
+		-- last resort: try embedded defaults if disk file was corrupt
+		local fallback = loadClawPrioritySource(CLAW_PRIORITY_DEFAULT)
+		if fallback then
+			S.Config.CLAW_PRIORITY_KEYWORDS = fallback
+			warn("[portal_mage] claw_priority invalid on disk; embedded defaults applied")
 		end
 	end
 end

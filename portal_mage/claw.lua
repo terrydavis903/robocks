@@ -18,8 +18,7 @@ return function(S)
 	local CLAW_ROOT_NAME = "Event_ClawMachine"
 	local MAINTAIN_INTERVAL = 0.25
 
-	-- Prize tiers live in config (C.CLAW_PRIORITY_KEYWORDS). Optional local file
-	-- portal_mage/claw_priority.lua overrides that at boot (see portal_mage.lua).
+	-- Prize tiers from portal_mage/claw_priority.lua (boot loads/creates → C.CLAW_PRIORITY_KEYWORDS).
 	-- Lower tier = higher priority. Unmatched names = P8. P9 = junk keywords.
 	local PRIORITY_KEYWORDS = (type(C.CLAW_PRIORITY_KEYWORDS) == "table" and C.CLAW_PRIORITY_KEYWORDS)
 		or {}
