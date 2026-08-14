@@ -55,17 +55,32 @@ return function(S)
 
 	M.getQuickSlotFrame = M.getSlotFrame
 
-	-- Keys 1–4 toggle; Slot_Select visible = ON
+	-- Keys 1–4 toggle; yellow diamond Slot_Select visible = ability armed/ON
+	local function guiLooksOn(g: Instance?): boolean
+		if not (g and g:IsA("GuiObject")) then
+			return false
+		end
+		if g.Visible ~= true then
+			return false
+		end
+		-- Some builds leave Visible=true and only fade the image
+		if g:IsA("ImageLabel") and (g :: ImageLabel).ImageTransparency >= 0.98 then
+			return false
+		end
+		if g:IsA("ImageButton") and (g :: ImageButton).ImageTransparency >= 0.98 then
+			return false
+		end
+		return true
+	end
+
 	function M.isSlotOn(slot: number): boolean
 		local frame = M.getSlotFrame(slot)
 		if not frame then
 			return false
 		end
-		local filled = frame:FindFirstChild("Slot_Select")
-		if filled and filled:IsA("GuiObject") then
-			return filled.Visible == true
-		end
-		return false
+		-- Authoritative: Slot_Select (filled diamond). Do NOT OR Slot_Selection —
+		-- that marker is often lit for focus/hover and caused false "on" / bad toggles.
+		return guiLooksOn(frame:FindFirstChild("Slot_Select"))
 	end
 
 	M.isSlotDiamondFilled = M.isSlotOn
@@ -215,6 +230,9 @@ return function(S)
 
 	---------------------------------------------------------------------------
 	-- Toggle slot ON (key only — never mouse). Already ON → do nothing.
+	-- IMPORTANT: press the hotbar key AT MOST ONCE per ensure. A second press
+	-- when Slot_Select UI lags flips the ability back OFF → endless 1/4 spam
+	-- with E firing into an unarmed slot (looks like "toggle forever, no E").
 	---------------------------------------------------------------------------
 
 	function M.ensureSlotOn(slot: number): boolean
@@ -228,8 +246,9 @@ return function(S)
 		if U.releaseMoveKeys then
 			U.releaseMoveKeys()
 		end
+		U.setStatus(string.format("[cast] arm slot %d (%s)…", slot, key.Name))
 		U.pressKey(key)
-		local waitFor = C.SLOT_SELECT_WAIT or 0.35
+		local waitFor = C.SLOT_SELECT_WAIT or 0.55
 		local t0 = os.clock()
 		while os.clock() - t0 < waitFor and isWalking() do
 			if M.isSlotOn(slot) then
@@ -237,11 +256,8 @@ return function(S)
 			end
 			task.wait(0.04)
 		end
-		-- One more toggle attempt only if still off
-		if not M.isSlotOn(slot) and isWalking() then
-			U.pressKey(key)
-			task.wait(0.15)
-		end
+		-- Still dark: do NOT second-toggle (that was the off→on→off bug).
+		-- Caller still fires E; game sometimes accepts arm with delayed diamond.
 		return M.isSlotOn(slot)
 	end
 
@@ -262,7 +278,15 @@ return function(S)
 
 	local function runSteps(handler): boolean
 		if handler.slot then
-			M.ensureSlotOn(handler.slot)
+			local armed = M.ensureSlotOn(handler.slot)
+			-- Always settle after arm attempt so E is not same-frame as "1"
+			task.wait(C.SLOT_FIRE_SETTLE or 0.12)
+			if not armed and not M.isSlotOn(handler.slot) then
+				U.setStatus(string.format(
+					"[cast] slot %d diamond still off — firing E anyway",
+					handler.slot
+				))
+			end
 		end
 		if U.releaseMoveKeys then
 			U.releaseMoveKeys()
@@ -272,13 +296,16 @@ return function(S)
 				return false
 			end
 			if step.hold then
+				U.setStatus(string.format("[cast] HOLD %s %.1fs", tostring(step.hold.Name), step.duration or C.HOLD_DURATION or 6))
 				U.holdKeyCharge(step.hold, isWalking, step.duration or C.HOLD_DURATION)
 			elseif step.key then
 				if isHotbarKey(step.key) then
-					continue -- already toggled
+					-- already handled by ensureSlotOn — never re-press (would toggle OFF)
+					continue
 				end
+				U.setStatus(string.format("[cast] press %s", tostring(step.key.Name)))
 				U.pressKey(step.key)
-				task.wait(C.SHORT_DELAY or 0.15)
+				task.wait(C.SHORT_DELAY or 0.18)
 			end
 		end
 		return isWalking()
@@ -328,6 +355,9 @@ return function(S)
 		if not Targets.isAlive(model) and Targets.clearHold then
 			Targets.clearHold("post_cast_dead")
 		end
+		-- Post-cast lockout: CooldownTimer often lags 0.3–1s after E; without this
+		-- combat re-enters cast and re-toggles 1/4 before CD UI updates.
+		S.lastCastAt = os.clock()
 		S.combatBusy = false
 		return ok == true
 	end

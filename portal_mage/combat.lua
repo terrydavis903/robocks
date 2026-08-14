@@ -174,6 +174,15 @@ return function(S)
 			return
 		end
 
+		-- Grace after any cast while CooldownTimer UI catches up (avoids re-arm spam)
+		local lockout = C.CAST_LOCKOUT or 0.85
+		if type(S.lastCastAt) == "number" and (os.clock() - S.lastCastAt) < lockout then
+			local left = lockout - (os.clock() - S.lastCastAt)
+			U.setStatus(string.format("[fight] cast settle %.1fs…", left))
+			task.wait(math.min(0.12, left))
+			return
+		end
+
 		local range = T().fightRange()
 		local sticky = C.KILL_AURA_STICKY or 5
 		local hold, _pos, dist = T().ensureEnemy()
@@ -216,7 +225,7 @@ return function(S)
 		end
 
 		local rem = A().getCooldownRemaining(handler.slot)
-		if rem > 0.5 then
+		if rem > 0.35 then
 			U.setStatus(string.format(
 				"[fight] CD %s %.1fs | %s d=%.1f",
 				handler.id,

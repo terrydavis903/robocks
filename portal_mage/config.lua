@@ -2,7 +2,9 @@
 return {
 	SHORT_DELAY = 0.18, -- settle after fire key (E); slot select has its own wait
 	HOLD_DURATION = 6,
-	SLOT_SELECT_WAIT = 0.35, -- max wait for toggle diamond after pressing 1/4 (keys only)
+	SLOT_SELECT_WAIT = 0.55, -- max wait for diamond after ONE arm press (never double-tap)
+	SLOT_FIRE_SETTLE = 0.12, -- pause after arm before E so toggle registers
+	CAST_LOCKOUT = 0.85, -- min seconds between casts (CooldownTimer UI lag)
 
 	DUMP_DIR = "dumps",
 	WAYPOINT_DIR = "waypoints",

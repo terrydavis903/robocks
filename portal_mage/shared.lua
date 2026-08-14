@@ -38,6 +38,7 @@ S.walkThread = nil
 S.combatThread = nil
 S.Nav = nil :: any
 S.combatBusy = false -- true only while a handler is mid-cast
+S.lastCastAt = 0 -- os.clock() of last cast (UI CD lag lockout)
 S.holdTarget = nil :: Model? -- single shared focus (targets + pathing + combat)
 S.combatPhase = "fight" :: string
 -- After a kill: wait until all combat-schema CDs are ready before picking next enemy.
