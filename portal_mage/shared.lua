@@ -54,8 +54,10 @@ S.resourceRecoverPhase = nil :: string?
 S.Targets = nil :: any
 S.Abilities = nil :: any
 S.zRegenBusy = false
--- After death: if Walk+Atk was running, resume only after full Z→Z→Q
+-- After death: if Kill Aura was running, resume only when standing + weapon drawn
 S.respawnResumeWalk = false
+S.lastSitToggleAt = 0 -- Z sit/stand toggle cooldown
+S.lastWeaponToggleAt = 0 -- Q sheathe/draw toggle cooldown
 
 -- Anti-AFK (Space every ANTI_AFK_INTERVAL)
 S.antiAfkEnabled = false

@@ -82,7 +82,7 @@ return function(S)
 		local hum = getHum()
 		if hum then
 			pcall(function()
-				hum.Sit = false
+				-- Don't clear Sit — recover sit is intentional (Z). Just stop motion.
 				hum.PlatformStand = false
 				hum:Move(Vector3.zero)
 				hum.AutoRotate = true
@@ -94,11 +94,14 @@ return function(S)
 		local hum = getHum()
 		if hum then
 			pcall(function()
-				hum.Sit = false
+				-- Do NOT force Sit=false — Z-recover sit is real state (dumps: WalkSpeed=0).
+				-- Standing is done via Z toggle in util.ensureStanding.
 				hum.PlatformStand = false
 				hum.AutoRotate = true
-				if hum.WalkSpeed < 8 then
-					hum.WalkSpeed = C.WALK_SPEED_DEFAULT or 16
+				if not U.isSeated or not U.isSeated() then
+					if hum.WalkSpeed < 8 then
+						hum.WalkSpeed = C.WALK_SPEED_DEFAULT or 16
+					end
 				end
 			end)
 		end
@@ -328,25 +331,27 @@ return function(S)
 					return
 				end
 
-				-- Sit / dead / no weapon: fix or wait (never path while seated/unarmed)
+				-- Sit / dead / sheathed: fix via Z/Q state toggles (never path until ready)
 				if U.killAuraBlocked then
 					local blocked, why = U.killAuraBlocked()
 					if blocked then
 						stopMove()
 						clearLock()
 						if why == "sitting" then
-							U.setStatus("[path] seated — standing…")
-							if U.standUp then
-								U.standUp()
+							U.setStatus("[path] sitting — Z to stand")
+							if U.ensureStanding then
+								U.ensureStanding(2.5)
 							end
-							task.wait(0.2)
+							task.wait(0.15)
 							return
-						elseif why == "no_weapon" then
-							U.setStatus("[path] equip weapon…")
-							if U.ensureWeaponEquipped then
+						elseif why == "sheathed" or why == "no_weapon" then
+							U.setStatus("[path] weapon sheathed — Q to draw")
+							if U.ensureWeaponDrawn then
+								U.ensureWeaponDrawn(1.2)
+							elseif U.ensureWeaponEquipped then
 								U.ensureWeaponEquipped()
 							end
-							task.wait(0.2)
+							task.wait(0.15)
 							return
 						elseif why == "dead" then
 							U.setStatus("[path] dead — wait respawn")
@@ -556,17 +561,26 @@ return function(S)
 			return
 		end
 
-		-- Never start while seated / recovering; stand + draw weapon first
-		if U.standUp then
-			U.standUp()
-		end
+		-- Require observed fight stance: standing + weapon drawn
 		if U.isSeated and U.isSeated() then
-			U.setStatus("Kill Aura blocked — still seated (finish Z recover)")
-			return
+			U.setStatus("Kill Aura: sitting — Z to stand…")
+			if U.ensureStanding then
+				U.ensureStanding(3.0)
+			end
+			if U.isSeated() then
+				U.setStatus("Kill Aura blocked — still sitting (press Z / finish recover)")
+				return
+			end
 		end
-		if U.ensureWeaponEquipped and not U.ensureWeaponEquipped() then
-			U.setStatus("Kill Aura blocked — equip a weapon (tool / Q)")
-			return
+		if U.isWeaponDrawn and not U.isWeaponDrawn() then
+			U.setStatus("Kill Aura: sheathed — Q to draw…")
+			if U.ensureWeaponDrawn then
+				U.ensureWeaponDrawn(1.5)
+			end
+			if not U.isWeaponDrawn() then
+				U.setStatus("Kill Aura blocked — weapon still sheathed (press Q)")
+				return
+			end
 		end
 
 		clearLock()

@@ -9,9 +9,11 @@ return {
 	-- After kill: wait only slots that were used / still show CD (not every idle slot)
 	WAIT_CDS_ONLY_ACTIVE = true,
 
-	-- Weapon equip (Kill Aura + post Z→Z→Q). Q is game "draw weapon" after sit-recover.
+	-- Stance toggles (state-driven — observe sit/draw, don't assume sequence done):
+	--   Z = sit/stand recover  |  Q = sheathe/draw weapon (has cooldown)
 	WEAPON_EQUIP_KEY = Enum.KeyCode.Q,
-	WEAPON_EQUIP_WAIT = 0.4,
+	WEAPON_EQUIP_WAIT = 1.2, -- max wait after one Q for isWeaponDrawn()
+	WEAPON_Q_COOLDOWN = 0.85, -- don't spam Q (game toggle CD)
 	WEAPON_NAME_KEYWORDS = { "staff", "wand", "tome", "sword", "blade", "bow", "weapon", "mage", "rod" },
 
 	DUMP_DIR = "dumps",

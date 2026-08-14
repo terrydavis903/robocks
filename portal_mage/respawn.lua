@@ -215,57 +215,81 @@ return function(S)
 		return full
 	end
 
-	-- Z once → wait full → Z once → wait → Q/equip weapon  (respawn + low-mana)
-	-- While zRegenBusy, Kill Aura pathing/combat must hard-idle (sitting, no weapon).
+	-- State-driven recover (not a blind Z→Z→Q sequence):
+	--   sit/stand = Z toggle (observe isSeated: Sit / Seated / WalkSpeed≈0)
+	--   sheathe/draw = Q toggle (observe isWeaponDrawn: Tool on character)
+	--   HP/MP from HUD; only sit-recover when not full.
+	-- While zRegenBusy, Kill Aura hard-idles.
 	function M.runZRegenSequence(statusPrefix: string?): boolean
 		if S.zRegenBusy then
 			return false
 		end
 		S.zRegenBusy = true
-		-- Freeze walk/combat ownership while recovering
 		if U.releaseMoveKeys then
 			U.releaseMoveKeys()
 		end
-		local prefix = statusPrefix or "Z-regen"
+		local prefix = statusPrefix or "recover"
 		local ok, err = pcall(function()
-			U.setStatus(prefix .. ": Z (enter recover / sit)")
-			pcall(function()
-				U.pressKey(Enum.KeyCode.Z)
-			end)
+			local full = M.readVitals()
 
-			M.waitUntilVitalsMaxed(prefix)
+			-- 1) Need vitals → enter sit-recover if not already seated
+			if not full then
+				if not U.isSeated() then
+					U.setStatus(prefix .. ": vitals low → sit (Z)")
+					U.ensureSeated(3.0)
+				else
+					U.setStatus(prefix .. ": already sitting — recover")
+				end
+				M.waitUntilVitalsMaxed(prefix)
+			else
+				U.setStatus(prefix .. ": vitals already full")
+			end
 
-			U.setStatus(prefix .. ": Z (exit recover)")
-			pcall(function()
-				U.pressKey(Enum.KeyCode.Z)
-			end)
-			task.wait(C.RESPAWN_AFTER_MAX_WAIT or 0.5)
+			-- 2) Must stand before drawing / fighting
+			if U.isSeated() then
+				U.setStatus(prefix .. ": sit → stand (Z)")
+				local stood = U.ensureStanding(4.0)
+				if not stood then
+					U.setStatus(prefix .. ": still sitting after Z — retry")
+					U.ensureStanding(3.0)
+				end
+			end
 
-			-- Stand + draw weapon before Kill Aura may move again
-			if U.standUp then
-				U.standUp()
+			-- 3) Draw weapon only when standing and sheathed
+			if U.isSeated() then
+				U.setStatus(prefix .. ": cannot draw — still sitting")
+			elseif U.isWeaponDrawn() then
+				U.setStatus(prefix .. ": weapon already drawn")
+			else
+				U.setStatus(prefix .. ": sheathed → draw (Q)")
+				U.ensureWeaponDrawn(C.WEAPON_EQUIP_WAIT or 1.5)
 			end
-			U.setStatus(prefix .. ": equip weapon (Q / tool)")
-			pcall(function()
-				U.pressKey(C.WEAPON_EQUIP_KEY or Enum.KeyCode.Q)
-			end)
-			task.wait(C.RESPAWN_POST_EQUIP_WAIT or 0.45)
-			if U.ensureWeaponEquipped then
-				U.ensureWeaponEquipped()
+
+			-- 4) Honest status from observed state only
+			local stance = U.getStance and U.getStance() or {}
+			local seated = stance.seated == true or U.isSeated()
+			local drawn = stance.weaponDrawn == true or U.isWeaponDrawn()
+			if not seated and drawn then
+				U.setStatus(prefix .. ": ready — standing + weapon drawn")
+			else
+				U.setStatus(string.format(
+					"%s: incomplete (sit=%s drawn=%s tools=%s)",
+					prefix,
+					tostring(seated),
+					tostring(drawn),
+					table.concat(stance.equippedTools or {}, ",")
+				))
 			end
-			if U.standUp then
-				U.standUp()
-			end
-			U.setStatus(prefix .. ": done (standing, weapon)")
 		end)
 		if not ok then
 			U.setStatus(prefix .. " error: " .. tostring(err))
 		end
 		S.zRegenBusy = false
-		return ok
+		-- Success = observed ready, not just "sequence finished"
+		return ok and (not U.isSeated()) and U.isWeaponDrawn()
 	end
 
-	-- After death: wait → full Z regen → only then restart Walk+Atk if it was active
+	-- After death: wait for character → state-driven recover → resume Kill Aura if needed
 	local function runPostRespawnSequence()
 		if S.zRegenBusy then
 			return
@@ -274,22 +298,30 @@ return function(S)
 
 		local waitAfterClick = C.RESPAWN_POST_CLICK_WAIT or 2
 		U.setStatus(string.format(
-			"Auto-respawn: waiting %.1fs…%s",
+			"Auto-respawn: waiting %.1fs for character…%s",
 			waitAfterClick,
-			if shouldResumeWalk then " (Walk+Atk paused until Z→Z→Q)" else ""
+			if shouldResumeWalk then " (Kill Aura paused)" else ""
 		))
-		-- Hold Walk+Atk frozen for the entire post-respawn sequence
 		S.zRegenBusy = true
 		S.resourceRecoverPhase = "regen"
 		task.wait(waitAfterClick)
 
-		-- runZRegenSequence sets zRegenBusy itself; clear our hold first so it can enter
+		-- Wait until we have a living humanoid before stance actions
+		local tChar = os.clock()
+		while os.clock() - tChar < 8 do
+			local hum = U.getHumanoid and U.getHumanoid()
+			if hum and hum.Health > 0 then
+				break
+			end
+			task.wait(0.2)
+		end
+
 		S.zRegenBusy = false
-		M.runZRegenSequence("Auto-respawn")
+		local ready = M.runZRegenSequence("Auto-respawn")
 
 		S.resourceRecoverPhase = nil
 		S.holdTarget = nil
-		S.waitAllCds = false -- death cleared CDs; reloop immediately after resume
+		S.waitAllCds = false
 		if S.Abilities and S.Abilities.clearSyntheticCds then
 			S.Abilities.clearSyntheticCds()
 		else
@@ -303,19 +335,18 @@ return function(S)
 			return
 		end
 
-		-- Kill Aura was active: resume only after Z→Z→Q + stand + weapon
 		S.respawnResumeWalk = false
 		if S.walking then
 			return
 		end
 
-		if U.isSeated and U.isSeated() then
-			if U.standUp then
-				U.standUp()
-			end
-		end
-		if U.ensureWeaponEquipped and not U.ensureWeaponEquipped() then
-			U.setStatus("Auto-respawn done — weapon equip failed; enable Kill Aura manually")
+		-- Only resume when stance is actually fight-ready
+		if not ready or U.isSeated() or not U.isWeaponDrawn() then
+			U.setStatus(string.format(
+				"Auto-respawn: not fight-ready (sit=%s drawn=%s) — enable Kill Aura manually",
+				tostring(U.isSeated()),
+				tostring(U.isWeaponDrawn())
+			))
 			return
 		end
 
@@ -324,7 +355,7 @@ return function(S)
 			if threat then
 				S.proximityResumeWalk = true
 				U.setStatus(string.format(
-					"Auto-respawn done — prox blocked (%s @ %.0f), resume later",
+					"Auto-respawn ready — prox blocked (%s @ %.0f)",
 					plr and plr.Name or "?",
 					dist or -1
 				))
@@ -332,7 +363,7 @@ return function(S)
 			end
 		end
 
-		U.setStatus("Auto-respawn done — resuming Kill Aura…")
+		U.setStatus("Auto-respawn ready — resuming Kill Aura…")
 		if S.Pathing and S.Pathing.toggleWalk then
 			S.Pathing.toggleWalk()
 		end

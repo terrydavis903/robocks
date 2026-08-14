@@ -155,15 +155,18 @@ return function(S)
 			return
 		end
 
-		-- Respawn Z-loop / sit / dead — never cast
+		-- Never cast while sitting / sheathed / recovering (observe state, then fix)
 		if U.killAuraBlocked then
 			local blocked, why = U.killAuraBlocked()
 			if blocked then
-				if why == "sitting" and not S.zRegenBusy and U.standUp then
-					U.standUp()
-				elseif why == "no_weapon" and U.ensureWeaponEquipped then
-					U.setStatus("[fight] equip weapon…")
-					U.ensureWeaponEquipped()
+				if why == "sitting" and not S.zRegenBusy and U.ensureStanding then
+					U.setStatus("[fight] sitting — Z to stand")
+					U.ensureStanding(2.5)
+				elseif (why == "sheathed" or why == "no_weapon") and not S.zRegenBusy then
+					U.setStatus("[fight] sheathed — Q to draw (no cast)")
+					if U.ensureWeaponDrawn then
+						U.ensureWeaponDrawn(1.2)
+					end
 				else
 					U.setStatus(string.format("[fight] paused (%s)", tostring(why)))
 					task.wait(0.15)

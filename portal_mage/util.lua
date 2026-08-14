@@ -304,7 +304,21 @@ return function(S)
 			out.moveDirection = M.vec3Table(hum.MoveDirection)
 			out.walkSpeed = hum.WalkSpeed
 			out.autoRotate = hum.AutoRotate
+			out.sit = hum.Sit == true
+			out.seatPart = hum.SeatPart ~= nil
+			pcall(function()
+				out.humanoidState = tostring(hum:GetState())
+			end)
 		end
+		-- Stance (from dumps 2026-08-14: sit walkSpeed=0; stand sheathed/drawn via tools/Q)
+		out.seated = M.isSeated and M.isSeated() or false
+		out.weaponDrawn = M.isWeaponDrawn and M.isWeaponDrawn() or false
+		local tools = M.getEquippedTools and M.getEquippedTools() or {}
+		local names = {}
+		for _, t in ipairs(tools) do
+			table.insert(names, t.Name)
+		end
+		out.equippedToolNames = names
 		local cam = workspace.CurrentCamera
 		if cam then
 			local cl = cam.CFrame.LookVector
@@ -674,45 +688,10 @@ return function(S)
 	end
 
 	---------------------------------------------------------------------------
-	-- Sit / weapon readiness (Kill Aura must not walk while seated or unarmed)
+	-- Sit (Z toggle) / weapon draw (Q toggle) — state from character, not timers.
+	-- Dumps 2026-08-14 sit→stand→draw: sit freezes WalkSpeed≈0; draw = tool on char.
+	-- Z toggles sit/stand (recover). Q toggles sheathe/draw (has cooldown).
 	---------------------------------------------------------------------------
-
-	function M.isSeated(): boolean
-		local hum = M.getHumanoid()
-		if not hum then
-			return false
-		end
-		if hum.Sit == true then
-			return true
-		end
-		local ok, seat = pcall(function()
-			return hum.SeatPart
-		end)
-		return ok and seat ~= nil
-	end
-
-	function M.standUp(): boolean
-		local hum = M.getHumanoid()
-		if not hum then
-			return false
-		end
-		pcall(function()
-			hum.Sit = false
-			hum.PlatformStand = false
-		end)
-		-- Jump nudge if still glued to a seat
-		if M.isSeated() then
-			pcall(function()
-				hum.Jump = true
-			end)
-			task.wait(0.12)
-			pcall(function()
-				hum.Sit = false
-				hum.Jump = false
-			end)
-		end
-		return not M.isSeated()
-	end
 
 	function M.getEquippedTools(): { Tool }
 		local out: { Tool } = {}
@@ -729,8 +708,134 @@ return function(S)
 		return out
 	end
 
-	function M.hasWeaponEquipped(): boolean
-		return #M.getEquippedTools() > 0
+	-- Recover sit: Humanoid sit/seat, Seated state, or game freezes WalkSpeed at 0.
+	function M.isSeated(): boolean
+		local hum = M.getHumanoid()
+		if not hum or hum.Health <= 0 then
+			return false
+		end
+		if hum.Sit == true then
+			return true
+		end
+		local okSeat, seat = pcall(function()
+			return hum.SeatPart
+		end)
+		if okSeat and seat ~= nil then
+			return true
+		end
+		local okSt, st = pcall(function()
+			return hum:GetState()
+		end)
+		if okSt and st == Enum.HumanoidStateType.Seated then
+			return true
+		end
+		-- Dump signal: sit-recover sets WalkSpeed to 0 (don't treat our force-speed as sit)
+		if not S.walkSpeedEnabled and (hum.WalkSpeed or 0) <= 0.05 then
+			return true
+		end
+		return false
+	end
+
+	-- Weapon drawn: Tool parented to character (sheathed = backpack only).
+	-- Also accept weapon-named Models under character (non-Accessory).
+	function M.isWeaponDrawn(): boolean
+		local tools = M.getEquippedTools()
+		if #tools > 0 then
+			return true
+		end
+		local lp = Players.LocalPlayer
+		local char = lp and lp.Character
+		if not char then
+			return false
+		end
+		local kws = C.WEAPON_NAME_KEYWORDS or {}
+		for _, c in ipairs(char:GetChildren()) do
+			if c:IsA("Accessory") or c:IsA("Tool") then
+				continue
+			end
+			if c:IsA("Model") or c:IsA("BasePart") or c:IsA("Folder") then
+				local n = string.lower(c.Name)
+				for _, kw in ipairs(kws) do
+					if type(kw) == "string" and kw ~= "" and string.find(n, string.lower(kw), 1, true) then
+						return true
+					end
+				end
+			end
+		end
+		return false
+	end
+
+	M.hasWeaponEquipped = M.isWeaponDrawn -- alias
+
+	function M.getStance(): any
+		local hum = M.getHumanoid()
+		local seated = M.isSeated()
+		local drawn = M.isWeaponDrawn()
+		local tools = M.getEquippedTools()
+		local names = {}
+		for _, t in ipairs(tools) do
+			table.insert(names, t.Name)
+		end
+		return {
+			seated = seated,
+			weaponDrawn = drawn,
+			walkSpeed = hum and hum.WalkSpeed or nil,
+			autoRotate = hum and hum.AutoRotate or nil,
+			sitFlag = hum and hum.Sit or nil,
+			health = hum and hum.Health or nil,
+			equippedTools = names,
+			readyToFight = (not seated) and drawn and hum ~= nil and hum.Health > 0,
+		}
+	end
+
+	local function toggleCooldownOk(lastAt: number?): boolean
+		local cd = C.WEAPON_Q_COOLDOWN or 0.8
+		if type(lastAt) ~= "number" then
+			return true
+		end
+		return (os.clock() - lastAt) >= cd
+	end
+
+	-- Press Z once to flip sit/stand, then wait for observed state.
+	function M.ensureStanding(timeout: number?): boolean
+		if not M.isSeated() then
+			return true
+		end
+		local waitFor = timeout or 3.0
+		if toggleCooldownOk(S.lastSitToggleAt) then
+			M.setStatus("[stance] Z → stand")
+			M.pressKey(Enum.KeyCode.Z)
+			S.lastSitToggleAt = os.clock()
+		end
+		local t0 = os.clock()
+		while os.clock() - t0 < waitFor do
+			if not M.isSeated() then
+				return true
+			end
+			task.wait(0.08)
+		end
+		return not M.isSeated()
+	end
+
+	-- Enter sit-recover via Z if not already seated (for HP/MP regen).
+	function M.ensureSeated(timeout: number?): boolean
+		if M.isSeated() then
+			return true
+		end
+		local waitFor = timeout or 3.0
+		if toggleCooldownOk(S.lastSitToggleAt) then
+			M.setStatus("[stance] Z → sit/recover")
+			M.pressKey(Enum.KeyCode.Z)
+			S.lastSitToggleAt = os.clock()
+		end
+		local t0 = os.clock()
+		while os.clock() - t0 < waitFor do
+			if M.isSeated() then
+				return true
+			end
+			task.wait(0.08)
+		end
+		return M.isSeated()
 	end
 
 	local function toolPreferScore(tool: Tool): number
@@ -744,63 +849,65 @@ return function(S)
 		return 1000
 	end
 
-	function M.ensureWeaponEquipped(): boolean
-		if M.hasWeaponEquipped() then
+	-- Draw weapon: Q is the game toggle (cooldown). Never claim success without isWeaponDrawn().
+	function M.ensureWeaponDrawn(timeout: number?): boolean
+		if M.isWeaponDrawn() then
 			return true
 		end
-		local lp = Players.LocalPlayer
-		if not lp then
-			return false
+		if M.isSeated() then
+			return false -- cannot draw while sitting
 		end
-		local hum = M.getHumanoid()
-		local bp = lp:FindFirstChildOfClass("Backpack")
-		local candidates: { Tool } = {}
-		if bp then
-			for _, t in ipairs(bp:GetChildren()) do
-				if t:IsA("Tool") then
-					table.insert(candidates, t)
-				end
-			end
-		end
-		table.sort(candidates, function(a, b)
-			return toolPreferScore(a) < toolPreferScore(b)
-		end)
+		local waitFor = timeout or (C.WEAPON_EQUIP_WAIT or 1.2)
+		local eqKey = C.WEAPON_EQUIP_KEY or Enum.KeyCode.Q
 
-		if hum and #candidates > 0 then
-			pcall(function()
-				hum:EquipTool(candidates[1])
-			end)
-			task.wait(C.WEAPON_EQUIP_WAIT or 0.35)
-			if M.hasWeaponEquipped() then
+		if toggleCooldownOk(S.lastWeaponToggleAt) then
+			M.setStatus("[stance] Q → draw weapon")
+			M.pressKey(eqKey)
+			S.lastWeaponToggleAt = os.clock()
+		end
+
+		local t0 = os.clock()
+		while os.clock() - t0 < waitFor do
+			if M.isWeaponDrawn() then
 				return true
 			end
+			task.wait(0.08)
 		end
 
-		-- Game "draw weapon" after sit-recover (same as post-Z Q)
-		local eqKey = C.WEAPON_EQUIP_KEY or Enum.KeyCode.Q
-		M.pressKey(eqKey)
-		task.wait(C.WEAPON_EQUIP_WAIT or 0.35)
-		if M.hasWeaponEquipped() then
-			return true
-		end
-
-		-- Retry any backpack tool
-		if hum and #candidates > 0 then
-			for _, t in ipairs(candidates) do
-				pcall(function()
-					hum:EquipTool(t)
-				end)
-				task.wait(0.2)
-				if M.hasWeaponEquipped() then
-					return true
+		-- Fallback: EquipTool from backpack (some builds still use Tools)
+		if not M.isWeaponDrawn() then
+			local lp = Players.LocalPlayer
+			local hum = M.getHumanoid()
+			local bp = lp and lp:FindFirstChildOfClass("Backpack")
+			local candidates: { Tool } = {}
+			if bp then
+				for _, t in ipairs(bp:GetChildren()) do
+					if t:IsA("Tool") then
+						table.insert(candidates, t)
+					end
 				end
 			end
+			table.sort(candidates, function(a, b)
+				return toolPreferScore(a) < toolPreferScore(b)
+			end)
+			if hum and #candidates > 0 then
+				pcall(function()
+					hum:EquipTool(candidates[1])
+				end)
+				task.wait(0.25)
+			end
 		end
-		return M.hasWeaponEquipped()
+		return M.isWeaponDrawn()
 	end
 
-	-- True when Kill Aura must idle (respawn Z-loop, sit-recover, dead, unarmed).
-	-- reason string for status/logs.
+	M.ensureWeaponEquipped = M.ensureWeaponDrawn -- alias for older callers
+
+	-- Deprecated force-unsit (wrong for Z-recover). Prefer ensureStanding (Z toggle).
+	function M.standUp(): boolean
+		return M.ensureStanding(2.5)
+	end
+
+	-- True when Kill Aura must idle (respawn, sit-recover, dead, sheathed).
 	function M.killAuraBlocked(): (boolean, string?)
 		if S.zRegenBusy then
 			return true, "z_regen"
@@ -808,7 +915,6 @@ return function(S)
 		if S.resourceRecoverPhase == "regen" then
 			return true, "mana_regen"
 		end
-		-- Death UI / no living character
 		local hum = M.getHumanoid()
 		if not hum or hum.Health <= 0 then
 			return true, "dead"
@@ -816,10 +922,19 @@ return function(S)
 		if M.isSeated() then
 			return true, "sitting"
 		end
-		if not M.hasWeaponEquipped() then
-			return true, "no_weapon"
+		if not M.isWeaponDrawn() then
+			return true, "sheathed"
 		end
 		return false, nil
+	end
+
+	-- Ready for fight: standing + weapon drawn + alive.
+	function M.readyForKillAura(): (boolean, string?)
+		local blocked, why = M.killAuraBlocked()
+		if blocked then
+			return false, why
+		end
+		return true, nil
 	end
 
 	function M.applyWalkSpeed(speed: number?): boolean
