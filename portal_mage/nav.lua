@@ -273,7 +273,7 @@ return function(S)
 				return nil
 			end
 			local wx, wz = cellToWorld(ix, iz)
-			-- Path nodes must not sit against walls (avoids kite-into-corner)
+			-- Path nodes must not sit against walls
 			local s = M.sampleFloor(wx, wz, yHint, { requireClear = true })
 			if s then
 				sampleCache[k] = s
@@ -412,85 +412,7 @@ return function(S)
 	end
 
 	---------------------------------------------------------------------------
-	-- Goal helpers (kill-aura / kite)
-	---------------------------------------------------------------------------
-
-	-- Best stand point near `target` at ~idealRange (floor + wall clearance).
-	function M.standPointNear(
-		target: Vector3,
-		idealRange: number,
-		opts: any?
-	): Vector3?
-		opts = opts or {}
-		local from: Vector3? = opts.from
-		local samples = opts.samples or cfg("NAV_RING_SAMPLES", 16)
-		local sticky = opts.sticky or 0
-		local minDist = opts.minDist or 0
-
-		if from then
-			local dNow = (from - target).Magnitude
-			if sticky > 0 and math.abs(dNow - idealRange) <= sticky then
-				local feet = M.sampleFloorAt(from, { requireClear = true })
-				if feet then
-					return feet.pos
-				end
-				-- Stuck against a wall: force re-pick an open stand point
-			end
-		end
-
-		local best: Vector3? = nil
-		local bestScore = math.huge
-		local baseAng = 0
-		if from then
-			baseAng = math.atan2(from.X - target.X, from.Z - target.Z)
-		end
-
-		for i = 0, samples - 1 do
-			local ang = baseAng + (i / samples) * math.pi * 2
-			for _, rScale in ipairs({ 1.0, 0.9, 1.1, 0.8, 1.2 }) do
-				local r = idealRange * rScale
-				local x = target.X + math.sin(ang) * r
-				local z = target.Z + math.cos(ang) * r
-				local s = M.sampleFloor(x, z, target.Y, { requireClear = true })
-				if s then
-					local d = (s.pos - target).Magnitude
-					if minDist > 0 and d < minDist * 0.9 then
-						continue
-					end
-					local rangeErr = math.abs(d - idealRange)
-					local moveCost = 0
-					if from then
-						moveCost = (s.pos - from).Magnitude * 0.04
-					end
-					-- Prefer more open space (anti-corner for kiting)
-					local wallPen = math.max(0, 6 - (s.wallClearance or 0)) * 0.8
-					local score = rangeErr + moveCost + wallPen
-					if score < bestScore then
-						bestScore = score
-						best = s.pos
-					end
-				end
-			end
-		end
-		return best
-	end
-
-	function M.randomFloorNear(center: Vector3, minR: number, maxR: number): Vector3?
-		for _ = 1, 32 do
-			local ang = math.random() * math.pi * 2
-			local r = minR + math.random() * math.max(0.1, maxR - minR)
-			local x = center.X + math.sin(ang) * r
-			local z = center.Z + math.cos(ang) * r
-			local s = M.sampleFloor(x, z, center.Y, { requireClear = true })
-			if s then
-				return s.pos
-			end
-		end
-		return nil
-	end
-
-	---------------------------------------------------------------------------
-	-- Execute path with smooth movement
+	-- Execute path with smooth movement (generic; Kill Aura no longer uses this)
 	---------------------------------------------------------------------------
 
 	-- Walk along path with Util.walkTo. Returns false if cancelled / hard fail.
@@ -733,9 +655,6 @@ return function(S)
 	end
 
 	-- Snap goal to floor, pathfind, follow with smooth MoveTo.
-	-- Never straight-lines through walls: A* unless hasClearWalk.
-	-- opts.snapOnTimeout = false recommended for combat (avoids teleport thrash).
-	-- opts.lockedPath = precomputed path to follow (skip findPath — stick to lock).
 	function M.goTo(goal: Vector3, opts: any?): boolean
 		opts = opts or {}
 		local playerPos = U.getLivePlayerVector and U.getLivePlayerVector()
@@ -751,29 +670,6 @@ return function(S)
 		if flat <= (opts.arriveStuds or cfg("NAV_ARRIVE_STUDS", 2.5)) then
 			return true
 		end
-		-- forceDirect: kite / panic step — NEVER run A* (was freezing reverse kite)
-		if opts.forceDirect == true then
-			return U.walkTo(snapped.pos.X, snapped.pos.Y, snapped.pos.Z, {
-				silent = true,
-				lookAt = opts.lookAt,
-				requireWalking = opts.requireWalking == true,
-				snapOnTimeout = false,
-				arriveStuds = opts.arriveStuds,
-				timeout = opts.timeout or 1.0,
-				useMoveKeys = if opts.useMoveKeys == nil then true else opts.useMoveKeys,
-			})
-		end
-		-- Pre-locked path: stick to it (do not recompute A*)
-		if opts.lockedPath and type(opts.lockedPath) == "table" and #opts.lockedPath > 0 then
-			if S.pathVizEnabled then
-				M.showPathViz(opts.lockedPath, "locked")
-			end
-			if opts.snapOnTimeout == nil then
-				opts.snapOnTimeout = false
-			end
-			return M.followPath(opts.lockedPath, opts)
-		end
-		-- Direct only when LOS is clear (else walls)
 		local canDirect = opts.direct ~= false
 			and flat <= (opts.directDist or 18)
 			and M.hasClearWalk(playerPos, snapped.pos)

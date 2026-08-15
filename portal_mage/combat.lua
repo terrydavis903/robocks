@@ -109,7 +109,7 @@ return function(S)
 	end
 
 	---------------------------------------------------------------------------
-	-- Low mana: stop casting; pathing still holds 30 stud stand-off
+	-- Low mana: pause casts; wait until nearby reds clear, then Z-recover
 	---------------------------------------------------------------------------
 
 	local function manaBlocks(): boolean
@@ -119,11 +119,11 @@ return function(S)
 		if S.resourceRecoverPhase == "regen" or S.zRegenBusy then
 			return true
 		end
-		if S.resourceRecoverPhase == "kite" then
-			-- Stay in kite until no reds close enough, then Z
+		if S.resourceRecoverPhase == "hold" then
+			-- Wait until no reds close, then sit-recover (Z)
 			local reds = #T().listAggro(T().fightRange() * 1.5)
 			if reds > 0 then
-				U.setStatus(string.format("LOW MANA — hold range (reds≈%d)", reds))
+				U.setStatus(string.format("LOW MANA — hold (reds≈%d)", reds))
 				return true
 			end
 			S.resourceRecoverPhase = "regen"
@@ -136,7 +136,7 @@ return function(S)
 			return true
 		end
 		if S.Respawn and S.Respawn.isManaLow and S.Respawn.isManaLow() then
-			S.resourceRecoverPhase = "kite"
+			S.resourceRecoverPhase = "hold"
 			U.setStatus("LOW MANA — pause casts")
 			return true
 		end

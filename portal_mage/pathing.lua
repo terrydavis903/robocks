@@ -4,7 +4,6 @@
 -- 2) Face them with Left/Right arrows (+ HRP/camera yaw assist)
 -- 3) Approach facing them: W if clear, else A/D slide around walls (taxicab)
 -- 4) Stop within fightRange (30) — combat does R + ability
--- 5) NO kite, NO sticky path lock, NO A* follow legs
 return function(S)
 	local C = S.Config
 	local U = S.Util
@@ -330,7 +329,7 @@ return function(S)
 
 	local function runWalker()
 		logOpen()
-		log("walker start (face→W/A/D→stand@30, no kite)")
+		log("walker start (face→W/A/D→stand@30)")
 
 		while S.walking do
 			local ok, err = pcall(function()
@@ -413,7 +412,7 @@ return function(S)
 					dist = flatDist(playerPos, epos)
 				end
 
-				-- In range (including too close): stop + face. No kite.
+				-- In range (including too close): stop + face
 				if dist <= range + sticky then
 					prepHum()
 					faceEnemy(epos, 0.05)
@@ -556,7 +555,7 @@ return function(S)
 		lastSlide = nil
 
 		U.setStatus(string.format(
-			"Kill Aura ON — face→W/A/D→stand@%d → R/cast | no kite",
+			"Kill Aura ON — face→W/A/D→stand@%d → R/cast",
 			T().fightRange()
 		))
 

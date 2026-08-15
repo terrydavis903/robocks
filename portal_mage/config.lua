@@ -79,47 +79,41 @@ return {
 	SMOOTH_WALK_SOFT_TURN_DOT = 0.35,
 	-- Once look·forward >= this, re-enable AutoRotate (~25°)
 	SMOOTH_WALK_ALIGN_DOT = 0.90,
-	-- Spoof WASD so walk anim plays / games that read keys. With reticle lock, keys are
-	-- relative to face (W toward enemy, A/D strafe, S kite) — not "turn then W".
+	-- Spoof WASD for walk anim / games that read keys.
+	-- Kill Aura: face enemy then W / A|D (relative to face). Reticle combat uses relative WASD too.
 	WALK_SPOOF_MOVE_KEYS = true,
 	WALK_KEY_DEADZONE = 0.28, -- |local axis| must exceed this to hold that key
 
-	-- Floor navigation (Walk+Atk / kill-aura)
-	NAV_CELL = 4, -- grid A* cell size (fallback only)
+	-- Floor navigation (hasClearWalk probes + optional generic goTo/A*)
+	NAV_CELL = 4,
 	NAV_MAX_CELLS = 40,
 	NAV_MAX_EXPAND = 1200,
-	-- Primary pathing: Roblox PathfindingService (not homebrew A*)
 	NAV_AGENT_RADIUS = 2,
 	NAV_AGENT_HEIGHT = 5,
 	NAV_AGENT_CAN_JUMP = true,
 	NAV_WAYPOINT_SPACING = 6,
-	-- Kill aura path debug log → dumps/killaura_*.log
-	KILL_AURA_LOG = true,
+	KILL_AURA_LOG = true, -- dumps/killaura_*.log
 	NAV_RAY_UP = 50,
 	NAV_RAY_DOWN = 140,
-	NAV_MIN_NORMAL_Y = 0.45, -- reject steep hits as "floor" (walls/cliffs)
-	NAV_MAX_STEP_Y = 7, -- max height change between neighbor cells
+	NAV_MIN_NORMAL_Y = 0.45,
+	NAV_MAX_STEP_Y = 7,
 	NAV_MAX_SNAP_Y = 10,
 	NAV_ARRIVE_STUDS = 2.5,
-	NAV_RING_SAMPLES = 16, -- standPointNear angle samples
-	-- Wall clearance: reject stand/path points pinched against non-floor surfaces
-	NAV_WALL_CLEARANCE = 2.75, -- min free studs to walls (horizontal probes)
-	NAV_WALL_PROBE = 8, -- how far each wall probe casts
-	NAV_WALL_DIRS = 8, -- compass directions
-	NAV_BODY_HEIGHTS = { 1.2, 2.5, 4.5 }, -- probe heights above floor (studs)
+	NAV_WALL_CLEARANCE = 2.75,
+	NAV_WALL_PROBE = 8,
+	NAV_WALL_DIRS = 8,
+	NAV_BODY_HEIGHTS = { 1.2, 2.5, 4.5 },
 	TARGET_CYCLE_DELAY = 0.12,
 	RETICLE_PATH = "TargetLockReticle",
 
-	-- Kill Aura loop:
-	--   face enemy (←/→) → W if clear / A|D slide walls → stand@RANGE → R → schema
-	--   no kite. death → respawn → resume
-	KILL_AURA_SCAN = 250, -- consider living mobs in this radius
-	KILL_AURA_PATH_CANDIDATES = 5, -- unused in simple face-approach loop
-	KILL_AURA_RANGE = 30, -- stand-off: approach to this, then R+cast
-	KILL_AURA_APPROACH = 30, -- alias of RANGE
-	KILL_AURA_STICKY = 4, -- stand band slack
+	-- Kill Aura: face → W/A/D → stand@RANGE → R → cast → CD wait → reloop
+	KILL_AURA_SCAN = 250,
+	KILL_AURA_RANGE = 30,
+	KILL_AURA_APPROACH = 30, -- alias
+	KILL_AURA_STICKY = 4,
+	-- Optional name priority (first match wins). Empty = nearest schema mob only.
+	-- Example: { "ScarecrowGoblin", "PatchHound", "CritterGoblin" }
 	KILL_AURA_PRIORITY = {},
-	-- aliases
 	COMBAT_RANGE = 30,
 	COMBAT_RANGE_STICKY = 3,
 	MIN_ENEMY_DISTANCE = 30,
@@ -133,8 +127,8 @@ return {
 	RESPAWN_AFTER_MAX_WAIT = 0.5, -- after second Z, before Q
 	RESPAWN_POST_EQUIP_WAIT = 0.45, -- after Q / EquipTool before resuming Kill Aura
 
-	-- Low mana: stop fighting, kite until reds clear, then Z regen
-	MANA_RECOVER_FRACTION = 0.20, -- enter recover when mp/maxMp below this
+	-- Low mana: pause casts until nearby reds clear, then Z sit-recover
+	MANA_RECOVER_FRACTION = 0.20,
 
 	-- Built-in anti-AFK: press Space this often (seconds)
 	ANTI_AFK_INTERVAL = 120,

@@ -1,4 +1,4 @@
--- portal_mage/targets.lua — living mobs, reticle, hold, shortest-path pick
+-- portal_mage/targets.lua — living mobs, reticle, hold, nearest pick
 -- Standalone. No casting / no walking.
 return function(S)
 	local C = S.Config
@@ -10,12 +10,11 @@ return function(S)
 		return C.KILL_AURA_SCAN or 250
 	end
 
-	-- Fight range: approach to this, never stand closer.
+	-- Fight stand-off (pathing approaches to this, combat casts inside band).
 	function M.fightRange(): number
 		return C.KILL_AURA_RANGE or C.KILL_AURA_APPROACH or 30
 	end
 
-	M.kiteRange = M.fightRange
 	M.approachRange = M.fightRange
 
 	---------------------------------------------------------------------------
@@ -339,65 +338,25 @@ return function(S)
 	end
 
 	---------------------------------------------------------------------------
-	-- Shortest path pick
+	-- Pick: schema matches preferred, then optional name priority, then nearest
 	---------------------------------------------------------------------------
 
-	local function pathLength(from: Vector3, to: Vector3): number?
-		local nav = S.Nav
-		if not nav or not nav.findPath then
-			return (Vector3.new(to.X - from.X, 0, to.Z - from.Z)).Magnitude
+	-- Optional ordered name keys in C.KILL_AURA_PRIORITY (lower index = better).
+	-- Empty table → pure distance among schema (or all) mobs.
+	function M.killAuraPriority(model: Model?): number
+		if not model then
+			return 999
 		end
-		local path = nav.findPath(from, to)
-		if not path or #path == 0 then
-			return nil
+		local pri = C.KILL_AURA_PRIORITY or {}
+		for i, key in ipairs(pri) do
+			if type(key) == "string" and key ~= "" and string.find(model.Name, key, 1, true) then
+				return i
+			end
 		end
-		local len = 0
-		local prev = from
-		for _, p in ipairs(path) do
-			len += (p - prev).Magnitude
-			prev = p
-		end
-		return len
+		return 100 + #pri
 	end
 
-	-- Prefer true nearest (euclidean). Light path tie-break only among near-equals.
-	function M.pickShortestPath(playerPos: Vector3, snaps: { any }): any?
-		if #snaps == 0 then
-			return nil
-		end
-		-- snaps already sorted by dist — default to snaps[1]
-		local maxCheck = math.min(C.KILL_AURA_PATH_CANDIDATES or 5, #snaps)
-		local best, bestLen = snaps[1], snaps[1].dist
-		best.pathLen = bestLen
-		for i = 2, maxCheck do
-			local e = snaps[i]
-			-- Only contest nearest if within 15 studs of it
-			if (e.dist - snaps[1].dist) > 15 then
-				break
-			end
-			local len = e.dist
-			if e.dist <= 90 then
-				local pl = pathLength(playerPos, e.pos)
-				if pl then
-					len = pl
-				end
-			end
-			e.pathLen = len
-			if len < bestLen then
-				bestLen = len
-				best = e
-			end
-		end
-		if best == snaps[1] and snaps[1].dist <= 90 then
-			local pl = pathLength(playerPos, snaps[1].pos)
-			if pl then
-				best.pathLen = pl
-			end
-		end
-		return best
-	end
-
-	-- Closest enemy in scan. Prefer combat-schema matches (still nearest among those).
+	-- Closest useful enemy. Prefer combat-schema; then KILL_AURA_PRIORITY; then dist.
 	function M.pickEnemy(playerPos: Vector3?, preferHandler: boolean?): (Model?, Vector3?, number?)
 		local origin = playerPos or U.getLivePlayerVector()
 		if not origin then
@@ -421,15 +380,20 @@ return function(S)
 			end
 		end
 
-		local best = M.pickShortestPath(origin, pool)
-		if not best then
-			return nil, nil, nil
-		end
+		table.sort(pool, function(a, b)
+			local pa = M.killAuraPriority(a.model)
+			local pb = M.killAuraPriority(b.model)
+			if pa ~= pb then
+				return pa < pb
+			end
+			return a.dist < b.dist
+		end)
+
+		local best = pool[1]
 		return best.model, best.pos, best.dist
 	end
 
-	-- Keep hold if alive, but switch if another schema mob is clearly closer
-	-- (fixes walking past the nearest enemy after a kill / sticky far hold).
+	-- Keep hold if alive; switch if another pick is clearly closer (or higher priority).
 	function M.ensureEnemy(): (Model?, Vector3?, number?)
 		local origin = U.getLivePlayerVector()
 		local hold = M.getHold()
@@ -438,9 +402,14 @@ return function(S)
 		if hold and M.isAlive(hold) then
 			local hpos = U.getCharacterLikePosition(hold)
 			local hd = if hpos and origin then (hpos - origin).Magnitude else M.dist(hold, origin)
-			if pick and pick ~= hold and pdist and hd and pdist < hd - 8 then
-				M.setHold(pick, "closer")
-				return pick, ppos, pdist
+			if pick and pick ~= hold and pdist and hd then
+				local hp = M.killAuraPriority(hold)
+				local pp = M.killAuraPriority(pick)
+				-- Better priority, or same tier but clearly closer
+				if pp < hp or (pp == hp and pdist < hd - 8) then
+					M.setHold(pick, "better")
+					return pick, ppos, pdist
+				end
 			end
 			return hold, hpos, hd
 		end
@@ -450,19 +419,6 @@ return function(S)
 			M.setHold(pick, "pick")
 		end
 		return pick, ppos, pdist
-	end
-
-	function M.killAuraPriority(model: Model?): number
-		if not model then
-			return 999
-		end
-		local pri = C.KILL_AURA_PRIORITY or {}
-		for i, key in ipairs(pri) do
-			if string.find(model.Name, key, 1, true) then
-				return i
-			end
-		end
-		return 100 + #pri
 	end
 
 	return M

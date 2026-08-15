@@ -49,7 +49,7 @@ S.waitAllCds = false
 -- Barrel: open with meteor once, then aqua
 S.barrelFightModel = nil :: Model?
 S.barrelMeteorOpened = false
--- Low mana: "kite" → "regen"
+-- Low mana: "hold" (pause casts until reds clear) → "regen" (Z sit recover)
 S.resourceRecoverPhase = nil :: string?
 S.Targets = nil :: any
 S.Abilities = nil :: any
