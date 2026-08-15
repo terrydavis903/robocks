@@ -136,19 +136,35 @@ return function(S)
 		return hit.Normal.Y < 0.55 -- vertical-ish surface
 	end
 
-	-- Need jump: ledge/step or enemy much higher
-	local function needJumpUp(playerPos: Vector3, epos: Vector3, faceDir: Vector3): boolean
-		local dy = epos.Y - playerPos.Y
-		if dy >= (C.KILL_AURA_JUMP_DY or 2.8) then
+	-- Jump only for a real ledge/step on the walk path — never because enemy is higher
+	-- (log 19-36-42: W+Space spam on flat ground while enemy.Y was above path).
+	local function needJumpUp(playerPos: Vector3, target: Vector3, faceDir: Vector3): boolean
+		if faceDir.Magnitude < 1e-4 then
+			return false
+		end
+		faceDir = Vector3.new(faceDir.X, 0, faceDir.Z)
+		if faceDir.Magnitude < 1e-4 then
+			return false
+		end
+		faceDir = faceDir.Unit
+
+		local minDy = C.KILL_AURA_JUMP_MIN_DY or 2.2
+		local maxDy = C.KILL_AURA_JUMP_MAX_DY or 9
+		local segDy = target.Y - playerPos.Y
+		local flatTo = flatDist(playerPos, target)
+
+		-- Segment ledge: next path node is clearly higher AND close enough to jump
+		if segDy >= minDy and segDy <= maxDy and flatTo <= (C.KILL_AURA_JUMP_RANGE or 8) then
 			return true
 		end
-		-- Step immediately ahead
-		local probe = C.KILL_AURA_PROBE or 4
-		local origin = playerPos + Vector3.new(0, 0.5, 0) + faceDir * 1.2
-		local hit = workspace:Raycast(origin, faceDir * probe + Vector3.new(0, 3, 0), excludeSelf())
-		if hit and hit.Normal.Y > 0.5 then
+
+		-- Immediate step under feet ahead (short ray only — not distant slopes)
+		local probe = C.KILL_AURA_JUMP_PROBE or 2.8
+		local origin = playerPos + Vector3.new(0, 0.8, 0) + faceDir * 0.8
+		local hit = workspace:Raycast(origin, faceDir * probe + Vector3.new(0, 2.2, 0), excludeSelf())
+		if hit and hit.Normal.Y > 0.55 and hit.Distance <= probe + 0.5 then
 			local stepUp = hit.Position.Y - playerPos.Y
-			if stepUp > 1.2 and stepUp < 8 then
+			if stepUp >= minDy and stepUp <= maxDy then
 				return true
 			end
 		end
@@ -318,6 +334,8 @@ return function(S)
 	local lastTurnName = "-"
 	local faceOkSince = 0 -- os.clock when first hit faceAlign; 0 = not aligned
 	local walkingFacing = false -- true while allowed to hold W without re-settle
+	local faceStuckSince = 0 -- face mode without progress
+	local faceStuckBest = -2 -- best faceDot while stuck-facing
 
 	local function facePoint(target: Vector3): number
 		local hrp = getHrp()
@@ -628,6 +646,8 @@ return function(S)
 		lastRepathAt = 0
 		faceOkSince = 0
 		walkingFacing = false
+		faceStuckSince = 0
+		faceStuckBest = -2
 		segBlocked = false
 		lastSegLabel = "-"
 	end
@@ -704,12 +724,14 @@ return function(S)
 			if faceDot < faceKeep then
 				walkingFacing = false
 				faceOkSince = 0
+				faceStuckSince = 0
 				setMoveKey(nil)
 				if U.holdJump then
 					U.holdJump(false)
 				end
 				return string.format("reface %s d=%.2f", segLabel, faceDot)
 			end
+			faceStuckSince = 0
 			-- stay in walk mode — skip settle
 		else
 			-- PHASE 1: turn only until facing current path segment (enter threshold)
@@ -719,25 +741,58 @@ return function(S)
 					U.holdJump(false)
 				end
 				faceOkSince = 0
-				return string.format("face %s d=%.2f", segLabel, faceDot)
-			end
-
-			-- PHASE 1b: brief settle once aligned before first W
-			local now = os.clock()
-			if faceOkSince <= 0 then
-				faceOkSince = now
-			end
-			if (now - faceOkSince) < faceSettle then
-				setMoveKey(nil)
-				if U.holdJump then
-					U.holdJump(false)
+				-- Stuck-face escape (log 19-36-42: face d≈0.22 for 15s, never walk)
+				local nowF = os.clock()
+				if faceStuckSince <= 0 then
+					faceStuckSince = nowF
+					faceStuckBest = faceDot
+				else
+					if faceDot > faceStuckBest + 0.05 then
+						faceStuckBest = faceDot
+						faceStuckSince = nowF
+					elseif (nowF - faceStuckSince) >= (C.KILL_AURA_FACE_STUCK or 1.25) then
+						-- Give up pure face; hard snap + walk (human just pressed W)
+						local hrp = getHrp()
+						if hrp then
+							pcall(function()
+								local p = hrp.Position
+								hrp.CFrame = CFrame.lookAt(p, Vector3.new(target.X, p.Y, target.Z))
+							end)
+						end
+						if U.holdTurnKey then
+							U.holdTurnKey(nil)
+						end
+						walkingFacing = true
+						faceStuckSince = 0
+						log(string.format(
+							"FACE_STUCK_ESCAPE d=%.2f → force walk %s",
+							faceDot,
+							segLabel
+						))
+					end
 				end
-				if U.holdTurnKey then
-					U.holdTurnKey(nil)
+				if not walkingFacing then
+					return string.format("face %s d=%.2f", segLabel, faceDot)
 				end
-				return string.format("settle %s d=%.2f", segLabel, faceDot)
+			else
+				faceStuckSince = 0
+				-- PHASE 1b: brief settle once aligned before first W
+				local now = os.clock()
+				if faceOkSince <= 0 then
+					faceOkSince = now
+				end
+				if (now - faceOkSince) < faceSettle then
+					setMoveKey(nil)
+					if U.holdJump then
+						U.holdJump(false)
+					end
+					if U.holdTurnKey then
+						U.holdTurnKey(nil)
+					end
+					return string.format("settle %s d=%.2f", segLabel, faceDot)
+				end
+				walkingFacing = true
 			end
-			walkingFacing = true
 		end
 
 		-- Facing: stop arrow spam so W is clean
@@ -775,8 +830,8 @@ return function(S)
 		end
 		lastPos = playerPos
 
-		-- Jump when we need height (use enemy height + segment ahead)
-		local jump = needJumpUp(playerPos, epos, faceDir) or needJumpUp(playerPos, target, faceDir)
+		-- Jump only for path ledge / nearby step — never enemy absolute height
+		local jump = needJumpUp(playerPos, target, faceDir)
 		if U.holdJump then
 			U.holdJump(jump)
 		end

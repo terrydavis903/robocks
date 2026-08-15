@@ -1193,15 +1193,14 @@ return function(S)
 		faceDir = faceDir.Unit
 		local probe = C.KILL_AURA_PROBE or 4.5
 
-		-- Path-ledge jump: face NEXT waypoint + Space+W (human recording style)
-		-- Not wall-face; not "ore is higher so climb now"
-		local stepJump = wantJump
-		if not stepJump and segDy > 1.2 then
-			local origin = from + Vector3.new(0, 0.5, 0) + faceDir * 1.2
-			local hit = workspace:Raycast(origin, faceDir * probe + Vector3.new(0, 3, 0), excludeSelf())
-			if hit and hit.Normal.Y > 0.5 then
+		-- Path-ledge jump only (not flat ground). wantJump = PFS Jump or large segDy.
+		local stepJump = wantJump and flatDist(from, target) <= (C.AUTO_ORE_JUMP_RANGE or 8)
+		if not stepJump and segDy >= (C.AUTO_ORE_SEG_JUMP_DY or 3.5) then
+			local origin = from + Vector3.new(0, 0.8, 0) + faceDir * 0.8
+			local hit = workspace:Raycast(origin, faceDir * 2.8 + Vector3.new(0, 2.2, 0), excludeSelf())
+			if hit and hit.Normal.Y > 0.55 and hit.Distance <= 3.2 then
 				local stepUp = hit.Position.Y - from.Y
-				if stepUp > 1.0 and stepUp < 10 then
+				if stepUp >= 2.2 and stepUp < 10 then
 					stepJump = true
 				end
 			end

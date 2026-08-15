@@ -78,9 +78,15 @@ return {
 	KILL_AURA_FACE_KEEP = 0.55, -- stay walking until look drops below this
 	KILL_AURA_FACE_TURN_RATE = 4.0, -- soft HRP yaw while turning
 	KILL_AURA_FACE_SETTLE = 0.06, -- brief hold once aligned (was 0.22 — too sticky)
+	KILL_AURA_FACE_STUCK = 1.25, -- seconds of no face progress → hard snap + force W
 	KILL_AURA_SEG_ARRIVE = 4.0, -- studs: advance to next path segment
-	KILL_AURA_PROBE = 4.5, -- wall/step probe studs
-	KILL_AURA_JUMP_DY = 2.8, -- enemy this much higher → Space+W
+	KILL_AURA_PROBE = 4.5, -- wall probe studs
+	-- Jump: path ledge / short step only — NOT "enemy is higher" (flat-ground spam)
+	KILL_AURA_JUMP_MIN_DY = 2.2, -- min height rise to jump
+	KILL_AURA_JUMP_MAX_DY = 9, -- ignore crazy verticals
+	KILL_AURA_JUMP_RANGE = 8, -- next path node must be within this XZ to jump
+	KILL_AURA_JUMP_PROBE = 2.8, -- short step ray (was full PROBE — too eager)
+	KILL_AURA_JUMP_DY = 2.2, -- legacy alias of JUMP_MIN_DY
 	-- Face debug beams (Kill Aura on): cyan=HRP look, green=to segment, pink/yellow=turn L/R
 	KILL_AURA_FACE_VIZ = true,
 	KILL_AURA_FACE_BEAM_LEN = 6, -- studs; keep short/thin
