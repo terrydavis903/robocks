@@ -461,6 +461,8 @@ return function(S)
 		by += 34
 		local pathVizBtn = mkButton(bot, "Path Viz (A*): OFF", by, Color3.fromRGB(70, 70, 80))
 		by += 34
+		local pathRecBtn = mkButton(bot, "A* Rec: OFF", by, Color3.fromRGB(70, 70, 80))
+		by += 34
 		local dumpGuiBtn = mkButton(bot, "Dump GUI", by, Color3.fromRGB(40, 130, 90))
 		by += 34
 		local stopBtn = mkButton(bot, "Stop All", by, Color3.fromRGB(140, 50, 50))
@@ -546,6 +548,10 @@ return function(S)
 			pathVizBtn.Text = on and "Path Viz (A*): ON" or "Path Viz (A*): OFF"
 			pathVizBtn.BackgroundColor3 = on and Color3.fromRGB(40, 120, 180) or Color3.fromRGB(70, 70, 80)
 		end
+		S.ui.setPathRecLabel = function(on: boolean)
+			pathRecBtn.Text = on and "A* Rec: ON" or "A* Rec: OFF"
+			pathRecBtn.BackgroundColor3 = on and Color3.fromRGB(50, 160, 90) or Color3.fromRGB(70, 70, 80)
+		end
 		S.ui.setWalkSpeedLabel = function(on: boolean, speed: number?)
 			local sp = speed or S.walkSpeedValue or 32
 			if on then
@@ -587,6 +593,18 @@ return function(S)
 				S.Nav.togglePathViz()
 			else
 				S.Util.setStatus("Path Viz not loaded — reload script")
+			end
+		end)
+		pathRecBtn.MouseButton1Click:Connect(function()
+			if S.PathRecord and S.PathRecord.toggle then
+				-- If auto-ore is running, pause it so human walk is clean
+				if not S.pathRecEnabled and S.autoOreEnabled and S.AutoOre and S.AutoOre.stop then
+					S.AutoOre.stop()
+					S.Util.setStatus("Auto Ore paused for A* Rec — walk the route, toggle OFF to save")
+				end
+				S.PathRecord.toggle()
+			else
+				S.Util.setStatus("Path recorder not loaded — reload script")
 			end
 		end)
 		dumpGuiBtn.MouseButton1Click:Connect(function()

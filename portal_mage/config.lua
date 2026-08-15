@@ -226,6 +226,14 @@ return {
 	AUTO_ORE_REPATH_COOLDOWN = 1.6, -- min seconds between force rebuilds
 	AUTO_ORE_SKIP_ROCK = false, -- true = skip basic rock/stone nodes
 	AUTO_ORE_TYPE_PRIORITY = {}, -- empty = all types; else e.g. {"aurorite","lumite"}
+	AUTO_ORE_LOG = true, -- dumps/autoore_*.log — every PATH attempt + stuck/mine
+
+	-- Human A* path recording (pause bot → walk stuck route → save JSON)
+	PATH_REC_SAMPLE = 0.08, -- seconds between position samples
+	PATH_REC_TRAIL_VIZ = true, -- green crumbs while recording
+	PATH_REC_TRAIL_EVERY = 0.25,
+	PATH_REC_TRAIL_MAX = 400,
+	PATH_REC_AUTO_PATH_VIZ = true, -- turn Path Viz ON when recording starts
 
 	-- Claw machine one-shot (WASD aim → confirm → Space drop)
 	-- Key map (player-position deltas): W=+Z S=-Z A=+X D=-X

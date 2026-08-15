@@ -464,6 +464,7 @@ S.Claw = tryFactory("claw")
 S.Ore = tryFactory("ore")
 S.Esp = tryFactory("esp")
 S.AutoOre = tryFactory("auto_ore")
+S.PathRecord = tryFactory("path_record")
 S.MeshOutline = tryFactory("mesh_outline")
 S.UI = loadFactory("ui")
 
@@ -503,6 +504,9 @@ local function start()
 	end
 	if S.ui.setPathVizLabel then
 		S.ui.setPathVizLabel(S.pathVizEnabled == true)
+	end
+	if S.ui.setPathRecLabel then
+		S.ui.setPathRecLabel(S.pathRecEnabled == true)
 	end
 	S.walkSpeedValue = (S.Config and S.Config.WALK_SPEED_DEFAULT) or 32
 	if S.ui.setWalkSpeedLabel then

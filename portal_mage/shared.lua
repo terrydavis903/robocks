@@ -25,6 +25,7 @@ S.ui = {
 	setAutoOreLabel = function(_on: boolean) end,
 	setMeshOutlineLabel = function(_on: boolean) end,
 	setPathVizLabel = function(_on: boolean) end, -- A* path lines
+	setPathRecLabel = function(_on: boolean) end, -- human A* walk recorder
 	setClawBeamLabel = function(_on: boolean) end,
 	setClawPrizeBeamsLabel = function(_on: boolean) end,
 	setClawBestPrizeLabel = function(_on: boolean) end,
@@ -100,6 +101,12 @@ S.MeshOutline = nil :: any
 -- A* path visualization (neon polyline when pathfinding runs)
 S.pathVizEnabled = false
 S.pathVizFolder = nil :: any
+
+-- Human path recording (samples + keys → dumps/pathrec_*.json)
+S.pathRecEnabled = false
+S.pathRecThread = nil
+S.PathRecord = nil :: any
+S.lastBotPath = nil :: any -- last auto-ore (or bot) A* attempt for recorder
 
 -- Player proximity guard (pause bot if other player too close)
 S.proximityGuardEnabled = true -- default ON (critical safety)

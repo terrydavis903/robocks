@@ -15,6 +15,110 @@ return function(S)
 	local faceVizTurn: BasePart? = nil -- magenta/yellow: turn bias
 
 	---------------------------------------------------------------------------
+	-- Path / event log (dumps/autoore_*.log)
+	---------------------------------------------------------------------------
+
+	local logFile: string? = nil
+	local logT0 = 0
+	local lastPathRecord: any? = nil -- for A* human recorder attachment
+
+	local function logOpen()
+		if C.AUTO_ORE_LOG == false then
+			return
+		end
+		logT0 = os.clock()
+		local stamp = os.date("%Y-%m-%d_%H-%M-%S")
+		local dir = C.DUMP_DIR or "dumps"
+		logFile = string.format("%s/autoore_%s.log", dir, stamp)
+		pcall(function()
+			if U.ensureDir then
+				U.ensureDir(dir)
+			end
+			writefile(
+				logFile,
+				"# portal_mage auto_ore paths\n# "
+					.. stamp
+					.. "\n# Each PATH block = one A*/PFS attempt (waypoints the bot will follow)\n"
+			)
+		end)
+	end
+
+	local function log(msg: string)
+		if not logFile then
+			return
+		end
+		local line = string.format("[+%.2fs] %s\n", os.clock() - logT0, msg)
+		pcall(function()
+			if appendfile then
+				appendfile(logFile, line)
+			elseif readfile and writefile and isfile and isfile(logFile) then
+				writefile(logFile, readfile(logFile) .. line)
+			end
+		end)
+	end
+
+	local function vecStr(v: Vector3): string
+		return string.format("(%.1f,%.1f,%.1f)", v.X, v.Y, v.Z)
+	end
+
+	local function logPathAttempt(
+		reason: string,
+		from: Vector3,
+		goal: Vector3,
+		pts: { Vector3 },
+		kind: string,
+		idx: number,
+		oreName: string?
+	)
+		local n = #pts
+		log(string.format(
+			"PATH reason=%s kind=%s wps=%d idx=%d ore=%s from=%s goal=%s",
+			reason,
+			kind,
+			n,
+			idx,
+			oreName or "-",
+			vecStr(from),
+			vecStr(goal)
+		))
+		-- Full waypoint list (compact) so we can replay stuck routes
+		local parts = {}
+		for i, p in ipairs(pts) do
+			table.insert(parts, string.format("%d:%.1f,%.1f,%.1f", i, p.X, p.Y, p.Z))
+		end
+		local line = "  WPS " .. table.concat(parts, " | ")
+		if #line > 3500 then
+			log(string.format("  WPS (truncated n=%d) first=%s last=%s", n, vecStr(pts[1]), vecStr(pts[n])))
+			local mid = {}
+			for i = 1, n, math.max(1, math.floor(n / 20)) do
+				table.insert(mid, string.format("%d:%.1f,%.1f,%.1f", i, pts[i].X, pts[i].Y, pts[i].Z))
+			end
+			log("  WPS_SAMPLED " .. table.concat(mid, " | "))
+		else
+			log(line)
+		end
+
+		local recPoints = {}
+		for _, p in ipairs(pts) do
+			table.insert(recPoints, { x = p.X, y = p.Y, z = p.Z })
+		end
+		lastPathRecord = {
+			source = "auto_ore",
+			reason = reason,
+			kind = kind,
+			from = { x = from.X, y = from.Y, z = from.Z },
+			goal = { x = goal.X, y = goal.Y, z = goal.Z },
+			points = recPoints,
+			waypointCount = n,
+			idx = idx,
+			ore = oreName,
+			at = os.clock(),
+			logFile = logFile,
+		}
+		S.lastBotPath = lastPathRecord
+	end
+
+	---------------------------------------------------------------------------
 	-- Helpers
 	---------------------------------------------------------------------------
 
@@ -438,6 +542,9 @@ return function(S)
 	local lastSlideAt = 0
 	local lastPos: Vector3? = nil
 	local stuckSince = 0
+	-- Forward-declared so path logs can name the target ore
+	local currentOre: Instance? = nil
+	local currentOrePos: Vector3? = nil
 
 	local function clearPath()
 		pathPts = {}
@@ -503,7 +610,7 @@ return function(S)
 		pathKind = (pathKind or "path") .. ":blocked"
 	end
 
-	local function rebuildPath(from: Vector3, to: Vector3)
+	local function rebuildPath(from: Vector3, to: Vector3, reason: string?)
 		local goal = to
 		local nav = Nav()
 		if nav and nav.sampleFloor then
@@ -541,15 +648,18 @@ return function(S)
 		advancePathIndex(from)
 		resolveClearSegment(from)
 		faceOkSince = 0
+		local oreName = currentOre and currentOre.Name or nil
+		logPathAttempt(reason or "rebuild", from, goal, pathPts, pathKind, pathIdx, oreName)
 	end
 
 	-- Rebuild sparingly: new goal / stuck / blocked / rare safety — not every step.
-	local function ensurePath(from: Vector3, to: Vector3, force: boolean?)
+	local function ensurePath(from: Vector3, to: Vector3, force: boolean?, reason: string?)
 		local safety = C.AUTO_ORE_PATH_REBUILD or 10.0
 		local goalMove = C.AUTO_ORE_PATH_GOAL_MOVE or 12
 		local drift = C.AUTO_ORE_PATH_DRIFT or 36
 		local repathCd = C.AUTO_ORE_REPATH_COOLDOWN or 1.6
 		local now = os.clock()
+		local why = reason or "tick"
 
 		local need = force == true
 			or #pathPts < 2
@@ -559,11 +669,13 @@ return function(S)
 		if not need and pathIdx >= 1 and pathIdx <= #pathPts then
 			if flatDist(from, pathPts[pathIdx]) > drift then
 				need = true
+				why = "drift"
 			end
 		end
 		-- Safety ceiling only (long paths on big maps) — not a per-second thrash
 		if not need and (now - pathBuiltAt) >= safety then
 			need = true
+			why = "safety"
 		end
 		-- Segment through collide mesh and no skip → repath
 		if not need and #pathPts >= 2 then
@@ -573,18 +685,29 @@ return function(S)
 					resolveClearSegment(from)
 					if pathIdx <= #pathPts and not nav.hasClearWalk(from, pathPts[pathIdx]) then
 						need = true
+						why = "blocked_seg"
 						pathKind = (pathKind or "path") .. ":repath"
+					else
+						log(string.format(
+							"SEG_SKIP to idx=%d/%d after blocked hop",
+							pathIdx,
+							#pathPts
+						))
 					end
 				end
 			end
 		end
 
 		if need then
+			if force then
+				why = reason or "force"
+			end
 			if force or (now - lastRepathAt) >= repathCd or #pathPts < 2 then
-				rebuildPath(from, to)
+				rebuildPath(from, to, why)
 			else
 				advancePathIndex(from)
 				resolveClearSegment(from)
+				log(string.format("PATH_DEFER why=%s (repath cooldown)", why))
 			end
 		else
 			advancePathIndex(from)
@@ -604,8 +727,6 @@ return function(S)
 	---------------------------------------------------------------------------
 
 	local visited: { [Instance]: boolean } = {}
-	local currentOre: Instance? = nil
-	local currentOrePos: Vector3? = nil
 	local minedCount = 0
 	local climbActive = false
 	local climbStartedAt = 0
@@ -1036,6 +1157,7 @@ return function(S)
 					U.holdJump(false)
 				end
 				faceOkSince = 0
+				log(string.format("CLIMB_START wall=%.1f dy=%.1f at %s", dist, dy, vecStr(from)))
 				return string.format("climb-start wall=%.1f dy=%.1f", dist, dy)
 			end
 			-- Not near wall yet: if stuck with height need, walk toward nearest wall hit beyond near range
@@ -1047,18 +1169,20 @@ return function(S)
 
 		-- Stuck on flat: force repath (cooldown inside ensurePath)
 		if stuck then
-			ensurePath(from, goal, true)
+			log(string.format("STUCK at %s dy=%.1f → repath", vecStr(from), dy))
+			ensurePath(from, goal, true, "stuck")
 		else
-			ensurePath(from, goal, false)
+			ensurePath(from, goal, false, "tick")
 		end
 		local target, segLabel = segmentTarget(from, goal)
 		-- Extra: if next segment is through collide mesh, try skip / repath before walking into it
 		local nav = Nav()
 		if nav and nav.hasClearWalk and not nav.hasClearWalk(from, target) then
+			log(string.format("SEG_BLOCKED idx=%s target=%s", segLabel, vecStr(target)))
 			resolveClearSegment(from)
 			target, segLabel = segmentTarget(from, goal)
 			if not nav.hasClearWalk(from, target) then
-				ensurePath(from, goal, true)
+				ensurePath(from, goal, true, "blocked_walk")
 				target, segLabel = segmentTarget(from, goal)
 			end
 		end
@@ -1152,7 +1276,12 @@ return function(S)
 	---------------------------------------------------------------------------
 
 	local function runLoop()
-		setStatus("Auto Ore ON — scanning Spawn_Ore…")
+		logOpen()
+		log("auto_ore start")
+		setStatus(string.format(
+			"Auto Ore ON — log %s",
+			tostring(logFile or "(off)")
+		))
 		while S.autoOreEnabled do
 			local ok, err = pcall(function()
 				if S.proximityPaused then
@@ -1193,6 +1322,13 @@ return function(S)
 					currentOre = inst
 					currentOrePos = pos
 					clearPath()
+					log(string.format(
+						"TARGET %s type=%s d=%.1f pos=%s",
+						inst.Name,
+						typeKey or "?",
+						(pos - from).Magnitude,
+						vecStr(pos)
+					))
 					setStatus(string.format(
 						"[auto-ore] target %s (%s) d=%.0f",
 						inst.Name,
@@ -1214,7 +1350,9 @@ return function(S)
 
 				local tag = approachTick(from, currentOrePos)
 				if tag == "arrive" then
+					log(string.format("ARRIVE %s at %s", currentOre.Name, vecStr(from)))
 					local result = mineAtOre(currentOre, currentOrePos)
+					log(string.format("MINE result=%s ore=%s", result, currentOre.Name))
 					visited[currentOre] = true
 					if result == "mined" or result == "dwell-done" then
 						minedCount += 1
@@ -1236,6 +1374,10 @@ return function(S)
 				if oreApi and oreApi.oreTypeKey and currentOre then
 					typeKey = oreApi.oreTypeKey(currentOre)
 				end
+				-- Log phase changes (not every tick)
+				if string.find(tag, "climb", 1, true) or string.find(tag, "face", 1, true) == 1 then
+					-- light; stuck already logs
+				end
 				setStatus(string.format(
 					"[auto-ore] %s d=%.0f %s yaw=%+.2f turn=%s %s | %s mined=%d",
 					tag,
@@ -1252,6 +1394,7 @@ return function(S)
 
 			if not ok then
 				stopMove()
+				log("ERROR " .. tostring(err))
 				setStatus("Auto Ore error: " .. tostring(err))
 				task.wait(0.5)
 			end
@@ -1263,9 +1406,14 @@ return function(S)
 		currentOre = nil
 		currentOrePos = nil
 		climbActive = false
+		log(string.format("auto_ore stop mined=%d", minedCount))
 		S.autoOreThread = nil
 		refreshLabel()
-		setStatus(string.format("Auto Ore OFF — mined=%d", minedCount))
+		setStatus(string.format(
+			"Auto Ore OFF — mined=%d log %s",
+			minedCount,
+			tostring(logFile or "")
+		))
 	end
 
 	---------------------------------------------------------------------------
@@ -1319,6 +1467,15 @@ return function(S)
 
 	function M.isEnabled(): boolean
 		return S.autoOreEnabled == true
+	end
+
+	-- Last A* attempt (for path_record human capture when stuck)
+	function M.getLastPath(): any?
+		return lastPathRecord or S.lastBotPath
+	end
+
+	function M.getLogFile(): string?
+		return logFile
 	end
 
 	return M
