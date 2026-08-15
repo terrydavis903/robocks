@@ -1455,7 +1455,7 @@ return function(S)
 
 		showTab("Bot")
 		wpPicker.refresh()
-		S.Util.setStatus("Ready — Kill Aura: face→W/A/D→stand@30→R→cast")
+		S.Util.setStatus("Ready — Kill Aura: face→W/A/D(+Space)→stand@30→R→cast")
 	end
 
 	return M

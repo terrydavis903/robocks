@@ -1,13 +1,16 @@
--- portal_mage/pathing.lua — Kill Aura movement (simple face → approach → stand)
+-- portal_mage/pathing.lua — Kill Aura movement
 --
--- 1) Pick nearest schema enemy
--- 2) Face them with Left/Right arrows (+ HRP/camera yaw assist)
--- 3) Approach facing them: W if clear, else A/D slide around walls (taxicab)
--- 4) Stop within fightRange (30) — combat does R + ability
+-- Strict loop (no teleport, no S, no MoveTo spam):
+--   1) Face enemy (←/→ + HRP/camera) until aligned
+--   2) Move with only W / A / D (one at a time)
+--   3) Corner/wall → switch A/D, re-face, continue
+--   4) Need height → Space + W
+--   5) Within fightRange → stop; combat does R + cast
 return function(S)
 	local C = S.Config
 	local U = S.Util
 	local Players = S.Services.Players
+	local VIM = S.Services.VirtualInputManager
 	local M = {}
 
 	local function T()
@@ -46,7 +49,7 @@ return function(S)
 	end
 
 	---------------------------------------------------------------------------
-	-- Kill-aura path log
+	-- Log
 	---------------------------------------------------------------------------
 
 	local logFile: string? = nil
@@ -64,7 +67,7 @@ return function(S)
 			if U.ensureDir then
 				U.ensureDir(dir)
 			end
-			writefile(logFile, "# portal_mage kill aura (face→W/A/D→stand@30)\n# " .. stamp .. "\n")
+			writefile(logFile, "# portal_mage kill aura v4 face→W|A|D (+Space) stand@30\n# " .. stamp .. "\n")
 		end)
 	end
 
@@ -86,9 +89,6 @@ return function(S)
 		if U.releaseMoveKeys then
 			U.releaseMoveKeys()
 		end
-		if U.releaseTurnKeys then
-			U.releaseTurnKeys()
-		end
 		local hum = getHum()
 		if hum then
 			pcall(function()
@@ -99,34 +99,69 @@ return function(S)
 		end
 	end
 
-	local function prepHum()
-		local hum = getHum()
-		if hum then
-			pcall(function()
-				hum.PlatformStand = false
-				hum.AutoRotate = false -- we own yaw via arrows / face
-				if not U.isSeated or not U.isSeated() then
-					if hum.WalkSpeed < 8 then
-						hum.WalkSpeed = C.WALK_SPEED_DEFAULT or 16
-					end
-				end
-			end)
+	---------------------------------------------------------------------------
+	-- Probes (walls / steps)
+	---------------------------------------------------------------------------
+
+	local function excludeSelf(): RaycastParams
+		local params = RaycastParams.new()
+		params.FilterType = Enum.RaycastFilterType.Exclude
+		local lp = Players.LocalPlayer
+		local excl = {}
+		if lp and lp.Character then
+			table.insert(excl, lp.Character)
 		end
-		return hum
+		params.FilterDescendantsInstances = excl
+		return params
+	end
+
+	-- Horizontal wall ahead of current look (or toward point)
+	local function wallAhead(from: Vector3, dir: Vector3, probe: number): boolean
+		if dir.Magnitude < 1e-4 then
+			return false
+		end
+		dir = Vector3.new(dir.X, 0, dir.Z)
+		if dir.Magnitude < 1e-4 then
+			return false
+		end
+		dir = dir.Unit
+		local nav = Nav()
+		if nav and nav.hasClearWalk then
+			return not nav.hasClearWalk(from, from + dir * probe)
+		end
+		local hit = workspace:Raycast(from + Vector3.new(0, 2.2, 0), dir * probe, excludeSelf())
+		if not hit then
+			return false
+		end
+		return hit.Normal.Y < 0.55 -- vertical-ish surface
+	end
+
+	-- Need jump: ledge/step or enemy much higher
+	local function needJumpUp(playerPos: Vector3, epos: Vector3, faceDir: Vector3): boolean
+		local dy = epos.Y - playerPos.Y
+		if dy >= (C.KILL_AURA_JUMP_DY or 2.8) then
+			return true
+		end
+		-- Step immediately ahead
+		local probe = C.KILL_AURA_PROBE or 4
+		local origin = playerPos + Vector3.new(0, 0.5, 0) + faceDir * 1.2
+		local hit = workspace:Raycast(origin, faceDir * probe + Vector3.new(0, 3, 0), excludeSelf())
+		if hit and hit.Normal.Y > 0.5 then
+			local stepUp = hit.Position.Y - playerPos.Y
+			if stepUp > 1.2 and stepUp < 8 then
+				return true
+			end
+		end
+		return false
 	end
 
 	---------------------------------------------------------------------------
-	-- Facing + taxicab approach (always face the enemy)
+	-- Face enemy (must succeed before any W/A/D)
 	---------------------------------------------------------------------------
 
-	local lastSlide: string? = nil -- "A" | "D" sticky while wall-blocked
-	local lastSlideAt = 0
-	local alignDot = C.PATH_WALK_ALIGN_DOT or 0.72
-	local faceAlign = C.KILL_AURA_FACE_ALIGN or 0.65 -- face well enough before W
+	local faceAlign = C.KILL_AURA_FACE_ALIGN or 0.88
 
-	-- Yaw character toward enemy: CFrame + camera nudge + Left/Right arrows.
-	-- Returns facingDot (1 = looking at enemy).
-	local function faceEnemy(epos: Vector3, dt: number?): number
+	local function faceEnemy(epos: Vector3): number
 		local hrp = getHrp()
 		local hum = getHum()
 		if not hrp then
@@ -139,123 +174,115 @@ return function(S)
 		end
 
 		local pos = hrp.Position
-		local look = Vector3.new(epos.X, pos.Y, epos.Z)
 		local flat = Vector3.new(epos.X - pos.X, 0, epos.Z - pos.Z)
-		if flat.Magnitude < 0.15 then
+		if flat.Magnitude < 0.2 then
 			if U.holdTurnKey then
 				U.holdTurnKey(nil)
 			end
 			return 1
 		end
+		flat = flat.Unit
 
-		-- 1) HRP CFrame toward enemy
-		local desired = CFrame.lookAt(pos, look)
-		local d = U.facingDotTo and U.facingDotTo(epos.X, epos.Z) or 0
-		local snap = (d ~= nil and d < 0.2)
+		-- 1) Hard set character yaw toward enemy every tick (primary)
 		pcall(function()
-			if snap then
-				hrp.CFrame = desired
-			else
-				local rate = C.PATH_WALK_TURN_RATE or 18
-				local alpha = 1 - math.exp(-rate * math.max(dt or 0.05, 0.016))
-				hrp.CFrame = hrp.CFrame:Lerp(desired, math.clamp(alpha, 0.2, 1))
-			end
+			local lookAt = Vector3.new(epos.X, pos.Y, epos.Z)
+			hrp.CFrame = CFrame.lookAt(pos, lookAt)
 		end)
 
-		-- 2) Camera yaw nudge (character often follows camera in this game)
-		local yawErr = U.yawErrorTo and U.yawErrorTo(epos.X, epos.Z)
+		-- 2) Camera yaw toward enemy (many games drive move from camera)
 		local cam = workspace.CurrentCamera
-		if cam and yawErr and math.abs(yawErr) > (C.PATH_TURN_YAW_DEADZONE or 0.08) then
-			local deg = (C.PATH_CAMERA_YAW_DEG or 6) * (if yawErr > 0 then 1 else -1)
-			-- yawErr > 0 = enemy left of look → rotate camera left (positive Y in Roblox)
+		if cam then
 			pcall(function()
-				local cf = cam.CFrame
-				cam.CFrame = CFrame.new(cf.Position) * CFrame.Angles(0, math.rad(deg), 0) * (cf - cf.Position)
+				local cpos = cam.CFrame.Position
+				local look = cam.CFrame.LookVector
+				local to = Vector3.new(epos.X - cpos.X, 0, epos.Z - cpos.Z)
+				if to.Magnitude > 0.2 then
+					to = to.Unit
+					local flatLook = Vector3.new(look.X, 0, look.Z)
+					if flatLook.Magnitude > 0.1 then
+						flatLook = flatLook.Unit
+						local cross = flatLook.X * to.Z - flatLook.Z * to.X -- >0 enemy left of cam
+						local dot = flatLook:Dot(to)
+						if dot < 0.98 then
+							local deg = (C.PATH_CAMERA_YAW_DEG or 10) * (if cross > 0 then 1 else -1)
+							-- stronger turn when very misaligned
+							if dot < 0 then
+								deg = deg * 2.2
+							elseif dot < 0.5 then
+								deg = deg * 1.5
+							end
+							local cf = cam.CFrame
+							local newLook = (CFrame.Angles(0, math.rad(deg), 0) * Vector3.new(look.X, 0, look.Z))
+							if newLook.Magnitude > 0.1 then
+								newLook = newLook.Unit
+								local pitchY = look.Y
+								local aim = Vector3.new(newLook.X, pitchY, newLook.Z)
+								cam.CFrame = CFrame.lookAt(cpos, cpos + aim)
+							end
+						end
+					end
+				end
 			end)
 		end
 
-		-- 3) Left/Right arrows (hold + edge re-press so games that ignore hold still turn)
-		d = U.facingDotTo and U.facingDotTo(epos.X, epos.Z) or 0
-		local need = faceAlign
-		if d ~= nil and d >= need then
+		-- 3) Left/Right arrows (pulse every poll)
+		local d = (U.facingDotTo and U.facingDotTo(epos.X, epos.Z)) or 0
+		if d >= faceAlign then
 			if U.holdTurnKey then
 				U.holdTurnKey(nil)
 			end
 			return d
 		end
-
-		local turnKey = U.turnKeyToward and U.turnKeyToward(epos.X, epos.Z, need)
+		local turnKey = U.turnKeyToward and U.turnKeyToward(epos.X, epos.Z, faceAlign)
 		if U.holdTurnKey then
-			U.holdTurnKey(turnKey)
+			U.holdTurnKey(turnKey, true) -- pulse
 		end
-		-- Pulse: brief re-down each poll (some clients only turn on edge)
-		if turnKey and C.PATH_TURN_PULSE ~= false and U.pressKey then
-			-- short tap without full release of hold: send down again
+		return (U.facingDotTo and U.facingDotTo(epos.X, epos.Z)) or 0
+	end
+
+	---------------------------------------------------------------------------
+	-- Move: only W, A, or D (exactly one). Optional Space with W.
+	---------------------------------------------------------------------------
+
+	local lastSlide: string? = nil -- "A" | "D"
+	local lastSlideAt = 0
+	local lastPos: Vector3? = nil
+	local stuckSince = 0
+
+	local function setMoveKey(which: string?) -- "W"|"A"|"D"|nil
+		if not U.holdMoveKeys then
+			return
+		end
+		if which == "W" then
+			U.holdMoveKeys({ Enum.KeyCode.W })
+		elseif which == "A" then
+			U.holdMoveKeys({ Enum.KeyCode.A })
+		elseif which == "D" then
+			U.holdMoveKeys({ Enum.KeyCode.D })
+		else
+			U.holdMoveKeys(nil)
+		end
+	end
+
+	local function approachStep(playerPos: Vector3, epos: Vector3, range: number): string
+		local hum = getHum()
+		if hum then
 			pcall(function()
-				local VIM = S.Services.VirtualInputManager
-				VIM:SendKeyEvent(true, turnKey, true, game) -- isRepeated=true
+				hum.AutoRotate = false
+				hum.PlatformStand = false
+				if hum.WalkSpeed < 8 and (not U.isSeated or not U.isSeated()) then
+					hum.WalkSpeed = C.WALK_SPEED_DEFAULT or 16
+				end
 			end)
 		end
 
-		return U.facingDotTo and U.facingDotTo(epos.X, epos.Z) or 0
-	end
-
-	local function forwardClear(from: Vector3, toward: Vector3, probe: number): boolean
-		local flat = Vector3.new(toward.X - from.X, 0, toward.Z - from.Z)
-		if flat.Magnitude < 0.2 then
-			return true
-		end
-		local dir = flat.Unit
-		local dest = from + dir * probe
-		local nav = Nav()
-		if nav and nav.hasClearWalk then
-			return nav.hasClearWalk(from, dest) == true
-		end
-		-- Raycast fallback
-		local params = RaycastParams.new()
-		params.FilterType = Enum.RaycastFilterType.Exclude
-		local lp = Players.LocalPlayer
-		local excl = {}
-		if lp and lp.Character then
-			table.insert(excl, lp.Character)
-		end
-		params.FilterDescendantsInstances = excl
-		local hit = workspace:Raycast(from + Vector3.new(0, 2, 0), dir * probe, params)
-		if not hit then
-			return true
-		end
-		-- Floor-ish hit is OK; wall normals are mostly horizontal
-		local n = hit.Normal
-		return n.Y > 0.55
-	end
-
-	local function sideClear(from: Vector3, faceDir: Vector3, side: number, probe: number): boolean
-		-- side +1 = right of facing, -1 = left
-		local right = Vector3.new(-faceDir.Z, 0, faceDir.X)
-		if right.Magnitude < 1e-4 then
-			return false
-		end
-		right = right.Unit * side
-		local dest = from + right * probe
-		local nav = Nav()
-		if nav and nav.hasClearWalk then
-			return nav.hasClearWalk(from, dest) == true
-		end
-		return true
-	end
-
-	-- One approach step: face enemy, then W or A/D. Returns status tag.
-	local function approachStep(playerPos: Vector3, epos: Vector3, range: number): string
-		prepHum()
 		local dist = flatDist(playerPos, epos)
-		local dt = C.SMOOTH_WALK_POLL or 0.08
-
-		-- Always face the enemy first
-		local d = faceEnemy(epos, dt)
+		local faceDot = faceEnemy(epos)
 
 		if dist <= range then
-			if U.holdMoveKeys then
-				U.holdMoveKeys(nil)
+			setMoveKey(nil)
+			if U.holdJump then
+				U.holdJump(false)
 			end
 			if U.holdTurnKey then
 				U.holdTurnKey(nil)
@@ -263,66 +290,85 @@ return function(S)
 			return "stand"
 		end
 
-		-- Facing: W if forward clear, else A/D slide (taxicab around walls).
-		-- Do NOT hard-block W forever if face is imperfect — move when roughly aligned.
+		-- PHASE 1: turn only until facing enemy
+		if faceDot < faceAlign then
+			setMoveKey(nil)
+			if U.holdJump then
+				U.holdJump(false)
+			end
+			return string.format("face d=%.2f", faceDot)
+		end
+
+		-- Facing: stop arrow spam so W is clean
+		if U.holdTurnKey then
+			U.holdTurnKey(nil)
+		end
+
 		local faceDir = Vector3.new(epos.X - playerPos.X, 0, epos.Z - playerPos.Z)
 		if faceDir.Magnitude < 0.2 then
-			if U.holdMoveKeys then
-				U.holdMoveKeys(nil)
+			setMoveKey(nil)
+			if U.holdJump then
+				U.holdJump(false)
 			end
 			return "stand"
 		end
 		faceDir = faceDir.Unit
-		local probe = C.KILL_AURA_PROBE or 5
-		local roughFace = faceAlign * 0.55 -- ~0.36 if faceAlign=0.65 — enough to walk
+		local probe = C.KILL_AURA_PROBE or 4.5
 
-		if d < roughFace then
-			-- Still badly off: pivot only
-			if U.holdMoveKeys then
-				U.holdMoveKeys(nil)
-			end
-			return string.format("face d=%.2f", d)
-		end
-
-		if forwardClear(playerPos, epos, probe) then
-			lastSlide = nil
-			if U.holdMoveKeys then
-				-- Prefer W; if only roughly facing, still W (HRP/arrows keep turning)
-				U.holdMoveKeys({ Enum.KeyCode.W })
-			end
-			return if d >= faceAlign then "W" else string.format("W-face d=%.2f", d)
-		end
-
-		-- Wall ahead → strafe A or D (relative to face = enemy)
-		local leftOk = sideClear(playerPos, faceDir, -1, probe)
-		local rightOk = sideClear(playerPos, faceDir, 1, probe)
-		local pick: string? = nil
-		if leftOk and not rightOk then
-			pick = "A"
-		elseif rightOk and not leftOk then
-			pick = "D"
-		elseif leftOk and rightOk then
-			-- Prefer continuing last slide; else alternate by which side is freer longer
-			if lastSlide and (os.clock() - lastSlideAt) < 1.2 then
-				pick = lastSlide
+		-- Stuck? (pressed move but barely moved) → force slide
+		local stuck = false
+		if lastPos then
+			local moved = flatDist(playerPos, lastPos)
+			if moved < 0.35 then
+				if stuckSince == 0 then
+					stuckSince = os.clock()
+				elseif os.clock() - stuckSince > 0.9 then
+					stuck = true
+				end
 			else
-				pick = if (os.clock() * 3) % 2 < 1 then "A" else "D"
+				stuckSince = 0
 			end
-		else
-			-- both blocked: try reverse of last or random
-			pick = if lastSlide == "A" then "D" else "A"
+		end
+		lastPos = playerPos
+
+		-- Jump when we need height
+		local jump = needJumpUp(playerPos, epos, faceDir)
+		if U.holdJump then
+			U.holdJump(jump)
 		end
 
+		local blocked = stuck or wallAhead(playerPos, faceDir, probe)
+		if not blocked then
+			lastSlide = nil
+			setMoveKey("W")
+			return if jump then "W+Space" else "W"
+		end
+
+		-- Corner / wall: pick A or D (not both, never S)
+		local right = Vector3.new(-faceDir.Z, 0, faceDir.X).Unit
+		local leftBlocked = wallAhead(playerPos, -right, probe)
+		local rightBlocked = wallAhead(playerPos, right, probe)
+		local pick: string
+		if not leftBlocked and rightBlocked then
+			pick = "A"
+		elseif leftBlocked and not rightBlocked then
+			pick = "D"
+		elseif lastSlide and (os.clock() - lastSlideAt) < 1.5 then
+			pick = lastSlide
+		else
+			-- Prefer side that points slightly toward enemy offset
+			local toE = faceDir
+			local preferD = toE:Dot(right) > 0 -- shouldn't happen when facing; use sticky flip
+			pick = if preferD then "D" else "A"
+			if lastSlide == pick then
+				pick = if pick == "A" then "D" else "A"
+			end
+		end
 		lastSlide = pick
 		lastSlideAt = os.clock()
-		if U.holdMoveKeys then
-			if pick == "A" then
-				U.holdMoveKeys({ Enum.KeyCode.A })
-			else
-				U.holdMoveKeys({ Enum.KeyCode.D })
-			end
-		end
-		return "slide-" .. tostring(pick)
+		stuckSince = 0
+		setMoveKey(pick)
+		return "turn-" .. pick .. (jump and "+Space" or "")
 	end
 
 	---------------------------------------------------------------------------
@@ -331,7 +377,7 @@ return function(S)
 
 	local function runWalker()
 		logOpen()
-		log("walker start v3 face→W/A/D→stand@30")
+		log("walker start v4 face→W|A|D(+Space) stand@30 no-teleport")
 
 		while S.walking do
 			local ok, err = pcall(function()
@@ -353,20 +399,18 @@ return function(S)
 					if blocked then
 						stopMove()
 						if why == "sitting" then
-							U.setStatus("[path] sitting — Z to stand")
+							U.setStatus("[path] sitting — Z")
 							if U.ensureStanding then
 								U.ensureStanding(2.5)
 							end
 						elseif why == "sheathed" or why == "no_weapon" then
-							U.setStatus("[path] sheathed — force Q")
+							U.setStatus("[path] sheathed — Q")
 							if U.markWeaponSheathed then
 								U.markWeaponSheathed()
 							end
 							if U.ensureWeaponDrawn then
 								U.ensureWeaponDrawn(1.2, true)
 							end
-						elseif why == "dead" then
-							U.setStatus("[path] dead — wait respawn")
 						else
 							U.setStatus(string.format("[path] paused (%s)", tostring(why)))
 						end
@@ -386,8 +430,12 @@ return function(S)
 				end
 
 				if S.combatBusy then
-					if U.releaseMoveKeys then
-						U.releaseMoveKeys()
+					-- Keep facing but no move keys mid-cast
+					if U.holdMoveKeys then
+						U.holdMoveKeys(nil)
+					end
+					if U.holdJump then
+						U.holdJump(false)
 					end
 					task.wait(0.05)
 					return
@@ -414,22 +462,27 @@ return function(S)
 					dist = flatDist(playerPos, epos)
 				end
 
-				-- In range (including too close): stop + face
+				-- Stand band: stop move, keep facing for combat
 				if dist <= range + sticky then
-					prepHum()
-					faceEnemy(epos, 0.05)
-					if U.holdMoveKeys then
-						U.holdMoveKeys(nil)
+					local fd = faceEnemy(epos)
+					setMoveKey(nil)
+					if U.holdJump then
+						U.holdJump(false)
 					end
 					if U.holdTurnKey then
 						U.holdTurnKey(nil)
 					end
-					U.setStatus(string.format("[stand] d=%.1f face enemy %s | %s", dist, model.Name, cds()))
+					U.setStatus(string.format(
+						"[stand] d=%.1f face=%.2f %s | %s",
+						dist,
+						fd,
+						model.Name,
+						cds()
+					))
 					task.wait(0.08)
 					return
 				end
 
-				-- Approach: face, then W / A / D
 				local tag = approachStep(playerPos, epos, range)
 				U.setStatus(string.format(
 					"[approach] d=%.1f %s → %s | %s",
@@ -438,10 +491,10 @@ return function(S)
 					model.Name,
 					cds()
 				))
-				if string.find(tag, "face", 1, true) == 1 then
-					log(string.format("face %s d=%.1f", model.Name, dist))
+				if string.sub(tag, 1, 4) == "face" then
+					log(string.format("%s enemy=%s dist=%.1f", tag, model.Name, dist))
 				end
-				task.wait(C.SMOOTH_WALK_POLL or 0.08)
+				task.wait(C.SMOOTH_WALK_POLL or 0.06)
 			end)
 
 			if not ok then
@@ -523,7 +576,7 @@ return function(S)
 		end
 
 		if U.isSeated and U.isSeated() then
-			U.setStatus("Kill Aura: sitting — Z to stand…")
+			U.setStatus("Kill Aura: sitting — Z…")
 			if U.ensureStanding then
 				U.ensureStanding(3.0)
 			end
@@ -555,9 +608,11 @@ return function(S)
 		S.walking = true
 		S.ui.setWalkLabel(true)
 		lastSlide = nil
+		lastPos = nil
+		stuckSince = 0
 
 		U.setStatus(string.format(
-			"Kill Aura ON — face→W/A/D→stand@%d → R/cast",
+			"Kill Aura ON — face→W/A/D(+Space)→stand@%d→R/cast (no TP)",
 			T().fightRange()
 		))
 

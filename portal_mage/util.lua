@@ -126,21 +126,40 @@ return function(S)
 		heldTurnKey = nil
 	end
 
-	-- Hold Left or Right arrow (or nil = release). Used to yaw character for path follow.
-	function M.holdTurnKey(key: Enum.KeyCode?)
+	-- Hold Left or Right arrow (or nil = release). pulse=true: up then down every call
+	-- so games that only turn on keydown edges still rotate.
+	function M.holdTurnKey(key: Enum.KeyCode?, pulse: boolean?)
 		if key ~= Enum.KeyCode.Left and key ~= Enum.KeyCode.Right then
 			key = nil
 		end
-		if key == heldTurnKey then
+		if key == nil then
+			if heldTurnKey then
+				keyUp(heldTurnKey)
+				heldTurnKey = nil
+			end
 			return
 		end
-		if heldTurnKey then
-			keyUp(heldTurnKey)
-			heldTurnKey = nil
-		end
-		if key then
+		if pulse or key ~= heldTurnKey then
+			if heldTurnKey and heldTurnKey ~= key then
+				keyUp(heldTurnKey)
+			elseif heldTurnKey == key then
+				keyUp(key) -- edge re-fire
+			end
 			keyDown(key)
 			heldTurnKey = key
+			return
+		end
+		-- already holding same key, no pulse
+	end
+
+	local jumpHeld = false
+	function M.holdJump(on: boolean)
+		if on and not jumpHeld then
+			keyDown(Enum.KeyCode.Space)
+			jumpHeld = true
+		elseif not on and jumpHeld then
+			keyUp(Enum.KeyCode.Space)
+			jumpHeld = false
 		end
 	end
 
@@ -154,6 +173,7 @@ return function(S)
 			heldMoveKeys[k] = nil
 		end
 		M.releaseTurnKeys()
+		M.holdJump(false)
 	end
 
 	-- Hold exactly the given set of WASD keys (nil/empty = release all).

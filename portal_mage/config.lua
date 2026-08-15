@@ -73,8 +73,9 @@ return {
 	PATH_TURN_PULSE = true, -- re-send arrow keydown each poll (games may ignore holds)
 	PATH_TURN_YAW_DEADZONE = 0.08,
 	PATH_CAMERA_YAW_DEG = 8, -- camera yaw nudge per poll while turning
-	KILL_AURA_FACE_ALIGN = 0.65, -- prefer face this well; still walk when roughly facing
-	KILL_AURA_PROBE = 5, -- studs for wall clear ahead / side slide
+	KILL_AURA_FACE_ALIGN = 0.88, -- must face enemy this well before W/A/D
+	KILL_AURA_PROBE = 4.5, -- wall/step probe studs
+	KILL_AURA_JUMP_DY = 2.8, -- enemy this much higher → Space+W
 	-- If look·forward < this (~70°), disable AutoRotate and soft-lerp instead of snap
 	SMOOTH_WALK_SOFT_TURN_DOT = 0.35,
 	-- Once look·forward >= this, re-enable AutoRotate (~25°)
