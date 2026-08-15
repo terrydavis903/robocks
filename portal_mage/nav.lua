@@ -73,6 +73,78 @@ return function(S)
 		return false
 	end
 
+	-- Large thin slabs / named ground = walkable floor (not props).
+	local function isWalkFloorPart(bp: BasePart): boolean
+		local s = bp.Size
+		local minA = math.min(s.X, s.Y, s.Z)
+		local horiz = math.sqrt(s.X * s.X + s.Z * s.Z)
+		-- Flat slab
+		if minA <= 4 and horiz >= 8 then
+			return true
+		end
+		local n = string.lower(bp.Name)
+		local path = string.lower(bp:GetFullName())
+		if string.find(n, "floor", 1, true)
+			or string.find(n, "ground", 1, true)
+			or string.find(n, "road", 1, true)
+			or string.find(n, "path", 1, true) == 1
+			or string.find(n, "bridge", 1, true)
+			or string.find(path, "terrain", 1, true)
+		then
+			return true
+		end
+		return false
+	end
+
+	-- Collide props that pathing must NOT walk through / stand on.
+	-- Dump example: Stable.Animal.T1_Mount_BrownHorse.* MeshParts (CanCollide=true).
+	-- Top normals look "floor-like" so Normal.Y alone is insufficient.
+	local function isCollideProp(inst: Instance): boolean
+		if not inst:IsA("BasePart") then
+			return false
+		end
+		local bp = inst :: BasePart
+		if not bp.CanCollide then
+			return false
+		end
+		if isWalkFloorPart(bp) then
+			return false
+		end
+		local path = string.lower(inst:GetFullName())
+		local n = string.lower(inst.Name)
+		-- Mounts / stable animals (world props, not live Workspace.Mounts riders only)
+		if string.find(path, "mount", 1, true)
+			or string.find(path, "animalspace", 1, true)
+			or string.find(path, ".animal.", 1, true)
+			or string.find(n, "horse", 1, true)
+			or string.find(n, "saddle", 1, true)
+			or string.find(n, "bridle", 1, true)
+		then
+			return true
+		end
+		-- Compact / tall collide meshes (furniture, machines, statues, crates…)
+		local s = bp.Size
+		local maxd = math.max(s.X, s.Y, s.Z)
+		local mind = math.min(s.X, s.Y, s.Z)
+		local horiz = math.sqrt(s.X * s.X + s.Z * s.Z)
+		if maxd < 100 and mind > 0.35 then
+			-- Not a floor slab: has volume / height
+			if s.Y >= 1.2 or (horiz < 24 and maxd >= 1.5) then
+				return true
+			end
+		end
+		return false
+	end
+
+	-- Expose for mesh outline / debug if needed
+	function M.isCollideProp(inst: Instance): boolean
+		return isCollideProp(inst)
+	end
+
+	function M.isWalkFloorPart(bp: BasePart): boolean
+		return isWalkFloorPart(bp)
+	end
+
 	-- Horizontal free distance to the nearest *wall-like* surface (not floor).
 	-- Returns min free studs across compass probes (capped at probe length).
 	function M.wallClearance(pos: Vector3): number
@@ -140,13 +212,24 @@ return function(S)
 		if isBarrierInstance(inst) then
 			return nil
 		end
+		-- Do not stand on horses / props (upward normals still collide)
+		if isCollideProp(inst) then
+			return nil
+		end
 		local okSurface = false
 		if inst:IsA("Terrain") then
 			okSurface = true
 		elseif inst:IsA("BasePart") then
 			local bp = inst :: BasePart
-			if bp.CanCollide then
+			if bp.CanCollide and isWalkFloorPart(bp) then
 				okSurface = true
+			elseif bp.CanCollide and not isCollideProp(bp) then
+				-- Generic large floors not caught by slab heuristic
+				local s = bp.Size
+				local horiz = math.sqrt(s.X * s.X + s.Z * s.Z)
+				if horiz >= 10 and math.min(s.X, s.Y, s.Z) <= 6 then
+					okSurface = true
+				end
 			end
 		end
 		if not okSurface then
@@ -478,21 +561,24 @@ return function(S)
 			if isBarrierInstance(inst) then
 				return true
 			end
-			-- Floor-like surfaces along the walk ray are OK (ramps/ground)
-			if hit.Normal.Y >= minNy then
-				return false
+			-- Props with CanCollide (horses, mounts, crates…) block even if top normal faces up
+			if isCollideProp(inst) then
+				return true
 			end
-			-- Vertical-ish collide geometry (MeshPart walls, unions, parts)
+			if inst:IsA("Terrain") then
+				-- Flat terrain OK; steep faces block
+				return hit.Normal.Y < minNy
+			end
 			if inst:IsA("BasePart") then
 				local bp = inst :: BasePart
-				if bp.CanCollide then
-					return true
+				if not bp.CanCollide then
+					return false
 				end
-				-- Non-collide query hits (decor) — ignore
-				return false
-			end
-			-- Terrain steep face
-			if inst:IsA("Terrain") and hit.Normal.Y < minNy then
+				-- Real floor slabs with upward normal: walk OK
+				if isWalkFloorPart(bp) and hit.Normal.Y >= minNy then
+					return false
+				end
+				-- Any other collide part (walls, mesh props, horse body sides/tops)
 				return true
 			end
 			return hit.Normal.Y < minNy

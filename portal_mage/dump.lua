@@ -839,13 +839,15 @@ return function(S)
 			"machine", "claw", "prize", "event",
 			"lamp", "light", "sign", "board",
 			"worlditem", "world_item",
+			-- Collide props (pathing must treat as solid)
+			"mount", "horse", "animal", "saddle", "stable",
 		}
 		for _, k in ipairs(keys) do
 			if string.find(n, k, 1, true) then
 				return true
 			end
 		end
-		-- Ore_*, FarmSoils_*, SP##, T1_ patterns
+		-- Ore_*, FarmSoils_*, SP##, T1_Mount_* patterns
 		if string.find(n, "ore_", 1, true) == 1 then
 			return true
 		end
@@ -853,6 +855,9 @@ return function(S)
 			return true
 		end
 		if string.match(n, "^sp%d+$") then
+			return true
+		end
+		if string.match(n, "^t%d+_mount") then
 			return true
 		end
 		return false
