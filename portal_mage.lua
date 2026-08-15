@@ -461,7 +461,6 @@ S.Proximity = loadFactory("proximity")
 
 -- 3) optional / heavy (claw is large — isolate failures)
 S.Claw = tryFactory("claw")
-S.Farm = tryFactory("farm")
 S.Ore = tryFactory("ore")
 S.MeshOutline = tryFactory("mesh_outline")
 S.UI = loadFactory("ui")
@@ -484,9 +483,6 @@ local function start()
 	end
 	if S.ui.setAntiAfkLabel then
 		S.ui.setAntiAfkLabel(S.antiAfkEnabled)
-	end
-	if S.ui.setEmptyPlotLabel then
-		S.ui.setEmptyPlotLabel(S.farmEmptyHighlightEnabled)
 	end
 	if S.ui.setOreEspLabel then
 		S.ui.setOreEspLabel(S.oreEspEnabled)

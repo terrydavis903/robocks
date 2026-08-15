@@ -471,8 +471,6 @@ return function(S)
 		by += 34
 		local antiAfkBtn = mkButton(bot, "Anti-AFK Jump: OFF", by, Color3.fromRGB(70, 70, 80))
 		by += 34
-		local emptyPlotBtn = mkButton(bot, "Empty Plot HL: OFF", by, Color3.fromRGB(70, 70, 80))
-		by += 34
 		local oreEspBtn = mkButton(bot, "Ore ESP: OFF", by, Color3.fromRGB(70, 70, 80))
 		by += 34
 		mkLabel(bot, "WalkSpeed force (re-applies every frame)", by)
@@ -516,10 +514,6 @@ return function(S)
 		S.ui.setAntiAfkLabel = function(on: boolean)
 			antiAfkBtn.Text = on and "Anti-AFK Jump: ON" or "Anti-AFK Jump: OFF"
 			antiAfkBtn.BackgroundColor3 = on and Color3.fromRGB(90, 140, 80) or Color3.fromRGB(70, 70, 80)
-		end
-		S.ui.setEmptyPlotLabel = function(on: boolean)
-			emptyPlotBtn.Text = on and "Empty Plot HL: ON" or "Empty Plot HL: OFF"
-			emptyPlotBtn.BackgroundColor3 = on and Color3.fromRGB(200, 100, 40) or Color3.fromRGB(70, 70, 80)
 		end
 		S.ui.setOreEspLabel = function(on: boolean)
 			oreEspBtn.Text = on and "Ore ESP: ON" or "Ore ESP: OFF"
@@ -596,13 +590,6 @@ return function(S)
 		antiAfkBtn.MouseButton1Click:Connect(function()
 			if S.Util and S.Util.toggleAntiAfk then
 				S.Util.toggleAntiAfk()
-			end
-		end)
-		emptyPlotBtn.MouseButton1Click:Connect(function()
-			if S.Farm and S.Farm.toggleEmptyHighlight then
-				S.Farm.toggleEmptyHighlight()
-			else
-				S.Util.setStatus("Farm module not loaded")
 			end
 		end)
 		oreEspBtn.MouseButton1Click:Connect(function()

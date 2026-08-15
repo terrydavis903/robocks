@@ -19,7 +19,6 @@ S.ui = {
 	setProxLabel = function(_on: boolean) end,
 	setAntiAfkLabel = function(_on: boolean) end,
 	setWalkSpeedLabel = function(_on: boolean, _speed: number?) end,
-	setEmptyPlotLabel = function(_on: boolean) end,
 	setOreEspLabel = function(_on: boolean) end,
 	setMeshOutlineLabel = function(_on: boolean) end,
 	setPathVizLabel = function(_on: boolean) end, -- A* path lines
@@ -72,11 +71,6 @@ S.walkSpeedEnabled = false
 S.walkSpeedValue = 32
 S.walkSpeedThread = nil
 S.walkSpeedSaved = nil :: number? -- vanilla to restore on disable
-
--- Farm empty-soil highlight
-S.farmEmptyHighlightEnabled = false
-S.farmEmptyHighlightThread = nil
-S.Farm = nil :: any
 
 -- Ore ESP (Spawn_Ore neon outlines, through walls)
 S.oreEspEnabled = false

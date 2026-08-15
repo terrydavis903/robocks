@@ -1122,18 +1122,6 @@ return function(S)
 				ores = S.Ore.snapshotFragment()
 			end
 		end)
-		local farm = nil
-		pcall(function()
-			if S.Farm and S.Farm.scanEmptySoils then
-				local empty, total, planted = S.Farm.scanEmptySoils()
-				farm = {
-					soilTotal = total,
-					planted = planted,
-					empty = #empty,
-				}
-			end
-		end)
-
 		return {
 			workspaceRootCount = #roots,
 			workspaceRoots = roots,
@@ -1142,7 +1130,6 @@ return function(S)
 			nearby = nearby,
 			collectionTags = tags,
 			ores = ores,
-			farm = farm,
 		}
 	end
 

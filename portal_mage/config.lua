@@ -144,13 +144,6 @@ return {
 	WALK_SPEED_MIN = 8,
 	WALK_SPEED_MAX = 200,
 
-	-- Farm: highlight empty FarmSoils_Plot* tiles (no plant under CropPlaceholder)
-	FARM_EMPTY_HL_INTERVAL = 0.6,
-	FARM_EMPTY_HL_FILL = Color3.fromRGB(255, 90, 40),
-	FARM_EMPTY_HL_OUTLINE = Color3.fromRGB(255, 220, 80),
-	FARM_EMPTY_HL_FILL_T = 0.55,
-	FARM_EMPTY_HL_OUTLINE_T = 0.15,
-
 	-- Ore ESP: neon through-wall outlines on Workspace.Maps.World.Spawn_Ore.SP*.Ore_*
 	-- Types seen in dump: Ore_Aurorite, Ore_Lumite; basic form is a rock (often no VFX).
 	ORE_ESP_INTERVAL = 0.75,
