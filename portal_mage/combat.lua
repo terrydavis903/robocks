@@ -218,15 +218,33 @@ return function(S)
 			dist = T().dist(hold) or 999
 		end
 
-		-- Cast whenever mob is within reach — including when they close in on us.
-		local maxFight = range + sticky + 10 -- e.g. ~45
+		-- Only fight after pathing has approached (within stand band). No cast while walking in.
+		local maxFight = range + sticky -- e.g. ~34
 		if dist > maxFight then
-			U.setStatus(string.format("[fight] wait approach d=%.1f | %s", dist, hold.Name))
+			U.setStatus(string.format("[fight] wait stand d=%.1f (need ≤%.0f) | %s", dist, maxFight, hold.Name))
 			task.wait(0.12)
 			return
 		end
 
-		-- Reticle lock then cast (even while pathing kites away)
+		-- Prefer facing the enemy before R (pathing owns arrows; light assist here)
+		local epos = U.getCharacterLikePosition(hold)
+		if epos and U.facingDotTo then
+			local fd = U.facingDotTo(epos.X, epos.Z)
+			local need = C.KILL_AURA_FACE_ALIGN or 0.85
+			if fd ~= nil and fd < need * 0.9 then
+				U.setStatus(string.format("[fight] face first d=%.1f face=%.2f", dist, fd))
+				if U.holdTurnKey and U.turnKeyToward then
+					U.holdTurnKey(U.turnKeyToward(epos.X, epos.Z, need))
+				end
+				task.wait(0.1)
+				return
+			end
+			if U.holdTurnKey then
+				U.holdTurnKey(nil)
+			end
+		end
+
+		-- Reticle then cast (only in stand range)
 		if not T().hasReticleOn(hold) then
 			U.setStatus(string.format("[fight] R → %s d=%.1f", hold.Name, dist))
 			U.pressKey(Enum.KeyCode.R)

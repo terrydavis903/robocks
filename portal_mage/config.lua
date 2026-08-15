@@ -66,12 +66,15 @@ return {
 	SMOOTH_WALK_FACE_ALPHA = 0.12, -- fallback soft yaw lerp per poll
 	-- Time-based yaw rate (higher = snappier). Used for U-turns at path tails.
 	SMOOTH_WALK_TURN_RATE = 5.5,
-	-- Free-path (no reticle): turn toward waypoint then W only when aligned
-	PATH_WALK_TURN_RATE = 18, -- snappy HRP CFrame yaw along A* (higher = faster face)
-	PATH_WALK_ALIGN_DOT = 0.72, -- hold W only when facing waypoint this well
-	-- If CFrame face is ignored by the game, hold Left/Right arrows to yaw (no RMB drag)
+	-- Free-path / face-enemy: Left/Right arrows + HRP/camera yaw (no RMB drag)
+	PATH_WALK_TURN_RATE = 18,
+	PATH_WALK_ALIGN_DOT = 0.72,
 	PATH_TURN_ARROWS = true,
-	PATH_TURN_YAW_DEADZONE = 0.08, -- |sin yaw| below this ≈ on-axis
+	PATH_TURN_PULSE = true, -- re-send arrow keydown each poll (games may ignore holds)
+	PATH_TURN_YAW_DEADZONE = 0.08,
+	PATH_CAMERA_YAW_DEG = 8, -- camera yaw nudge per poll while turning
+	KILL_AURA_FACE_ALIGN = 0.85, -- face enemy this well before W
+	KILL_AURA_PROBE = 5, -- studs for wall clear ahead / side slide
 	-- If look·forward < this (~70°), disable AutoRotate and soft-lerp instead of snap
 	SMOOTH_WALK_SOFT_TURN_DOT = 0.35,
 	-- Once look·forward >= this, re-enable AutoRotate (~25°)
@@ -108,14 +111,14 @@ return {
 	RETICLE_PATH = "TargetLockReticle",
 
 	-- Kill Aura loop:
-	--   pick closest path → stand@RANGE → R → schema until dead → wait ALL CDs → reloop
-	--   player death → CDs reset → respawn resumes Kill Aura (no CD wait) → reloop
+	--   face enemy (←/→) → W if clear / A|D slide walls → stand@RANGE → R → schema
+	--   no kite. death → respawn → resume
 	KILL_AURA_SCAN = 250, -- consider living mobs in this radius
-	KILL_AURA_PATH_CANDIDATES = 5, -- path-cost checks among nearest (keep low — A* is heavy)
-	KILL_AURA_RANGE = 30, -- fight stand-off (approach to this, never closer)
-	KILL_AURA_APPROACH = 30, -- alias of RANGE (kept for old reads)
-	KILL_AURA_STICKY = 5, -- stay put while |dist - RANGE| <= sticky (wider = less thrash)
-	KILL_AURA_PRIORITY = {}, -- unused in simple loop (path length only)
+	KILL_AURA_PATH_CANDIDATES = 5, -- unused in simple face-approach loop
+	KILL_AURA_RANGE = 30, -- stand-off: approach to this, then R+cast
+	KILL_AURA_APPROACH = 30, -- alias of RANGE
+	KILL_AURA_STICKY = 4, -- stand band slack
+	KILL_AURA_PRIORITY = {},
 	-- aliases
 	COMBAT_RANGE = 30,
 	COMBAT_RANGE_STICKY = 3,
