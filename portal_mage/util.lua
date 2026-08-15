@@ -84,6 +84,15 @@ return function(S)
 	--   W/S = along face axis, A/D = strafe, diagonals = two keys held.
 	---------------------------------------------------------------------------
 
+	-- Must be defined before yawErrorTo / facingDotTo (was nil → infinite error loop)
+	local function flatUnit(v: Vector3): Vector3?
+		local f = Vector3.new(v.X, 0, v.Z)
+		if f.Magnitude < 1e-4 then
+			return nil
+		end
+		return f.Unit
+	end
+
 	local MOVE_KEYS = {
 		Enum.KeyCode.W,
 		Enum.KeyCode.A,
@@ -490,14 +499,6 @@ return function(S)
 			M.setStatus("Teleport failed: " .. tostring(err))
 		end
 		return false
-	end
-
-	local function flatUnit(v: Vector3): Vector3?
-		local f = Vector3.new(v.X, 0, v.Z)
-		if f.Magnitude < 1e-4 then
-			return nil
-		end
-		return f.Unit
 	end
 
 	-- Face a world point (horizontal). soft=true lerps yaw (no 180° snap).
