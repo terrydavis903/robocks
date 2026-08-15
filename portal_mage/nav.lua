@@ -712,8 +712,8 @@ return function(S)
 		end
 	end
 
-	-- Roblox PathfindingService (primary). Returns world points or nil + reason.
-	function M.computeNativePath(from: Vector3, to: Vector3): ({ Vector3 }?, string)
+	-- Roblox PathfindingService (primary). Returns points + per-wp jump flags.
+	function M.computeNativePath(from: Vector3, to: Vector3): ({ Vector3 }?, string, { boolean }?)
 		local pathObj = PathfindingService:CreatePath({
 			AgentRadius = C.NAV_AGENT_RADIUS or 2,
 			AgentHeight = C.NAV_AGENT_HEIGHT or 5,
@@ -724,36 +724,42 @@ return function(S)
 			pathObj:ComputeAsync(from, to)
 		end)
 		if not ok then
-			return nil, "pfs_err:" .. tostring(err)
+			return nil, "pfs_err:" .. tostring(err), nil
 		end
 		if pathObj.Status ~= Enum.PathStatus.Success then
-			return nil, "pfs:" .. tostring(pathObj.Status)
+			return nil, "pfs:" .. tostring(pathObj.Status), nil
 		end
 		local pts: { Vector3 } = {}
+		local jumps: { boolean } = {}
 		for _, wp in ipairs(pathObj:GetWaypoints()) do
 			table.insert(pts, wp.Position)
+			local isJump = false
+			pcall(function()
+				isJump = wp.Action == Enum.PathWaypointAction.Jump
+			end)
+			table.insert(jumps, isJump)
 		end
 		if #pts == 0 then
-			return nil, "pfs:empty"
+			return nil, "pfs:empty", nil
 		end
-		return pts, "pfs"
+		return pts, "pfs", jumps
 	end
 
 	-- Prefer native PathfindingService; fall back to custom floor A*; then straight line.
-	-- Always draws when Path Viz is enabled.
-	function M.computePath(from: Vector3, to: Vector3): ({ Vector3 }, string)
+	-- Third return: jump flags aligned with points (true = Space at that node).
+	function M.computePath(from: Vector3, to: Vector3): ({ Vector3 }, string, { boolean })
 		local goal = to
 		local s = M.sampleFloor(to.X, to.Z, to.Y, { requireClear = false })
 		if s then
 			goal = s.pos
 		end
 
-		local native, nWhy = M.computeNativePath(from, goal)
+		local native, nWhy, jumps = M.computeNativePath(from, goal)
 		if native and #native > 0 then
 			if S.pathVizEnabled then
 				M.showPathViz(native, "pfs")
 			end
-			return native, "pfs"
+			return native, "pfs", jumps or {}
 		end
 
 		local custom = M.findPath(from, goal)
@@ -761,14 +767,23 @@ return function(S)
 			if S.pathVizEnabled then
 				M.showPathViz(custom, "grid")
 			end
-			return custom, "grid"
+			-- Infer jump on large step-ups
+			local inf: { boolean } = {}
+			for i, p in ipairs(custom) do
+				local j = false
+				if i > 1 then
+					j = (p.Y - custom[i - 1].Y) >= 3.5
+				end
+				table.insert(inf, j)
+			end
+			return custom, "grid", inf
 		end
 
 		local line = { from, goal }
 		if S.pathVizEnabled then
 			M.showPathViz(line, "line:" .. tostring(nWhy or "fail"))
 		end
-		return line, "line"
+		return line, "line", { false, (goal.Y - from.Y) >= 3.5 }
 	end
 
 	function M.setPathVizEnabled(on: boolean)

@@ -533,6 +533,7 @@ return function(S)
 	---------------------------------------------------------------------------
 
 	local pathPts: { Vector3 } = {}
+	local pathJumps: { boolean } = {} -- true = PFS Jump / big step at this index
 	local pathIdx = 1
 	local pathBuiltAt = 0
 	local pathGoal: Vector3? = nil
@@ -542,12 +543,18 @@ return function(S)
 	local lastSlideAt = 0
 	local lastPos: Vector3? = nil
 	local stuckSince = 0
+	local climbActive = false
+	local climbStartedAt = 0
+	local climbStartY = 0
+	local climbTargetY = 0
+	local climbWallHit: Vector3? = nil
 	-- Forward-declared so path logs can name the target ore
 	local currentOre: Instance? = nil
 	local currentOrePos: Vector3? = nil
 
 	local function clearPath()
 		pathPts = {}
+		pathJumps = {}
 		pathIdx = 1
 		pathBuiltAt = 0
 		pathGoal = nil
@@ -556,6 +563,8 @@ return function(S)
 		lastSlide = nil
 		lastPos = nil
 		stuckSince = 0
+		climbActive = false
+		climbWallHit = nil
 	end
 
 	local function advancePathIndex(pos: Vector3)
@@ -620,9 +629,11 @@ return function(S)
 			end
 		end
 		local pts: { Vector3 }
+		local jumps: { boolean } = {}
 		local kind = "line"
 		if nav and nav.computePath then
-			pts, kind = nav.computePath(from, goal)
+			local a, b, c = nav.computePath(from, goal)
+			pts, kind, jumps = a, b, c or {}
 		elseif nav and nav.findPath then
 			pts = nav.findPath(from, goal) or { from, goal }
 			kind = "grid"
@@ -638,8 +649,22 @@ return function(S)
 		if not pts or #pts == 0 then
 			pts = { from, goal }
 			kind = "line"
+			jumps = {}
+		end
+		-- Infer big vertical segments as jumps if PFS didn't flag them
+		if type(jumps) ~= "table" then
+			jumps = {}
+		end
+		for i = 1, #pts do
+			if jumps[i] == nil then
+				jumps[i] = false
+			end
+			if i > 1 and (pts[i].Y - pts[i - 1].Y) >= (C.AUTO_ORE_SEG_JUMP_DY or 3.5) then
+				jumps[i] = true
+			end
 		end
 		pathPts = pts
+		pathJumps = jumps
 		pathGoal = goal
 		pathBuiltAt = os.clock()
 		lastRepathAt = pathBuiltAt
@@ -650,6 +675,15 @@ return function(S)
 		faceOkSince = 0
 		local oreName = currentOre and currentOre.Name or nil
 		logPathAttempt(reason or "rebuild", from, goal, pathPts, pathKind, pathIdx, oreName)
+		local jumpN = 0
+		for _, j in ipairs(pathJumps) do
+			if j then
+				jumpN += 1
+			end
+		end
+		if jumpN > 0 then
+			log(string.format("PATH jumps=%d (Space+W on those segments)", jumpN))
+		end
 	end
 
 	-- Rebuild sparingly: new goal / stuck / blocked / rare safety — not every step.
@@ -728,11 +762,6 @@ return function(S)
 
 	local visited: { [Instance]: boolean } = {}
 	local minedCount = 0
-	local climbActive = false
-	local climbStartedAt = 0
-	local climbStartY = 0
-	local climbTargetY = 0
-	local climbWallHit: Vector3? = nil
 
 	local function oreTypeAllowed(typeKey: string): boolean
 		if C.AUTO_ORE_SKIP_ROCK and (typeKey == "rock" or typeKey == "stone") then
@@ -1011,70 +1040,14 @@ return function(S)
 			return "arrive"
 		end
 
-		-- ---- Climb mode ----
-		if climbActive then
-			local maxT = C.AUTO_ORE_CLIMB_MAX or 6
-			local minRise = C.AUTO_ORE_CLIMB_MIN_RISE or 1.2
-			local wallPos = climbWallHit
-			local hit, normal, dist = findNearestWall(from)
-			if hit then
-				wallPos = hit
-				climbWallHit = hit
-			end
-			if not wallPos then
-				climbActive = false
-				setMoveKey(nil)
-				if U.holdJump then
-					U.holdJump(false)
-				end
-				return "climb-no-wall"
-			end
-
-			local faceAlign = C.AUTO_ORE_CLIMB_FACE_ALIGN or 0.85
-			local fd = facePoint(wallPos, faceAlign)
-			if fd < faceAlign then
-				setMoveKey(nil)
-				if U.holdJump then
-					U.holdJump(false)
-				end
-				return string.format("climb-face d=%.2f wall=%.1f", fd, dist or -1)
-			end
-
-			-- Pressed into wall: Space + W
-			if U.holdTurnKey then
-				U.holdTurnKey(nil)
-			end
-			setMoveKey("W")
-			if U.holdJump then
-				U.holdJump(true)
-			end
-
-			local risen = from.Y - climbStartY
-			local done = (from.Y >= climbTargetY - 1.0)
-				or (risen >= minRise and dy < climbDy * 0.5)
-				or (os.clock() - climbStartedAt) >= maxT
-			if done then
-				climbActive = false
-				if U.holdJump then
-					U.holdJump(false)
-				end
-				setMoveKey(nil)
-				faceOkSince = 0
-				pathBuiltAt = 0 -- repath after elevation change
-				return string.format("climb-done rise=%.1f", risen)
-			end
-			return string.format("climb W+Space rise=%.1f dy=%.1f", risen, dy)
-		end
-
-		-- Need vertical? Only climb when a wall is near (per design).
-		local needHeight = dy >= climbDy
+		-- Stuck detection (horizontal)
 		local stuck = false
 		if lastPos then
 			local moved = flatDist(from, lastPos)
 			if moved < 0.3 then
 				if stuckSince == 0 then
 					stuckSince = os.clock()
-				elseif os.clock() - stuckSince > (C.AUTO_ORE_STUCK or 1.2) then
+				elseif os.clock() - stuckSince > (C.AUTO_ORE_STUCK or 1.4) then
 					stuck = true
 				end
 			else
@@ -1082,29 +1055,6 @@ return function(S)
 			end
 		end
 		lastPos = from
-
-		if needHeight or (stuck and dy > 1.5) then
-			local hit, _n, dist = findNearestWall(from)
-			if hit and dist and dist <= wallNear then
-				climbActive = true
-				climbStartedAt = os.clock()
-				climbStartY = from.Y
-				climbTargetY = goal.Y
-				climbWallHit = hit
-				setMoveKey(nil)
-				if U.holdJump then
-					U.holdJump(false)
-				end
-				faceOkSince = 0
-				log(string.format("CLIMB_START wall=%.1f dy=%.1f at %s", dist, dy, vecStr(from)))
-				return string.format("climb-start wall=%.1f dy=%.1f", dist, dy)
-			end
-			-- Not near wall yet: if stuck with height need, walk toward nearest wall hit beyond near range
-			if hit and dist and dist > wallNear then
-				-- approach the wall first (horizontal), no jump yet
-				goal = hit -- re-use local goal for this tick's path only
-			end
-		end
 
 		-- Stuck on flat: force repath (cooldown inside ensurePath)
 		if stuck then
@@ -1125,6 +1075,80 @@ return function(S)
 				target, segLabel = segmentTarget(from, goal)
 			end
 		end
+
+		-- Segment height: only jump for THIS leg (human: walk valley, Space once at ledge)
+		local segDy = target.Y - from.Y
+		local jumpDy = C.AUTO_ORE_SEG_JUMP_DY or 3.5
+		local wantJump = (pathJumps[pathIdx] == true) or (segDy >= jumpDy)
+		-- Optional wall-climb only if stuck on a high segment AND wall very near
+		-- (do NOT climb just because final ore is higher — that was the bug)
+		if stuck and segDy >= jumpDy then
+			local hit, _n, dist = findNearestWall(from)
+			if hit and dist and dist <= wallNear then
+				climbActive = true
+				climbStartedAt = os.clock()
+				climbStartY = from.Y
+				climbTargetY = target.Y
+				climbWallHit = hit
+				log(string.format(
+					"CLIMB_START wall=%.1f segDy=%.1f at %s (stuck on ledge)",
+					dist,
+					segDy,
+					vecStr(from)
+				))
+			end
+		end
+
+		-- Wall-climb mode: face INTO wall + Space+W (only after stuck on high segment)
+		if climbActive then
+			local maxT = C.AUTO_ORE_CLIMB_MAX or 4
+			local minRise = C.AUTO_ORE_CLIMB_MIN_RISE or 1.2
+			local wallPos = climbWallHit
+			local hit, _normal, dist = findNearestWall(from)
+			if hit then
+				wallPos = hit
+				climbWallHit = hit
+			end
+			if not wallPos then
+				climbActive = false
+				setMoveKey(nil)
+				if U.holdJump then
+					U.holdJump(false)
+				end
+				return "climb-no-wall"
+			end
+			local faceAlign = C.AUTO_ORE_CLIMB_FACE_ALIGN or 0.85
+			local fd = facePoint(wallPos, faceAlign)
+			if fd < faceAlign then
+				setMoveKey(nil)
+				if U.holdJump then
+					U.holdJump(false)
+				end
+				return string.format("climb-face d=%.2f wall=%.1f", fd, dist or -1)
+			end
+			if U.holdTurnKey then
+				U.holdTurnKey(nil)
+			end
+			setMoveKey("W")
+			if U.holdJump then
+				U.holdJump(true)
+			end
+			local risen = from.Y - climbStartY
+			local done = (from.Y >= climbTargetY - 1.0)
+				or (risen >= minRise)
+				or (os.clock() - climbStartedAt) >= maxT
+			if done then
+				climbActive = false
+				if U.holdJump then
+					U.holdJump(false)
+				end
+				setMoveKey(nil)
+				faceOkSince = 0
+				return string.format("climb-done rise=%.1f", risen)
+			end
+			return string.format("climb W+Space rise=%.1f segDy=%.1f", risen, segDy)
+		end
+
 		local faceAlign = C.AUTO_ORE_FACE_ALIGN or C.KILL_AURA_FACE_ALIGN or 0.9
 		local faceSettle = C.AUTO_ORE_FACE_SETTLE or C.KILL_AURA_FACE_SETTLE or 0.18
 		local fd = facePoint(target, faceAlign)
@@ -1161,19 +1185,23 @@ return function(S)
 		if faceDir.Magnitude < 0.2 then
 			advancePathIndex(from)
 			setMoveKey(nil)
+			if U.holdJump then
+				U.holdJump(false)
+			end
 			return "seg-next"
 		end
 		faceDir = faceDir.Unit
 		local probe = C.KILL_AURA_PROBE or 4.5
 
-		-- Small step-up: Space+W without full wall climb
-		local stepJump = false
-		if dy > 1.2 and dy < climbDy then
+		-- Path-ledge jump: face NEXT waypoint + Space+W (human recording style)
+		-- Not wall-face; not "ore is higher so climb now"
+		local stepJump = wantJump
+		if not stepJump and segDy > 1.2 then
 			local origin = from + Vector3.new(0, 0.5, 0) + faceDir * 1.2
 			local hit = workspace:Raycast(origin, faceDir * probe + Vector3.new(0, 3, 0), excludeSelf())
 			if hit and hit.Normal.Y > 0.5 then
 				local stepUp = hit.Position.Y - from.Y
-				if stepUp > 1.0 and stepUp < 8 then
+				if stepUp > 1.0 and stepUp < 10 then
 					stepJump = true
 				end
 			end

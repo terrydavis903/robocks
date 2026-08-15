@@ -212,12 +212,13 @@ return {
 	AUTO_ORE_FACE_TURN_RATE = 3.2,
 	AUTO_ORE_FACE_VIZ = true, -- cyan look / green want / turn wedge
 	AUTO_ORE_FACE_BEAM_LEN = 6,
-	AUTO_ORE_CLIMB_DY = 3.5, -- goal this much higher → wall climb if near wall
-	AUTO_ORE_WALL_NEAR = 4.5, -- must be this close to a wall to start climb
+	AUTO_ORE_SEG_JUMP_DY = 3.5, -- next path waypoint this much higher → Space+W along path
+	AUTO_ORE_CLIMB_DY = 3.5, -- legacy alias of SEG_JUMP_DY
+	AUTO_ORE_WALL_NEAR = 4.5, -- wall-climb only if stuck on a high segment + wall this close
 	AUTO_ORE_WALL_PROBE = 10,
 	AUTO_ORE_WALL_DIRS = 12,
-	AUTO_ORE_CLIMB_FACE_ALIGN = 0.85, -- face into wall (beam) before Space+W
-	AUTO_ORE_CLIMB_MAX = 6.0, -- seconds per climb attempt
+	AUTO_ORE_CLIMB_FACE_ALIGN = 0.85, -- face into wall only for stuck ledge assist
+	AUTO_ORE_CLIMB_MAX = 4.0, -- seconds per stuck wall-climb
 	AUTO_ORE_CLIMB_MIN_RISE = 1.2,
 	AUTO_ORE_STUCK = 1.4, -- seconds barely moving before repath/climb
 	AUTO_ORE_REPATH_COOLDOWN = 1.6, -- min seconds between force rebuilds
