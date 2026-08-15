@@ -72,13 +72,16 @@ return {
 	PATH_TURN_ARROWS = true,
 	PATH_TURN_PULSE = true, -- re-send arrow keydown each poll (games may ignore holds)
 	PATH_TURN_YAW_DEADZONE = 0.08,
-	PATH_CAMERA_YAW_DEG = 3.5, -- small camera yaw nudge per poll while turning
-	-- Kill Aura face: hysteresis so we don't thrash face/settle forever (see killaura log 19-16-54)
-	KILL_AURA_FACE_ALIGN = 0.82, -- enter walk when look·segment >= this
-	KILL_AURA_FACE_KEEP = 0.55, -- stay walking until look drops below this
-	KILL_AURA_FACE_TURN_RATE = 4.0, -- soft HRP yaw while turning
-	KILL_AURA_FACE_SETTLE = 0.06, -- brief hold once aligned (was 0.22 — too sticky)
-	KILL_AURA_FACE_STUCK = 1.25, -- seconds of no face progress → hard snap + force W
+	PATH_CAMERA_YAW_DEG = 5, -- camera yaw nudge per poll (path face uses this always)
+	-- Kill Aura face: rigorous continuous aim at path (log 19-39-53: walk w/o re-aim drifted)
+	KILL_AURA_FACE_ALIGN = 0.90, -- start W only when HRP+camera this aligned to path
+	KILL_AURA_FACE_STOP = 0.35, -- stop W only if look this bad (was KEEP 0.55 → thrash reface)
+	KILL_AURA_FACE_WALK_ALIGN = 0.94, -- keep micro turn-keys while walking until this good
+	KILL_AURA_FACE_TURN_RATE = 8.0, -- soft HRP yaw when establishing face
+	KILL_AURA_FACE_WALK_RATE = 7.0, -- soft HRP yaw WHILE walking (must not be 0)
+	KILL_AURA_FACE_SETTLE = 0.04, -- brief hold; hardFace then W
+	KILL_AURA_FACE_STUCK = 1.0, -- no face progress → hardFace + walk
+	KILL_AURA_FACE_KEEP = 0.35, -- legacy alias of FACE_STOP
 	KILL_AURA_SEG_ARRIVE = 4.0, -- studs: advance to next path segment
 	KILL_AURA_PROBE = 4.5, -- wall probe studs
 	-- Jump: path ledge / short step only — NOT "enemy is higher" (flat-ground spam)

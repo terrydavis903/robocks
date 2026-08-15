@@ -321,22 +321,85 @@ return function(S)
 	end
 
 	---------------------------------------------------------------------------
-	-- Face a world point (segment end / enemy). Soft turn only — no hard snap.
-	-- Must align before any W/A/D.
+	-- Face path direction rigorously.
+	--
+	-- Root issue (log 19-39-53): we only soft-faced until d>=0.82, then WALKED
+	-- with AutoRotate off and ZERO further correction. ~30° residual error made
+	-- W drift off the segment → yaw grew → reface thrash.
+	--
+	-- Fix: always keep HRP+camera pointed at the face target while approaching;
+	-- only STOP W when look is badly wrong (faceStop). Micro-turn while walking.
 	---------------------------------------------------------------------------
 
-	local faceAlign = C.KILL_AURA_FACE_ALIGN or 0.82 -- enter walk
-	local faceKeep = C.KILL_AURA_FACE_KEEP or 0.55 -- exit walk (hysteresis)
-	local faceSettle = C.KILL_AURA_FACE_SETTLE or 0.06
+	local faceAlign = C.KILL_AURA_FACE_ALIGN or 0.90 -- must be this good to START W
+	local faceStop = C.KILL_AURA_FACE_STOP or 0.35 -- stop W if look this bad
+	local faceSettle = C.KILL_AURA_FACE_SETTLE or 0.05
 	-- Last face decision (for status)
 	local lastFaceDot = 0
 	local lastYawErr = 0
 	local lastTurnName = "-"
 	local faceOkSince = 0 -- os.clock when first hit faceAlign; 0 = not aligned
-	local walkingFacing = false -- true while allowed to hold W without re-settle
+	local walkingFacing = false -- true while allowed to hold W
 	local faceStuckSince = 0 -- face mode without progress
 	local faceStuckBest = -2 -- best faceDot while stuck-facing
 
+	-- Best available facing quality: HRP look AND camera (game often moves by cam)
+	local function facingQuality(target: Vector3): (number, number, Vector3)
+		local hrp = getHrp()
+		local pos = hrp and hrp.Position or target
+		local to = Vector3.new(target.X - pos.X, 0, target.Z - pos.Z)
+		if to.Magnitude < 1e-4 then
+			return 1, 0, Vector3.new(0, 0, -1)
+		end
+		to = to.Unit
+		local hrpDot = 0
+		local measured = Vector3.new(0, 0, -1)
+		if hrp then
+			measured = Vector3.new(hrp.CFrame.LookVector.X, 0, hrp.CFrame.LookVector.Z)
+			if measured.Magnitude > 1e-4 then
+				measured = measured.Unit
+				hrpDot = measured:Dot(to)
+			end
+		end
+		local camDot = hrpDot
+		local cam = workspace.CurrentCamera
+		if cam then
+			local cl = Vector3.new(cam.CFrame.LookVector.X, 0, cam.CFrame.LookVector.Z)
+			if cl.Magnitude > 1e-4 then
+				cl = cl.Unit
+				camDot = cl:Dot(to)
+			end
+		end
+		-- Use the worse of the two — both must aim at the path for reliable W
+		local d = math.min(hrpDot, camDot)
+		local yawErr = measured.X * to.Z - measured.Z * to.X
+		return d, yawErr, measured
+	end
+
+	-- Force both HRP and camera to look at target (horizontal).
+	local function hardFace(target: Vector3)
+		local hrp = getHrp()
+		if hrp then
+			pcall(function()
+				local p = hrp.Position
+				hrp.CFrame = CFrame.lookAt(p, Vector3.new(target.X, p.Y, target.Z))
+			end)
+		end
+		local cam = workspace.CurrentCamera
+		if cam then
+			pcall(function()
+				local cpos = cam.CFrame.Position
+				local look = cam.CFrame.LookVector
+				local aim = Vector3.new(target.X - cpos.X, 0, target.Z - cpos.Z)
+				if aim.Magnitude > 0.1 then
+					aim = aim.Unit
+					cam.CFrame = CFrame.lookAt(cpos, cpos + Vector3.new(aim.X, look.Y, aim.Z))
+				end
+			end)
+		end
+	end
+
+	-- Continuous soft face + optional arrows. Always corrects toward path while moving.
 	local function facePoint(target: Vector3): number
 		local hrp = getHrp()
 		local hum = getHum()
@@ -351,12 +414,7 @@ return function(S)
 
 		local pos = hrp.Position
 		local flat = Vector3.new(target.X - pos.X, 0, target.Z - pos.Z)
-		local measuredLook = Vector3.new(hrp.CFrame.LookVector.X, 0, hrp.CFrame.LookVector.Z)
-		if measuredLook.Magnitude > 1e-4 then
-			measuredLook = measuredLook.Unit
-		else
-			measuredLook = Vector3.new(0, 0, -1)
-		end
+		local d, yawErr, measuredLook = facingQuality(target)
 
 		if flat.Magnitude < 0.2 then
 			if U.holdTurnKey then
@@ -370,70 +428,77 @@ return function(S)
 			return 1
 		end
 
-		-- Measure BEFORE soft correction so viz + turn use true facing
-		local dBefore = (U.facingDotTo and U.facingDotTo(target.X, target.Z)) or 0
-		local yawErr = (U.yawErrorTo and U.yawErrorTo(target.X, target.Z)) or 0
 		local poll = C.SMOOTH_WALK_POLL or 0.06
-		local turnRate = C.KILL_AURA_FACE_TURN_RATE or 4.0
-		local needTurn = if walkingFacing then (dBefore < faceKeep) else (dBefore < faceAlign)
+		-- Snappier while establishing face; gentler while already walking
+		local turnRate = if walkingFacing
+			then (C.KILL_AURA_FACE_WALK_RATE or 6.0)
+			else (C.KILL_AURA_FACE_TURN_RATE or 8.0)
 
-		-- Soft HRP/camera only while actively turning (avoid overshoot thrash when walking)
-		if needTurn then
+		-- ALWAYS soft-aim HRP at path target (this is the rigor we were missing)
+		pcall(function()
+			local lookAt = Vector3.new(target.X, pos.Y, target.Z)
+			local desired = CFrame.lookAt(pos, lookAt)
+			local alpha = 1 - math.exp(-turnRate * poll)
+			-- Harder snap when badly off
+			if d < 0.5 then
+				alpha = math.clamp(alpha * 1.8, 0.05, 0.75)
+			else
+				alpha = math.clamp(alpha, 0.04, 0.55)
+			end
+			hrp.CFrame = hrp.CFrame:Lerp(desired, alpha)
+		end)
+
+		-- ALWAYS keep camera with path (many games drive WASD from camera)
+		local cam = workspace.CurrentCamera
+		if cam then
 			pcall(function()
-				local lookAt = Vector3.new(target.X, pos.Y, target.Z)
-				local desired = CFrame.lookAt(pos, lookAt)
-				local alpha = 1 - math.exp(-turnRate * poll)
-				hrp.CFrame = hrp.CFrame:Lerp(desired, math.clamp(alpha, 0.02, 0.45))
-			end)
-
-			local cam = workspace.CurrentCamera
-			if cam then
-				pcall(function()
-					local cpos = cam.CFrame.Position
-					local look = cam.CFrame.LookVector
-					local to = Vector3.new(target.X - cpos.X, 0, target.Z - cpos.Z)
-					if to.Magnitude > 0.2 then
-						to = to.Unit
-						local flatLook = Vector3.new(look.X, 0, look.Z)
-						if flatLook.Magnitude > 0.1 then
-							flatLook = flatLook.Unit
-							local cross = flatLook.X * to.Z - flatLook.Z * to.X
-							local dot = flatLook:Dot(to)
-							if dot < 0.98 then
-								local deg = (C.PATH_CAMERA_YAW_DEG or 3.5) * (if cross > 0 then -1 else 1)
-								if dot < 0 then
-									deg = deg * 1.8
-								elseif dot < 0.5 then
-									deg = deg * 1.25
-								end
-								local newLook = (CFrame.Angles(0, math.rad(deg), 0) * Vector3.new(look.X, 0, look.Z))
-								if newLook.Magnitude > 0.1 then
-									newLook = newLook.Unit
-									cam.CFrame = CFrame.lookAt(cpos, cpos + Vector3.new(newLook.X, look.Y, newLook.Z))
-								end
+				local cpos = cam.CFrame.Position
+				local look = cam.CFrame.LookVector
+				local to = Vector3.new(target.X - cpos.X, 0, target.Z - cpos.Z)
+				if to.Magnitude > 0.2 then
+					to = to.Unit
+					local flatLook = Vector3.new(look.X, 0, look.Z)
+					if flatLook.Magnitude > 0.1 then
+						flatLook = flatLook.Unit
+						local cross = flatLook.X * to.Z - flatLook.Z * to.X -- >0 target left of cam
+						local cdot = flatLook:Dot(to)
+						if cdot < 0.995 then
+							-- Match util invert: math-left (cross>0) → negative yaw for this game
+							local base = C.PATH_CAMERA_YAW_DEG or 5
+							if walkingFacing then
+								base = base * 0.7 -- lighter while walking
+							end
+							local deg = base * (if cross > 0 then -1 else 1)
+							if cdot < 0 then
+								deg = deg * 2.0
+							elseif cdot < 0.5 then
+								deg = deg * 1.4
+							end
+							local newLook = CFrame.Angles(0, math.rad(deg), 0) * Vector3.new(look.X, 0, look.Z)
+							if newLook.Magnitude > 0.1 then
+								newLook = newLook.Unit
+								cam.CFrame = CFrame.lookAt(cpos, cpos + Vector3.new(newLook.X, look.Y, newLook.Z))
 							end
 						end
 					end
-				end)
-			end
+				end
+			end)
 		end
 
-		-- Left/Right arrows only while needTurn
-		local d = (U.facingDotTo and U.facingDotTo(target.X, target.Z)) or dBefore
-		needTurn = if walkingFacing then (d < faceKeep) else (d < faceAlign)
+		-- Re-measure after soft correction
+		d, yawErr, measuredLook = facingQuality(target)
+
+		-- Arrow keys whenever off-axis enough (including while walking — micro-correct)
+		local dead = C.PATH_TURN_YAW_DEADZONE or 0.06
 		local turnKey: Enum.KeyCode? = nil
-		if needTurn then
+		local alignForKeys = if walkingFacing then (C.KILL_AURA_FACE_WALK_ALIGN or 0.94) else faceAlign
+		if d < alignForKeys and math.abs(yawErr) >= dead then
+			-- Prefer util mapping (game-inverted L/R)
 			if U.turnKeyToward then
-				turnKey = U.turnKeyToward(target.X, target.Z, if walkingFacing then faceKeep else faceAlign)
+				turnKey = U.turnKeyToward(target.X, target.Z, alignForKeys)
 			else
-				local dead = C.PATH_TURN_YAW_DEADZONE or 0.08
-				if math.abs(yawErr) >= dead or d < 0.5 then
-					if yawErr > 0 then
-						turnKey = Enum.KeyCode.Right
-					elseif yawErr < 0 then
-						turnKey = Enum.KeyCode.Left
-					end
-				end
+				-- same invert as util
+				turnKey = if yawErr > 0 then Enum.KeyCode.Right else Enum.KeyCode.Left
 			end
 		end
 		if U.holdTurnKey then
@@ -447,9 +512,7 @@ return function(S)
 			elseif turnKey == Enum.KeyCode.Right then "RIGHT"
 			else "-"
 
-		-- Cyan = pre-correction face; green = desired (segment or enemy)
 		updateFaceViz(hrp, target, measuredLook, yawErr, turnKey)
-
 		return d
 	end
 
@@ -623,7 +686,9 @@ return function(S)
 		end
 	end
 
-	-- Next world point to face/walk toward (segment end). Final leg → stand ring / enemy.
+	-- Next world point to face/walk toward.
+	-- Prefer path *direction* (look-ahead along polyline) over a single near waypoint
+	-- so bearing stays stable while walking the segment.
 	local function segmentTarget(playerPos: Vector3, epos: Vector3, range: number): (Vector3, string)
 		local distEnemy = flatDist(playerPos, epos)
 		if distEnemy <= range + 1.5 then
@@ -631,9 +696,26 @@ return function(S)
 		end
 		if #pathPts >= 1 and pathIdx >= 1 and pathIdx <= #pathPts then
 			local wp = pathPts[pathIdx]
-			-- Last path node is stand ring; if we're on last node, still walk to it
 			local label = string.format("seg%d/%d", pathIdx, #pathPts)
-			return wp, label
+			-- Look-ahead: aim further along path so face doesn't whip as we near each node
+			local look = wp
+			if pathIdx < #pathPts then
+				local nxt = pathPts[pathIdx + 1]
+				local toWp = Vector3.new(wp.X - playerPos.X, 0, wp.Z - playerPos.Z)
+				if toWp.Magnitude < (C.KILL_AURA_SEG_ARRIVE or 4) * 1.5 then
+					-- close to current node → face next segment direction
+					look = nxt
+					label = string.format("seg%d/%d+", pathIdx, #pathPts)
+				else
+					-- blend a bit of next for smoother bearing
+					look = Vector3.new(
+						wp.X * 0.65 + nxt.X * 0.35,
+						wp.Y,
+						wp.Z * 0.65 + nxt.Z * 0.35
+					)
+				end
+			end
+			return look, label
 		end
 		return standGoalNear(playerPos, epos, range), "stand"
 	end
@@ -719,9 +801,9 @@ return function(S)
 			return "stand"
 		end
 
-		-- Face hysteresis: once walking, only re-face if look drifts below faceKeep
+		-- Walk only when facing path well enough. facePoint() always micro-corrects look.
 		if walkingFacing then
-			if faceDot < faceKeep then
+			if faceDot < faceStop then
 				walkingFacing = false
 				faceOkSince = 0
 				faceStuckSince = 0
@@ -732,16 +814,14 @@ return function(S)
 				return string.format("reface %s d=%.2f", segLabel, faceDot)
 			end
 			faceStuckSince = 0
-			-- stay in walk mode — skip settle
+			-- keep W; facePoint continues soft-aiming at path
 		else
-			-- PHASE 1: turn only until facing current path segment (enter threshold)
 			if faceDot < faceAlign then
 				setMoveKey(nil)
 				if U.holdJump then
 					U.holdJump(false)
 				end
 				faceOkSince = 0
-				-- Stuck-face escape (log 19-36-42: face d≈0.22 for 15s, never walk)
 				local nowF = os.clock()
 				if faceStuckSince <= 0 then
 					faceStuckSince = nowF
@@ -750,22 +830,15 @@ return function(S)
 					if faceDot > faceStuckBest + 0.05 then
 						faceStuckBest = faceDot
 						faceStuckSince = nowF
-					elseif (nowF - faceStuckSince) >= (C.KILL_AURA_FACE_STUCK or 1.25) then
-						-- Give up pure face; hard snap + walk (human just pressed W)
-						local hrp = getHrp()
-						if hrp then
-							pcall(function()
-								local p = hrp.Position
-								hrp.CFrame = CFrame.lookAt(p, Vector3.new(target.X, p.Y, target.Z))
-							end)
-						end
+					elseif (nowF - faceStuckSince) >= (C.KILL_AURA_FACE_STUCK or 1.0) then
+						hardFace(target)
 						if U.holdTurnKey then
 							U.holdTurnKey(nil)
 						end
 						walkingFacing = true
 						faceStuckSince = 0
 						log(string.format(
-							"FACE_STUCK_ESCAPE d=%.2f → force walk %s",
+							"FACE_STUCK_ESCAPE d=%.2f → hardFace+walk %s",
 							faceDot,
 							segLabel
 						))
@@ -776,7 +849,6 @@ return function(S)
 				end
 			else
 				faceStuckSince = 0
-				-- PHASE 1b: brief settle once aligned before first W
 				local now = os.clock()
 				if faceOkSince <= 0 then
 					faceOkSince = now
@@ -786,21 +858,15 @@ return function(S)
 					if U.holdJump then
 						U.holdJump(false)
 					end
-					if U.holdTurnKey then
-						U.holdTurnKey(nil)
-					end
 					return string.format("settle %s d=%.2f", segLabel, faceDot)
 				end
+				-- Lock face hard once before first W so residual error is ~0
+				hardFace(target)
 				walkingFacing = true
 			end
 		end
 
-		-- Facing: stop arrow spam so W is clean
-		if U.holdTurnKey then
-			U.holdTurnKey(nil)
-		end
-
-		-- Walk along segment direction (to next waypoint), not straight at enemy
+		-- Walk toward path target (look is continuously corrected above)
 		local faceDir = Vector3.new(target.X - playerPos.X, 0, target.Z - playerPos.Z)
 		if faceDir.Magnitude < 0.2 then
 			-- arrived at waypoint mid-tick; advance and re-face next
