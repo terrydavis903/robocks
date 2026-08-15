@@ -448,8 +448,10 @@ return function(S)
 	local pathIdx = 1
 	local pathEnemy: Model? = nil
 	local pathBuiltAt = 0
+	local lastRepathAt = 0
 	local lastVizKind = ""
 	local lastSegLabel = "-"
+	local segBlocked = false -- current hop hasClearWalk failed; strafe instead of repath thrash
 
 	local function standGoalNear(playerPos: Vector3, epos: Vector3, range: number): Vector3
 		local flat = Vector3.new(playerPos.X - epos.X, 0, playerPos.Z - epos.Z)
@@ -516,15 +518,16 @@ return function(S)
 		pathPts = pts
 		pathEnemy = enemy
 		pathBuiltAt = os.clock()
+		lastRepathAt = pathBuiltAt
 		lastVizKind = kind or "path"
 		pathIdx = 1
+		segBlocked = false
 		advancePathIndex(playerPos)
 		if pathIdx < #pathPts and flatDist(playerPos, pathPts[pathIdx]) < 1.0 and pathIdx < #pathPts then
 			-- skip near-start duplicate
 			pathIdx = math.min(pathIdx + 1, #pathPts)
 		end
-		-- Keep walkingFacing if possible — full face reset was thrashing (killaura log)
-		faceOkSince = 0
+		-- Do NOT clear walkingFacing / faceOkSince — repath thrash was freezing settle forever
 		local parts = {}
 		for i, p in ipairs(pathPts) do
 			table.insert(parts, string.format("%d:%.0f,%.0f,%.0f", i, p.X, p.Y, p.Z))
@@ -545,38 +548,50 @@ return function(S)
 	end
 
 	local function ensurePath(playerPos: Vector3, epos: Vector3, enemy: Model, range: number, force: boolean?)
-		local interval = C.PATH_REBUILD or 4.0
+		local interval = C.PATH_REBUILD or 8.0
+		local repathCd = C.PATH_REPATH_COOLDOWN or 1.8
+		local now = os.clock()
 		local need = force == true
 			or pathEnemy ~= enemy
 			or #pathPts < 2
-			or (os.clock() - pathBuiltAt) >= interval
+			or (now - pathBuiltAt) >= interval
+		local why = if force then "force" elseif pathEnemy ~= enemy then "enemy" elseif #pathPts < 2 then "empty" else "timer" end
 		if not need and pathIdx <= #pathPts then
-			-- drifted far from current waypoint → repath
 			if flatDist(playerPos, pathPts[pathIdx]) > 36 then
 				need = true
+				why = "drift"
 			end
 		end
-		-- Next segment through collide mesh → skip or repath
-		if not need and #pathPts >= 2 then
+		-- Blocked hop: skip ahead if possible; NEVER repath every tick (log 19-27-02 thrash)
+		segBlocked = false
+		if #pathPts >= 2 and pathIdx <= #pathPts then
 			local nav = Nav()
-			if nav and nav.hasClearWalk and pathIdx <= #pathPts then
+			if nav and nav.hasClearWalk then
 				if not nav.hasClearWalk(playerPos, pathPts[pathIdx]) then
+					segBlocked = true
 					if nav.nextClearWaypoint then
 						local j = nav.nextClearWaypoint(playerPos, pathPts, pathIdx + 1)
-						if j then
+						if j and j ~= pathIdx then
+							log(string.format("SEG_SKIP %d→%d (blocked hop)", pathIdx, j))
 							pathIdx = j
-							faceOkSince = 0
-						else
-							need = true
+							segBlocked = not nav.hasClearWalk(playerPos, pathPts[pathIdx])
 						end
-					else
+					end
+					-- Only repath if still blocked AND cooldown elapsed (not every poll)
+					if segBlocked and (now - lastRepathAt) >= repathCd then
 						need = true
+						why = "blocked"
 					end
 				end
 			end
 		end
 		if need then
-			rebuildPath(playerPos, epos, enemy, range)
+			if force or pathEnemy ~= enemy or #pathPts < 2 or (now - lastRepathAt) >= repathCd then
+				log(string.format("PATH_NEED %s", why))
+				rebuildPath(playerPos, epos, enemy, range)
+			else
+				advancePathIndex(playerPos)
+			end
 		else
 			advancePathIndex(playerPos)
 		end
@@ -602,8 +617,10 @@ return function(S)
 		pathIdx = 1
 		pathEnemy = nil
 		pathBuiltAt = 0
+		lastRepathAt = 0
 		faceOkSince = 0
 		walkingFacing = false
+		segBlocked = false
 		lastSegLabel = "-"
 	end
 
@@ -626,7 +643,8 @@ return function(S)
 	local lastPos: Vector3? = nil
 	local stuckSince = 0
 
-	local function setMoveKey(which: string?) -- "W"|"A"|"D"|nil
+	-- which: "W"|"A"|"D"|"WA"|"WD"|nil  (human rec uses W+D to arc around blocks)
+	local function setMoveKey(which: string?)
 		if not U.holdMoveKeys then
 			return
 		end
@@ -636,6 +654,10 @@ return function(S)
 			U.holdMoveKeys({ Enum.KeyCode.A })
 		elseif which == "D" then
 			U.holdMoveKeys({ Enum.KeyCode.D })
+		elseif which == "WA" then
+			U.holdMoveKeys({ Enum.KeyCode.W, Enum.KeyCode.A })
+		elseif which == "WD" then
+			U.holdMoveKeys({ Enum.KeyCode.W, Enum.KeyCode.D })
 		else
 			U.holdMoveKeys(nil)
 		end
@@ -751,32 +773,41 @@ return function(S)
 			U.holdJump(jump)
 		end
 
-		local blocked = stuck or wallAhead(playerPos, faceDir, probe)
+		local blocked = stuck or segBlocked or wallAhead(playerPos, faceDir, probe)
 		if not blocked then
 			lastSlide = nil
 			setMoveKey("W")
 			return string.format("%s %s", if jump then "W+Space" else "W", segLabel)
 		end
 
-		-- Corner / wall: pick A or D (not both, never S)
+		-- Blocked hop / wall: prefer W+strafe (human pathrec: W+D around obstacle)
 		local right = Vector3.new(-faceDir.Z, 0, faceDir.X).Unit
 		local leftBlocked = wallAhead(playerPos, -right, probe)
 		local rightBlocked = wallAhead(playerPos, right, probe)
 		local pick: string
 		if not leftBlocked and rightBlocked then
-			pick = "A"
+			pick = "WA"
 		elseif leftBlocked and not rightBlocked then
-			pick = "D"
-		elseif lastSlide and (os.clock() - lastSlideAt) < 1.5 then
+			pick = "WD"
+		elseif lastSlide and (os.clock() - lastSlideAt) < 1.8 then
 			pick = lastSlide
 		else
-			pick = if lastSlide == "A" then "D" else "A"
+			-- Prefer side toward enemy flat offset
+			local toE = Vector3.new(epos.X - playerPos.X, 0, epos.Z - playerPos.Z)
+			if toE.Magnitude > 0.2 then
+				toE = toE.Unit
+				pick = if toE:Dot(right) > 0 then "WD" else "WA"
+			else
+				pick = if lastSlide == "WA" then "WD" else "WA"
+			end
 		end
 		lastSlide = pick
 		lastSlideAt = os.clock()
-		stuckSince = 0
+		if stuck then
+			stuckSince = 0
+		end
 		setMoveKey(pick)
-		return string.format("turn-%s %s%s", pick, segLabel, jump and "+Space" or "")
+		return string.format("strafe-%s %s%s", pick, segLabel, jump and "+Space" or "")
 	end
 
 	---------------------------------------------------------------------------
@@ -912,15 +943,22 @@ return function(S)
 				))
 				-- Log face thrash + movement (W was invisible in stuck log)
 				local head = string.sub(tag, 1, 4)
-				if head == "face" or head == "sett" or head == "reface" or string.sub(tag, 1, 1) == "W" or string.sub(tag, 1, 4) == "turn" then
+				if head == "face"
+					or head == "sett"
+					or head == "refa"
+					or head == "stra"
+					or string.sub(tag, 1, 1) == "W"
+					or string.sub(tag, 1, 4) == "turn"
+				then
 					log(string.format(
-						"%s yaw=%+.3f turn=%s enemy=%s dist=%.1f walkFace=%s",
+						"%s yaw=%+.3f turn=%s enemy=%s dist=%.1f walkFace=%s blocked=%s",
 						tag,
 						lastYawErr,
 						lastTurnName,
 						model.Name,
 						dist,
-						tostring(walkingFacing)
+						tostring(walkingFacing),
+						tostring(segBlocked)
 					))
 				end
 				task.wait(C.SMOOTH_WALK_POLL or 0.06)

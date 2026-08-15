@@ -104,6 +104,7 @@ return {
 	KILL_AURA_LOG = true, -- dumps/killaura_*.log
 	PATH_VIZ_REFRESH = 0.55, -- redraw Path Viz polyline only (not movement thrash)
 	PATH_REBUILD = 8.0, -- Kill Aura path recompute ceiling (avoid face reset thrash)
+	PATH_REPATH_COOLDOWN = 1.8, -- min seconds between PFS rebuilds when segment blocked
 	NAV_RAY_UP = 50,
 	NAV_RAY_DOWN = 140,
 	NAV_MIN_NORMAL_Y = 0.45,
