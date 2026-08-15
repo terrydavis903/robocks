@@ -555,7 +555,15 @@ return function(S)
 			or pathEnemy ~= enemy
 			or #pathPts < 2
 			or (now - pathBuiltAt) >= interval
-		local why = if force then "force" elseif pathEnemy ~= enemy then "enemy" elseif #pathPts < 2 then "empty" else "timer" end
+		-- Note: Luau if-expressions do NOT take a trailing `end` (that ends the function!)
+		local why = "timer"
+		if force then
+			why = "force"
+		elseif pathEnemy ~= enemy then
+			why = "enemy"
+		elseif #pathPts < 2 then
+			why = "empty"
+		end
 		if not need and pathIdx <= #pathPts then
 			if flatDist(playerPos, pathPts[pathIdx]) > 36 then
 				need = true
