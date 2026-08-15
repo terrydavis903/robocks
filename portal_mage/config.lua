@@ -94,6 +94,7 @@ return {
 	NAV_AGENT_CAN_JUMP = true,
 	NAV_WAYPOINT_SPACING = 6,
 	KILL_AURA_LOG = true, -- dumps/killaura_*.log
+	PATH_VIZ_REFRESH = 0.55, -- recompute A*/PFS draw while Path Viz ON (movement still face→W/A/D)
 	NAV_RAY_UP = 50,
 	NAV_RAY_DOWN = 140,
 	NAV_MIN_NORMAL_Y = 0.45,

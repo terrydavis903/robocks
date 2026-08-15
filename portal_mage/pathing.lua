@@ -372,12 +372,95 @@ return function(S)
 	end
 
 	---------------------------------------------------------------------------
+	-- Path Viz only (movement does NOT follow A* — face→W/A/D does)
+	---------------------------------------------------------------------------
+
+	local vizEnemy: Model? = nil
+	local vizAt = 0
+	local lastVizKind = ""
+
+	local function standGoalNear(playerPos: Vector3, epos: Vector3, range: number): Vector3
+		local flat = Vector3.new(playerPos.X - epos.X, 0, playerPos.Z - epos.Z)
+		if flat.Magnitude < 0.2 then
+			flat = Vector3.new(0, 0, 1)
+		else
+			flat = flat.Unit
+		end
+		local dest = epos + flat * range
+		local nav = Nav()
+		if nav and nav.sampleFloor then
+			local s = nav.sampleFloor(dest.X, dest.Z, playerPos.Y, { requireClear = false })
+			if s and s.pos then
+				return s.pos
+			end
+		end
+		return Vector3.new(dest.X, playerPos.Y, dest.Z)
+	end
+
+	-- Recompute + draw path when Path Viz is ON (throttled).
+	local function refreshPathViz(playerPos: Vector3, epos: Vector3, enemy: Model, range: number)
+		if not S.pathVizEnabled then
+			return
+		end
+		local nav = Nav()
+		if not nav then
+			return
+		end
+		local now = os.clock()
+		local interval = C.PATH_VIZ_REFRESH or 0.55
+		local need = (vizEnemy ~= enemy) or (now - vizAt >= interval)
+		if not need then
+			return
+		end
+		vizEnemy = enemy
+		vizAt = now
+		local goal = standGoalNear(playerPos, epos, range)
+		local pts: { Vector3 }
+		local kind = "line"
+		if nav.computePath then
+			pts, kind = nav.computePath(playerPos, goal)
+		elseif nav.findPath then
+			pts = nav.findPath(playerPos, goal) or { playerPos, goal }
+			kind = "grid"
+			if nav.showPathViz then
+				nav.showPathViz(pts, kind)
+			end
+		else
+			pts = { playerPos, goal }
+			if nav.showPathViz then
+				nav.showPathViz(pts, "line")
+			end
+		end
+		lastVizKind = kind or "path"
+		log(string.format(
+			"viz %s wps=%d goal=(%.1f,%.1f,%.1f) → %s",
+			lastVizKind,
+			pts and #pts or 0,
+			goal.X,
+			goal.Y,
+			goal.Z,
+			enemy.Name
+		))
+	end
+
+	local function clearPathVizIfOff()
+		if S.pathVizEnabled then
+			return
+		end
+		local nav = Nav()
+		if nav and nav.clearPathViz then
+			nav.clearPathViz()
+		end
+		vizEnemy = nil
+	end
+
+	---------------------------------------------------------------------------
 	-- Main loop
 	---------------------------------------------------------------------------
 
 	local function runWalker()
 		logOpen()
-		log("walker start v4 face→W|A|D(+Space) stand@30 no-teleport")
+		log("walker start v4 face→W|A|D(+Space) stand@30 + pathviz")
 
 		while S.walking do
 			local ok, err = pcall(function()
@@ -462,6 +545,9 @@ return function(S)
 					dist = flatDist(playerPos, epos)
 				end
 
+				-- Path Viz: draw A*/PFS to stand ring (display only)
+				refreshPathViz(playerPos, epos, model, range)
+
 				-- Stand band: stop move, keep facing for combat
 				if dist <= range + sticky then
 					local fd = faceEnemy(epos)
@@ -472,11 +558,13 @@ return function(S)
 					if U.holdTurnKey then
 						U.holdTurnKey(nil)
 					end
+					local viz = if S.pathVizEnabled then (" viz=" .. lastVizKind) else ""
 					U.setStatus(string.format(
-						"[stand] d=%.1f face=%.2f %s | %s",
+						"[stand] d=%.1f face=%.2f %s%s | %s",
 						dist,
 						fd,
 						model.Name,
+						viz,
 						cds()
 					))
 					task.wait(0.08)
@@ -484,11 +572,13 @@ return function(S)
 				end
 
 				local tag = approachStep(playerPos, epos, range)
+				local viz = if S.pathVizEnabled then (" viz=" .. lastVizKind) else ""
 				U.setStatus(string.format(
-					"[approach] d=%.1f %s → %s | %s",
+					"[approach] d=%.1f %s → %s%s | %s",
 					dist,
 					tag,
 					model.Name,
+					viz,
 					cds()
 				))
 				if string.sub(tag, 1, 4) == "face" then
@@ -506,6 +596,14 @@ return function(S)
 		end
 
 		stopMove()
+		clearPathVizIfOff()
+		local nav = Nav()
+		if nav and nav.clearPathViz then
+			pcall(function()
+				nav.clearPathViz()
+			end)
+		end
+		vizEnemy = nil
 		log("walker stop")
 		if logFile then
 			U.setStatus("Kill Aura stopped — log " .. tostring(logFile))
@@ -530,6 +628,22 @@ return function(S)
 				nav.clearPathViz()
 			end
 		end
+		-- Force redraw next approach tick
+		vizAt = 0
+		vizEnemy = nil
+		if S.pathVizEnabled and S.walking then
+			local p = U.getLivePlayerVector and U.getLivePlayerVector()
+			local model, epos = nil, nil
+			if T() and T().getHold then
+				model = T().getHold()
+				if model and U.getCharacterLikePosition then
+					epos = U.getCharacterLikePosition(model)
+				end
+			end
+			if p and model and epos then
+				refreshPathViz(p, epos, model, T().fightRange())
+			end
+		end
 	end
 
 	function M.setPathVizEnabled(on: boolean)
@@ -541,7 +655,12 @@ return function(S)
 			if S.ui and S.ui.setPathVizLabel then
 				S.ui.setPathVizLabel(S.pathVizEnabled)
 			end
+			if not on and nav and nav.clearPathViz then
+				nav.clearPathViz()
+			end
 		end
+		vizAt = 0
+		vizEnemy = nil
 	end
 
 	function M.toggleWalk(_opts: any?)
