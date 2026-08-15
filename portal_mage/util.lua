@@ -90,21 +90,61 @@ return function(S)
 		Enum.KeyCode.S,
 		Enum.KeyCode.D,
 	}
+	-- Free-path yaw when CFrame face is ignored by the game (no RMB camera drag)
+	local TURN_KEYS = {
+		Enum.KeyCode.Left,
+		Enum.KeyCode.Right,
+	}
 	local heldMoveKeys: { [Enum.KeyCode]: boolean } = {}
+	local heldTurnKey: Enum.KeyCode? = nil
+
+	local function keyUp(k: Enum.KeyCode)
+		pcall(function()
+			VIM:SendKeyEvent(false, k, false, game)
+		end)
+	end
+
+	local function keyDown(k: Enum.KeyCode)
+		pcall(function()
+			VIM:SendKeyEvent(true, k, false, game)
+		end)
+	end
+
+	function M.releaseTurnKeys()
+		for _, k in ipairs(TURN_KEYS) do
+			keyUp(k)
+		end
+		heldTurnKey = nil
+	end
+
+	-- Hold Left or Right arrow (or nil = release). Used to yaw character for path follow.
+	function M.holdTurnKey(key: Enum.KeyCode?)
+		if key ~= Enum.KeyCode.Left and key ~= Enum.KeyCode.Right then
+			key = nil
+		end
+		if key == heldTurnKey then
+			return
+		end
+		if heldTurnKey then
+			keyUp(heldTurnKey)
+			heldTurnKey = nil
+		end
+		if key then
+			keyDown(key)
+			heldTurnKey = key
+		end
+	end
 
 	function M.releaseMoveKeys()
 		for _, k in ipairs(MOVE_KEYS) do
 			if heldMoveKeys[k] then
-				pcall(function()
-					VIM:SendKeyEvent(false, k, false, game)
-				end)
+				keyUp(k)
 			end
 			-- Always send up for safety (covers desync)
-			pcall(function()
-				VIM:SendKeyEvent(false, k, false, game)
-			end)
+			keyUp(k)
 			heldMoveKeys[k] = nil
 		end
+		M.releaseTurnKeys()
 	end
 
 	-- Hold exactly the given set of WASD keys (nil/empty = release all).
@@ -121,14 +161,10 @@ return function(S)
 			local should = want[k] == true
 			local isHeld = heldMoveKeys[k] == true
 			if should and not isHeld then
-				pcall(function()
-					VIM:SendKeyEvent(true, k, false, game)
-				end)
+				keyDown(k)
 				heldMoveKeys[k] = true
 			elseif not should and isHeld then
-				pcall(function()
-					VIM:SendKeyEvent(false, k, false, game)
-				end)
+				keyUp(k)
 				heldMoveKeys[k] = nil
 			end
 		end
@@ -147,6 +183,46 @@ return function(S)
 	local function flatRight(forward: Vector3): Vector3
 		-- forward × up-ish: rotate 90° so +forward → +right (Roblox look -Z → +X)
 		return Vector3.new(-forward.Z, 0, forward.X)
+	end
+
+	-- Signed yaw error to world point: >0 = goal is to our LEFT, <0 = to our RIGHT.
+	-- Used to choose Left/Right arrow for free-path turns.
+	function M.yawErrorTo(worldX: number, worldZ: number): number?
+		local player = Players.LocalPlayer
+		local character = player and player.Character
+		local hrp = character and character:FindFirstChild("HumanoidRootPart")
+		if not (hrp and hrp:IsA("BasePart")) then
+			return nil
+		end
+		local fwd = flatUnit(hrp.CFrame.LookVector)
+		local to = flatUnit(Vector3.new(worldX - hrp.Position.X, 0, worldZ - hrp.Position.Z))
+		if not fwd or not to then
+			return nil
+		end
+		-- 2D cross (Y component): look × to
+		return fwd.X * to.Z - fwd.Z * to.X
+	end
+
+	-- Which arrow to hold to face a world XZ point. nil if already aligned enough.
+	function M.turnKeyToward(worldX: number, worldZ: number, alignDot: number?): Enum.KeyCode?
+		local d = M.facingDotTo(worldX, worldZ)
+		local need = alignDot or (C.PATH_WALK_ALIGN_DOT or 0.72)
+		if d ~= nil and d >= need then
+			return nil
+		end
+		local err = M.yawErrorTo(worldX, worldZ)
+		if err == nil then
+			return nil
+		end
+		local dead = C.PATH_TURN_YAW_DEADZONE or 0.08
+		if math.abs(err) < dead and d ~= nil and d > 0 then
+			return nil -- almost on-axis forward
+		end
+		-- err > 0 → goal left of facing → Left arrow
+		if err > 0 then
+			return Enum.KeyCode.Left
+		end
+		return Enum.KeyCode.Right
 	end
 
 	-- WASD relative to reticle/face direction for the walk goal.
@@ -486,8 +562,10 @@ return function(S)
 	--
 	-- TWO MODES:
 	--   lookAt set (reticle on enemy): face target; reticle-relative WASD. Never yaw-to-path.
-	--   lookAt nil (free path / A*): face waypoint HARD, only hold W when aligned —
-	--     holding W while body faces elsewhere = choppy strafe.
+	--   lookAt nil (free path / A*):
+	--     1) try HRP CFrame faceToward waypoint
+	--     2) if still misaligned, hold Left/Right arrows to yaw (no RMB camera drag)
+	--     3) only hold W when facing waypoint (else choppy strafe)
 	--
 	-- Falls back to teleportTo on timeout if snapOnTimeout ~= false.
 	function M.walkTo(
@@ -505,6 +583,10 @@ return function(S)
 		if useMoveKeys == nil then
 			useMoveKeys = C.WALK_SPOOF_MOVE_KEYS ~= false
 		end
+		local useTurnArrows = opts.useTurnArrows
+		if useTurnArrows == nil then
+			useTurnArrows = C.PATH_TURN_ARROWS ~= false
+		end
 		local arrive = opts.arriveStuds or C.SMOOTH_WALK_ARRIVE_STUDS or 2.5
 		local timeout = opts.timeout or C.SMOOTH_WALK_TIMEOUT or 3.0
 		local poll = opts.poll or C.SMOOTH_WALK_POLL or 0.05
@@ -514,7 +596,6 @@ return function(S)
 		if snapOnTimeout == nil then
 			snapOnTimeout = true
 		end
-		-- Free-path: only W after body faces the waypoint (else choppy)
 		local pathAlignDot = C.PATH_WALK_ALIGN_DOT or 0.72
 		local pathTurnRate = C.PATH_WALK_TURN_RATE or 16
 
@@ -538,7 +619,7 @@ return function(S)
 		local facePos = Vector3.new(faceX, faceY, faceZ)
 
 		local function cleanupMove(restoreAutoRotate: boolean?)
-			M.releaseMoveKeys()
+			M.releaseMoveKeys() -- includes turn arrows
 			pcall(function()
 				hum:Move(Vector3.zero)
 				if restoreAutoRotate ~= false then
@@ -547,7 +628,7 @@ return function(S)
 			end)
 		end
 
-		-- Face waypoint every tick (owns yaw; AutoRotate off so game doesn't fight us)
+		-- Face waypoint: CFrame attempt + optional Left/Right arrow yaw.
 		local function facePathWaypoint(dt: number): number?
 			pcall(function()
 				hum.AutoRotate = false
@@ -555,11 +636,11 @@ return function(S)
 			local pos = hrp.Position
 			local look = Vector3.new(goal.X, pos.Y, goal.Z)
 			if (look - pos).Magnitude < 0.05 then
+				M.holdTurnKey(nil)
 				return 1
 			end
 			local desired = CFrame.lookAt(pos, look)
 			local d = M.facingDotTo(goal.X, goal.Z)
-			-- Snap on sharp corners; otherwise fast lerp toward path
 			local snap = hardFace or forceSoftTurn or (d ~= nil and d < 0.25)
 			pcall(function()
 				if snap then
@@ -569,6 +650,19 @@ return function(S)
 					hrp.CFrame = hrp.CFrame:Lerp(desired, math.clamp(alpha, 0.15, 1))
 				end
 			end)
+			d = M.facingDotTo(goal.X, goal.Z)
+
+			-- Arrow-key yaw when still off-axis (game often ignores HRP CFrame alone)
+			if useTurnArrows and useMoveKeys and not S.clawBusy and not S.combatBusy then
+				if d ~= nil and d >= pathAlignDot then
+					M.holdTurnKey(nil)
+				else
+					M.holdTurnKey(M.turnKeyToward(goal.X, goal.Z, pathAlignDot))
+				end
+			else
+				M.holdTurnKey(nil)
+			end
+
 			return M.facingDotTo(goal.X, goal.Z)
 		end
 
@@ -577,17 +671,19 @@ return function(S)
 				return
 			end
 			if S.combatBusy then
-				M.releaseMoveKeys()
+				M.holdMoveKeys(nil)
+				M.holdTurnKey(nil)
 				return
 			end
 			if combatFace then
+				M.holdTurnKey(nil) -- never arrow-turn while face-locked on reticle
 				M.holdMoveKeys(M.moveKeysForWalk(pos, goal, facePos))
 			else
-				-- Free path: W only when facing the waypoint — no strafe-while-turning
+				-- Free path: W only when facing waypoint; arrows handle the turn
 				if faceDot ~= nil and faceDot >= pathAlignDot then
 					M.holdMoveKeys({ Enum.KeyCode.W })
 				else
-					M.releaseMoveKeys()
+					M.holdMoveKeys(nil)
 				end
 			end
 		end
@@ -599,6 +695,7 @@ return function(S)
 			pcall(function()
 				hum.AutoRotate = false
 			end)
+			M.holdTurnKey(nil)
 			d0 = 1
 		else
 			d0 = facePathWaypoint(poll)
@@ -636,6 +733,7 @@ return function(S)
 					hum.AutoRotate = false
 				end)
 				M.faceToward(faceX, faceY, faceZ, not hardFace, dt)
+				M.holdTurnKey(nil)
 				faceDot = 1
 			else
 				faceDot = facePathWaypoint(dt)

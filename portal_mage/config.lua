@@ -67,8 +67,11 @@ return {
 	-- Time-based yaw rate (higher = snappier). Used for U-turns at path tails.
 	SMOOTH_WALK_TURN_RATE = 5.5,
 	-- Free-path (no reticle): turn toward waypoint then W only when aligned
-	PATH_WALK_TURN_RATE = 18, -- snappy yaw along A* (higher = faster face)
+	PATH_WALK_TURN_RATE = 18, -- snappy HRP CFrame yaw along A* (higher = faster face)
 	PATH_WALK_ALIGN_DOT = 0.72, -- hold W only when facing waypoint this well
+	-- If CFrame face is ignored by the game, hold Left/Right arrows to yaw (no RMB drag)
+	PATH_TURN_ARROWS = true,
+	PATH_TURN_YAW_DEADZONE = 0.08, -- |sin yaw| below this ≈ on-axis
 	-- If look·forward < this (~70°), disable AutoRotate and soft-lerp instead of snap
 	SMOOTH_WALK_SOFT_TURN_DOT = 0.35,
 	-- Once look·forward >= this, re-enable AutoRotate (~25°)
