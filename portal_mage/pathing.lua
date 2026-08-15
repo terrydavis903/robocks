@@ -122,7 +122,7 @@ return function(S)
 	local lastSlide: string? = nil -- "A" | "D" sticky while wall-blocked
 	local lastSlideAt = 0
 	local alignDot = C.PATH_WALK_ALIGN_DOT or 0.72
-	local faceAlign = C.KILL_AURA_FACE_ALIGN or 0.85 -- stricter face before W
+	local faceAlign = C.KILL_AURA_FACE_ALIGN or 0.65 -- face well enough before W
 
 	-- Yaw character toward enemy: CFrame + camera nudge + Left/Right arrows.
 	-- Returns facingDot (1 = looking at enemy).
@@ -263,15 +263,8 @@ return function(S)
 			return "stand"
 		end
 
-		-- Not facing yet → pivot only (arrows), no W
-		if d < faceAlign then
-			if U.holdMoveKeys then
-				U.holdMoveKeys(nil)
-			end
-			return string.format("face d=%.2f", d)
-		end
-
-		-- Facing: W if forward clear, else A/D slide (taxicab around walls)
+		-- Facing: W if forward clear, else A/D slide (taxicab around walls).
+		-- Do NOT hard-block W forever if face is imperfect — move when roughly aligned.
 		local faceDir = Vector3.new(epos.X - playerPos.X, 0, epos.Z - playerPos.Z)
 		if faceDir.Magnitude < 0.2 then
 			if U.holdMoveKeys then
@@ -281,14 +274,23 @@ return function(S)
 		end
 		faceDir = faceDir.Unit
 		local probe = C.KILL_AURA_PROBE or 5
+		local roughFace = faceAlign * 0.55 -- ~0.36 if faceAlign=0.65 — enough to walk
+
+		if d < roughFace then
+			-- Still badly off: pivot only
+			if U.holdMoveKeys then
+				U.holdMoveKeys(nil)
+			end
+			return string.format("face d=%.2f", d)
+		end
 
 		if forwardClear(playerPos, epos, probe) then
 			lastSlide = nil
 			if U.holdMoveKeys then
+				-- Prefer W; if only roughly facing, still W (HRP/arrows keep turning)
 				U.holdMoveKeys({ Enum.KeyCode.W })
 			end
-			-- Keep a light face hold via arrows if drift
-			return "W"
+			return if d >= faceAlign then "W" else string.format("W-face d=%.2f", d)
 		end
 
 		-- Wall ahead → strafe A or D (relative to face = enemy)
@@ -329,7 +331,7 @@ return function(S)
 
 	local function runWalker()
 		logOpen()
-		log("walker start (face→W/A/D→stand@30)")
+		log("walker start v3 face→W/A/D→stand@30")
 
 		while S.walking do
 			local ok, err = pcall(function()

@@ -194,6 +194,15 @@ return function(S)
 		return Vector3.new(-forward.Z, 0, forward.X)
 	end
 
+	-- Inline flat XZ unit (do not depend on local flatUnit order / stale modules).
+	local function xzUnit(v: Vector3): Vector3?
+		local f = Vector3.new(v.X, 0, v.Z)
+		if f.Magnitude < 1e-4 then
+			return nil
+		end
+		return f.Unit
+	end
+
 	-- Signed yaw error to world point: >0 = goal is to our LEFT, <0 = to our RIGHT.
 	-- Used to choose Left/Right arrow for free-path turns.
 	function M.yawErrorTo(worldX: number, worldZ: number): number?
@@ -203,8 +212,8 @@ return function(S)
 		if not (hrp and hrp:IsA("BasePart")) then
 			return nil
 		end
-		local fwd = flatUnit(hrp.CFrame.LookVector)
-		local to = flatUnit(Vector3.new(worldX - hrp.Position.X, 0, worldZ - hrp.Position.Z))
+		local fwd = xzUnit(hrp.CFrame.LookVector)
+		local to = xzUnit(Vector3.new(worldX - hrp.Position.X, 0, worldZ - hrp.Position.Z))
 		if not fwd or not to then
 			return nil
 		end
@@ -551,8 +560,8 @@ return function(S)
 		if not (hrp and hrp:IsA("BasePart")) then
 			return nil
 		end
-		local fwd = flatUnit(hrp.CFrame.LookVector)
-		local to = flatUnit(Vector3.new(worldX - hrp.Position.X, 0, worldZ - hrp.Position.Z))
+		local fwd = xzUnit(hrp.CFrame.LookVector)
+		local to = xzUnit(Vector3.new(worldX - hrp.Position.X, 0, worldZ - hrp.Position.Z))
 		if not fwd or not to then
 			return nil
 		end
