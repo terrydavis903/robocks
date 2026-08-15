@@ -1262,82 +1262,40 @@ return function(S)
 		return true, nil
 	end
 
-	function M.applyWalkSpeed(speed: number?): boolean
-		local hum = M.getHumanoid()
-		if not hum then
-			return false
-		end
-		local sp = speed or S.walkSpeedValue or C.WALK_SPEED_DEFAULT or 32
-		local lo = C.WALK_SPEED_MIN or 8
-		local hi = C.WALK_SPEED_MAX or 200
-		sp = math.clamp(sp, lo, hi)
-		S.walkSpeedValue = sp
-		pcall(function()
-			hum.WalkSpeed = sp
-		end)
-		return true
+	-- WalkSpeed force removed: never write Humanoid.WalkSpeed (game owns speed).
+	function M.applyWalkSpeed(_speed: number?): boolean
+		return false
 	end
 
 	function M.setWalkSpeedValue(speed: number)
+		-- Keep value for UI/debug only — do not apply to Humanoid
 		local lo = C.WALK_SPEED_MIN or 8
 		local hi = C.WALK_SPEED_MAX or 200
 		S.walkSpeedValue = math.clamp(speed, lo, hi)
-		if S.walkSpeedEnabled then
-			M.applyWalkSpeed(S.walkSpeedValue)
-		end
 		refreshWalkSpeedLabel()
 	end
 
 	function M.startWalkSpeedForce()
-		if S.walkSpeedEnabled and S.walkSpeedThread then
-			refreshWalkSpeedLabel()
-			return
-		end
-		local hum = M.getHumanoid()
-		if hum and S.walkSpeedSaved == nil then
-			S.walkSpeedSaved = hum.WalkSpeed
-		end
-		if not S.walkSpeedValue or S.walkSpeedValue <= 0 then
-			S.walkSpeedValue = C.WALK_SPEED_DEFAULT or 32
-		end
-		S.walkSpeedEnabled = true
-		S.walkSpeedThread = task.spawn(function()
-			local RunService = game:GetService("RunService")
-			while S.walkSpeedEnabled do
-				M.applyWalkSpeed(S.walkSpeedValue)
-				RunService.Heartbeat:Wait()
-			end
-			S.walkSpeedThread = nil
-		end)
+		S.walkSpeedEnabled = false
+		S.walkSpeedThread = nil
 		refreshWalkSpeedLabel()
-		M.setStatus(string.format("WalkSpeed force ON — %.0f", S.walkSpeedValue))
+		M.setStatus("WalkSpeed force disabled — never touch WalkSpeed")
 	end
 
 	function M.stopWalkSpeedForce()
 		S.walkSpeedEnabled = false
-		-- Restore previous/vanilla speed once
-		local hum = M.getHumanoid()
-		if hum then
-			local restore = S.walkSpeedSaved or C.WALK_SPEED_VANILLA or 16
-			pcall(function()
-				hum.WalkSpeed = restore
-			end)
-		end
+		S.walkSpeedThread = nil
 		S.walkSpeedSaved = nil
 		refreshWalkSpeedLabel()
-		M.setStatus("WalkSpeed force OFF")
 	end
 
-	function M.setWalkSpeedForce(on: boolean)
-		if on then
-			M.startWalkSpeedForce()
-		else
-			M.stopWalkSpeedForce()
-		end
+	function M.setWalkSpeedForce(_on: boolean)
+		M.stopWalkSpeedForce()
+		M.setStatus("WalkSpeed force disabled — never touch WalkSpeed")
 	end
 
 	function M.toggleWalkSpeedForce()
-		M.setWalkSpeedForce(not S.walkSpeedEnabled)
+		M.setWalkSpeedForce(false)
 	end
 
 	return M

@@ -481,39 +481,6 @@ return function(S)
 		by += 34
 		local autoOreBtn = mkButton(bot, "Auto Ore: OFF", by, Color3.fromRGB(70, 70, 80))
 		by += 34
-		mkLabel(bot, "WalkSpeed force (re-applies every frame)", by)
-		by += 18
-		local speedBox = mkBox(bot, by, "speed e.g. 32")
-		speedBox.Text = tostring(S.walkSpeedValue or S.Config.WALK_SPEED_DEFAULT or 32)
-		by += 32
-		local walkSpeedBtn = mkButton(bot, "WalkSpeed: OFF", by, Color3.fromRGB(70, 70, 80))
-		by += 34
-		-- Preset speed chips
-		local presetY = by
-		local presetW = math.floor((360 - 24) / 4) - 4
-		local presets = { 16, 32, 60, 100 }
-		local presetBtns = {}
-		for i, sp in ipairs(presets) do
-			local b = mkSmall(
-				bot,
-				tostring(sp),
-				8 + (i - 1) * (presetW + 4),
-				presetY,
-				presetW,
-				Color3.fromRGB(50, 70, 90)
-			)
-			table.insert(presetBtns, b)
-			b.MouseButton1Click:Connect(function()
-				speedBox.Text = tostring(sp)
-				if S.Util and S.Util.setWalkSpeedValue then
-					S.Util.setWalkSpeedValue(sp)
-				end
-				if S.Util and S.Util.setStatus then
-					S.Util.setStatus(string.format("WalkSpeed target = %d", sp))
-				end
-			end)
-		end
-		by += 36
 
 		S.ui.setProxLabel = function(on: boolean)
 			proxBtn.Text = on and "Prox Guard: ON" or "Prox Guard: OFF"
@@ -552,22 +519,8 @@ return function(S)
 			pathRecBtn.Text = on and "A* Rec: ON" or "A* Rec: OFF"
 			pathRecBtn.BackgroundColor3 = on and Color3.fromRGB(50, 160, 90) or Color3.fromRGB(70, 70, 80)
 		end
-		S.ui.setWalkSpeedLabel = function(on: boolean, speed: number?)
-			local sp = speed or S.walkSpeedValue or 32
-			if on then
-				walkSpeedBtn.Text = string.format("WalkSpeed: %.0f ON", sp)
-				walkSpeedBtn.BackgroundColor3 = Color3.fromRGB(50, 120, 160)
-			else
-				walkSpeedBtn.Text = string.format("WalkSpeed: %.0f OFF", sp)
-				walkSpeedBtn.BackgroundColor3 = Color3.fromRGB(70, 70, 80)
-			end
-			if speedBox and tostring(sp) ~= speedBox.Text then
-				-- Don't stomp while user is typing
-				if not speedBox:IsFocused() then
-					speedBox.Text = tostring(math.floor(sp + 0.5))
-				end
-			end
-		end
+		-- WalkSpeed force removed — never write Humanoid.WalkSpeed
+		S.ui.setWalkSpeedLabel = function(_on: boolean, _speed: number?) end
 
 		dumpBtn.MouseButton1Click:Connect(function()
 			task.spawn(S.Dump.dumpWorld)
@@ -662,31 +615,6 @@ return function(S)
 			else
 				S.Util.setStatus("Auto Ore module not loaded — reload script")
 			end
-		end)
-		local function readSpeedBox(): number
-			local n = tonumber(speedBox.Text)
-			if not n then
-				return S.walkSpeedValue or S.Config.WALK_SPEED_DEFAULT or 32
-			end
-			local lo = S.Config.WALK_SPEED_MIN or 8
-			local hi = S.Config.WALK_SPEED_MAX or 200
-			return math.clamp(n, lo, hi)
-		end
-		speedBox.FocusLost:Connect(function()
-			local sp = readSpeedBox()
-			speedBox.Text = tostring(math.floor(sp + 0.5))
-			if S.Util and S.Util.setWalkSpeedValue then
-				S.Util.setWalkSpeedValue(sp)
-			end
-		end)
-		walkSpeedBtn.MouseButton1Click:Connect(function()
-			if not S.Util or not S.Util.toggleWalkSpeedForce then
-				return
-			end
-			-- Pull latest box value before toggle-on
-			local sp = readSpeedBox()
-			S.Util.setWalkSpeedValue(sp)
-			S.Util.toggleWalkSpeedForce()
 		end)
 
 		---------------------------------------------------------------------------

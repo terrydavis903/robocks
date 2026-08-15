@@ -636,9 +636,7 @@ return function(S)
 			pcall(function()
 				hum.AutoRotate = false
 				hum.PlatformStand = false
-				if hum.WalkSpeed < 8 and (not U.isSeated or not U.isSeated()) then
-					hum.WalkSpeed = C.WALK_SPEED_DEFAULT or 16
-				end
+				-- never touch Humanoid.WalkSpeed
 			end)
 		end
 

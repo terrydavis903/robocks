@@ -143,9 +143,9 @@ return {
 	-- Built-in anti-AFK: press Space this often (seconds)
 	ANTI_AFK_INTERVAL = 120,
 
-	-- Custom WalkSpeed (re-applied every frame while enabled)
-	WALK_SPEED_DEFAULT = 32, -- target when first enabled
-	WALK_SPEED_VANILLA = 16, -- restore when turning off
+	-- WalkSpeed: portal_mage never writes Humanoid.WalkSpeed (game owns it).
+	WALK_SPEED_DEFAULT = 16, -- unused (legacy)
+	WALK_SPEED_VANILLA = 16,
 	WALK_SPEED_MIN = 8,
 	WALK_SPEED_MAX = 200,
 
