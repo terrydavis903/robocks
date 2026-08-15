@@ -96,13 +96,13 @@ return {
 	NAV_CELL = 4,
 	NAV_MAX_CELLS = 40,
 	NAV_MAX_EXPAND = 1200,
-	NAV_AGENT_RADIUS = 2,
+	NAV_AGENT_RADIUS = 2.4, -- slightly wider so PFS avoids thin wall clips
 	NAV_AGENT_HEIGHT = 5,
 	NAV_AGENT_CAN_JUMP = true,
 	NAV_WAYPOINT_SPACING = 6,
 	KILL_AURA_LOG = true, -- dumps/killaura_*.log
-	PATH_VIZ_REFRESH = 0.55, -- recompute A*/PFS (also drives segment approach when Kill Aura on)
-	PATH_REBUILD = 0.85, -- force path recompute while approaching (even if viz off)
+	PATH_VIZ_REFRESH = 0.55, -- redraw Path Viz polyline only (not movement thrash)
+	PATH_REBUILD = 4.0, -- Kill Aura path recompute ceiling (stuck/enemy change also rebuild)
 	NAV_RAY_UP = 50,
 	NAV_RAY_DOWN = 140,
 	NAV_MIN_NORMAL_Y = 0.45,
@@ -198,11 +198,17 @@ return {
 
 	-- Auto Ore: A*/PFS between Spawn_Ore nodes (segment face→W; wall climb Space+W)
 	AUTO_ORE_ARRIVE = 6, -- studs XZ to count as at node
-	AUTO_ORE_DWELL = 2.5, -- seconds at node after interact before next
-	AUTO_ORE_INTERACT = true, -- pulse E (or INTERACT_KEY) on arrive
-	AUTO_ORE_INTERACT_KEY = Enum.KeyCode.E,
-	AUTO_ORE_INTERACT_PULSES = 3,
-	AUTO_ORE_PATH_REBUILD = 1.0,
+	AUTO_ORE_DWELL = 4.0, -- max seconds mining at node before next (ore despawn ends early)
+	AUTO_ORE_INTERACT = true, -- mine with F when prompt available + pickaxe out
+	AUTO_ORE_INTERACT_KEY = Enum.KeyCode.F, -- game mine key
+	AUTO_ORE_INTERACT_PULSES = 1, -- F presses per mine tick (hold rhythm via interval)
+	AUTO_ORE_MINE_INTERVAL = 0.45, -- seconds between F while mining
+	AUTO_ORE_MINE_NEED_PROMPT = false, -- true = only F when GUI mine prompt shown
+	AUTO_ORE_MINE_WAIT_PROMPT = 1.2, -- seconds to wait for prompt after arrive before F-anyway
+	-- Path rebuild: NOT every step — only stuck / blocked segment / goal jump / rare safety
+	AUTO_ORE_PATH_REBUILD = 10.0, -- safety repath ceiling (was ~1s — too thrashy)
+	AUTO_ORE_PATH_GOAL_MOVE = 12, -- repath if ore goal moved this far from pathGoal
+	AUTO_ORE_PATH_DRIFT = 36, -- repath if far from current waypoint
 	AUTO_ORE_SEG_ARRIVE = 3.5, -- advance path waypoint
 	AUTO_ORE_FACE_ALIGN = 0.90,
 	AUTO_ORE_FACE_SETTLE = 0.18,
@@ -216,7 +222,8 @@ return {
 	AUTO_ORE_CLIMB_FACE_ALIGN = 0.85, -- face into wall (beam) before Space+W
 	AUTO_ORE_CLIMB_MAX = 6.0, -- seconds per climb attempt
 	AUTO_ORE_CLIMB_MIN_RISE = 1.2,
-	AUTO_ORE_STUCK = 1.2, -- seconds barely moving before repath/climb
+	AUTO_ORE_STUCK = 1.4, -- seconds barely moving before repath/climb
+	AUTO_ORE_REPATH_COOLDOWN = 1.6, -- min seconds between force rebuilds
 	AUTO_ORE_SKIP_ROCK = false, -- true = skip basic rock/stone nodes
 	AUTO_ORE_TYPE_PRIORITY = {}, -- empty = all types; else e.g. {"aurorite","lumite"}
 

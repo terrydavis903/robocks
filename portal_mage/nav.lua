@@ -454,7 +454,8 @@ return function(S)
 		return true
 	end
 
-	-- True if horizontal walk from→to is not blocked by a wall-like surface.
+	-- True if horizontal walk from→to is not blocked by a wall-like / collide mesh.
+	-- Body-width: center + left/right offsets so thin wall gaps don't look clear.
 	function M.hasClearWalk(from: Vector3, to: Vector3): boolean
 		local flat = Vector3.new(to.X - from.X, 0, to.Z - from.Z)
 		local dist = flat.Magnitude
@@ -462,18 +463,69 @@ return function(S)
 			return true
 		end
 		local dir = flat.Unit
+		local right = Vector3.new(-dir.Z, 0, dir.X)
 		local params = M.rayParams()
 		local minNy = cfg("NAV_MIN_NORMAL_Y", 0.45)
-		for _, hy in ipairs({ 1.2, 2.5, 4.0 }) do
-			local origin = from + Vector3.new(0, hy, 0)
-			local hit = workspace:Raycast(origin, dir * dist, params)
-			if hit and hit.Instance then
-				if isBarrierInstance(hit.Instance) or hit.Normal.Y < minNy then
+		local halfW = math.max(0.6, (cfg("NAV_AGENT_RADIUS", 2) or 2) * 0.55)
+		local heights = cfg("NAV_BODY_HEIGHTS", { 1.2, 2.5, 4.5 })
+		local laterals = { 0, -halfW, halfW }
+
+		local function blocksWalk(hit: RaycastResult): boolean
+			local inst = hit.Instance
+			if not inst then
+				return false
+			end
+			if isBarrierInstance(inst) then
+				return true
+			end
+			-- Floor-like surfaces along the walk ray are OK (ramps/ground)
+			if hit.Normal.Y >= minNy then
+				return false
+			end
+			-- Vertical-ish collide geometry (MeshPart walls, unions, parts)
+			if inst:IsA("BasePart") then
+				local bp = inst :: BasePart
+				if bp.CanCollide then
+					return true
+				end
+				-- Non-collide query hits (decor) — ignore
+				return false
+			end
+			-- Terrain steep face
+			if inst:IsA("Terrain") and hit.Normal.Y < minNy then
+				return true
+			end
+			return hit.Normal.Y < minNy
+		end
+
+		for _, hy in ipairs(heights) do
+			for _, lat in ipairs(laterals) do
+				local origin = from + Vector3.new(0, hy, 0) + right * lat
+				-- Slight inset so we don't start inside a wall we're already touching
+				local start = origin + dir * 0.35
+				local remain = math.max(0.1, dist - 0.5)
+				local hit = workspace:Raycast(start, dir * remain, params)
+				if hit and blocksWalk(hit) then
 					return false
 				end
 			end
 		end
 		return true
+	end
+
+	-- If next waypoint is through a collide mesh, skip ahead while clear; nil if need repath.
+	function M.nextClearWaypoint(from: Vector3, points: { Vector3 }, startIdx: number): number?
+		if not points or #points == 0 then
+			return nil
+		end
+		local i = math.clamp(startIdx or 1, 1, #points)
+		-- Prefer first waypoint we can actually walk toward
+		for j = i, #points do
+			if M.hasClearWalk(from, points[j]) then
+				return j
+			end
+		end
+		return nil
 	end
 
 	---------------------------------------------------------------------------

@@ -433,6 +433,7 @@ return function(S)
 	local pathBuiltAt = 0
 	local pathGoal: Vector3? = nil
 	local pathKind = ""
+	local lastRepathAt = 0
 	local lastSlide: string? = nil
 	local lastSlideAt = 0
 	local lastPos: Vector3? = nil
@@ -468,6 +469,40 @@ return function(S)
 		end
 	end
 
+	-- Skip waypoints whose segment is blocked by collide meshes (walls).
+	local function resolveClearSegment(from: Vector3)
+		local nav = Nav()
+		if not nav or not nav.hasClearWalk or #pathPts == 0 then
+			return
+		end
+		if pathIdx < 1 or pathIdx > #pathPts then
+			return
+		end
+		local wp = pathPts[pathIdx]
+		if nav.hasClearWalk(from, wp) then
+			return
+		end
+		-- Next node is through a surface — look further along the polyline
+		if nav.nextClearWaypoint then
+			local j = nav.nextClearWaypoint(from, pathPts, pathIdx + 1)
+			if j and j ~= pathIdx then
+				pathIdx = j
+				faceOkSince = 0
+				return
+			end
+		else
+			for j = pathIdx + 1, #pathPts do
+				if nav.hasClearWalk(from, pathPts[j]) then
+					pathIdx = j
+					faceOkSince = 0
+					return
+				end
+			end
+		end
+		-- No clear hop: mark for repath (caller checks pathIdx blocked flag via rebuild)
+		pathKind = (pathKind or "path") .. ":blocked"
+	end
+
 	local function rebuildPath(from: Vector3, to: Vector3)
 		local goal = to
 		local nav = Nav()
@@ -500,28 +535,60 @@ return function(S)
 		pathPts = pts
 		pathGoal = goal
 		pathBuiltAt = os.clock()
+		lastRepathAt = pathBuiltAt
 		pathKind = kind or "path"
 		pathIdx = 1
 		advancePathIndex(from)
+		resolveClearSegment(from)
 		faceOkSince = 0
 	end
 
+	-- Rebuild sparingly: new goal / stuck / blocked / rare safety — not every step.
 	local function ensurePath(from: Vector3, to: Vector3, force: boolean?)
-		local interval = C.AUTO_ORE_PATH_REBUILD or C.PATH_REBUILD or 0.85
+		local safety = C.AUTO_ORE_PATH_REBUILD or 10.0
+		local goalMove = C.AUTO_ORE_PATH_GOAL_MOVE or 12
+		local drift = C.AUTO_ORE_PATH_DRIFT or 36
+		local repathCd = C.AUTO_ORE_REPATH_COOLDOWN or 1.6
+		local now = os.clock()
+
 		local need = force == true
 			or #pathPts < 2
 			or pathGoal == nil
-			or flatDist(pathGoal, to) > 8
-			or (os.clock() - pathBuiltAt) >= interval
-		if not need and pathIdx <= #pathPts then
-			if flatDist(from, pathPts[pathIdx]) > 28 then
+			or flatDist(pathGoal :: Vector3, to) > goalMove
+
+		if not need and pathIdx >= 1 and pathIdx <= #pathPts then
+			if flatDist(from, pathPts[pathIdx]) > drift then
 				need = true
 			end
 		end
+		-- Safety ceiling only (long paths on big maps) — not a per-second thrash
+		if not need and (now - pathBuiltAt) >= safety then
+			need = true
+		end
+		-- Segment through collide mesh and no skip → repath
+		if not need and #pathPts >= 2 then
+			local nav = Nav()
+			if nav and nav.hasClearWalk and pathIdx <= #pathPts then
+				if not nav.hasClearWalk(from, pathPts[pathIdx]) then
+					resolveClearSegment(from)
+					if pathIdx <= #pathPts and not nav.hasClearWalk(from, pathPts[pathIdx]) then
+						need = true
+						pathKind = (pathKind or "path") .. ":repath"
+					end
+				end
+			end
+		end
+
 		if need then
-			rebuildPath(from, to)
+			if force or (now - lastRepathAt) >= repathCd or #pathPts < 2 then
+				rebuildPath(from, to)
+			else
+				advancePathIndex(from)
+				resolveClearSegment(from)
+			end
 		else
 			advancePathIndex(from)
+			resolveClearSegment(from)
 		end
 	end
 
@@ -539,7 +606,6 @@ return function(S)
 	local visited: { [Instance]: boolean } = {}
 	local currentOre: Instance? = nil
 	local currentOrePos: Vector3? = nil
-	local dwellUntil = 0
 	local minedCount = 0
 	local climbActive = false
 	local climbStartedAt = 0
@@ -619,18 +685,235 @@ return function(S)
 		return best.inst, best.pos, best.typeKey
 	end
 
-	local function interactAtOre()
+	---------------------------------------------------------------------------
+	-- Mine prompt (GUI) + F with pickaxe unsheathed
+	-- Dump: PlayerGui.ThePortalUI.PlayerInteractionPanel / InteractionChoices
+	---------------------------------------------------------------------------
+
+	local function guiObjectShown(gui: GuiObject): boolean
+		if not gui.Visible then
+			return false
+		end
+		local p: Instance? = gui.Parent
+		while p do
+			if p:IsA("GuiObject") and not (p :: GuiObject).Visible then
+				return false
+			end
+			if p:IsA("ScreenGui") and not (p :: ScreenGui).Enabled then
+				return false
+			end
+			p = p.Parent
+		end
+		return true
+	end
+
+	local function textLooksMine(s: string): boolean
+		local l = string.lower(s)
+		if string.find(l, "mine", 1, true) then
+			return true
+		end
+		if string.find(l, "mining", 1, true) then
+			return true
+		end
+		if string.find(l, "pickaxe", 1, true) then
+			return true
+		end
+		if string.find(l, "harvest", 1, true) and string.find(l, "ore", 1, true) then
+			return true
+		end
+		-- key chips often just show "F"
+		if l == "f" or l == "[f]" or string.find(l, "%[f%]") or string.find(l, "press f", 1, true) then
+			return true
+		end
+		return false
+	end
+
+	-- Returns true when the game is offering a mine/interact prompt we can F.
+	function M.canMinePrompt(): (boolean, string?)
+		local lp = Players.LocalPlayer
+		if not lp then
+			return false, nil
+		end
+		local pg = lp:FindFirstChildOfClass("PlayerGui") or lp:FindFirstChild("PlayerGui")
+		if not pg then
+			return false, nil
+		end
+		local portal = pg:FindFirstChild("ThePortalUI")
+		if not portal then
+			-- fallback: any PlayerGui text "Mine" that is shown
+			for _, d in ipairs(pg:GetDescendants()) do
+				if d:IsA("GuiObject") and guiObjectShown(d :: GuiObject) then
+					local t = ""
+					pcall(function()
+						if d:IsA("TextLabel") or d:IsA("TextButton") then
+							t = (d :: any).Text or ""
+						end
+					end)
+					if textLooksMine(t) and (string.find(string.lower(t), "mine", 1, true) or string.find(string.lower(d.Name), "mine", 1, true)) then
+						return true, "gui:" .. d.Name
+					end
+				end
+			end
+			return false, nil
+		end
+
+		local function scanRoot(root: Instance?): (boolean, string?)
+			if not root then
+				return false, nil
+			end
+			for _, d in ipairs(root:GetDescendants()) do
+				if d:IsA("GuiObject") and guiObjectShown(d :: GuiObject) then
+					local nameL = string.lower(d.Name)
+					local t = ""
+					pcall(function()
+						if d:IsA("TextLabel") or d:IsA("TextButton") or d:IsA("TextBox") then
+							t = tostring((d :: any).Text or "")
+						end
+					end)
+					if textLooksMine(t) then
+						return true, d:GetFullName()
+					end
+					-- Live interaction clones (not templates) under the panel
+					if string.find(nameL, "interaction", 1, true)
+						and not string.find(nameL, "template", 1, true)
+						and d.Name ~= "PlayerInteractionPanel"
+					then
+						if d:IsA("GuiButton") or d:IsA("TextButton") then
+							-- Prefer real buttons with non-empty / mine-like text
+							if t ~= "" and t ~= "Button" then
+								return true, d:GetFullName()
+							end
+						end
+					end
+				end
+			end
+			return false, nil
+		end
+
+		local panel = portal:FindFirstChild("PlayerInteractionPanel")
+		local ok, why = scanRoot(panel)
+		if ok then
+			return true, why
+		end
+		-- Panel itself Visible with non-template children → interact available (mine when near ore)
+		if panel and panel:IsA("GuiObject") and guiObjectShown(panel :: GuiObject) then
+			for _, ch in ipairs(panel:GetChildren()) do
+				if ch:IsA("GuiObject")
+					and not string.find(string.lower(ch.Name), "template", 1, true)
+					and guiObjectShown(ch :: GuiObject)
+				then
+					return true, ch:GetFullName()
+				end
+			end
+		end
+		ok, why = scanRoot(portal:FindFirstChild("InteractionChoices"))
+		if ok then
+			return true, why
+		end
+		-- ProximityPrompt fallback
+		for _, d in ipairs(workspace:GetDescendants()) do
+			if d:IsA("ProximityPrompt") then
+				local pp = d :: ProximityPrompt
+				if pp.Enabled then
+					local action = string.lower(tostring(pp.ActionText or "") .. " " .. tostring(pp.ObjectText or ""))
+					if string.find(action, "mine", 1, true) or string.find(action, "ore", 1, true) then
+						local parent = pp.Parent
+						local ppos = parent and U.getInstancePosition and U.getInstancePosition(parent)
+						local me = playerPos()
+						if ppos and me and (ppos - me).Magnitude <= (pp.MaxActivationDistance or 10) + 2 then
+							return true, "prompt:" .. pp:GetFullName()
+						end
+					end
+				end
+			end
+		end
+		return false, nil
+	end
+
+	local function ensurePickaxeOut(): boolean
+		if U.ensureStanding then
+			U.ensureStanding(2.0)
+		end
+		if U.isWeaponDrawn and U.isWeaponDrawn() then
+			return true
+		end
+		if U.markWeaponSheathed then
+			U.markWeaponSheathed()
+		end
+		if U.ensureWeaponDrawn then
+			return U.ensureWeaponDrawn(1.5, true) == true
+		end
+		return false
+	end
+
+	local function pressMineKey()
 		if C.AUTO_ORE_INTERACT == false then
 			return
 		end
-		local key = C.AUTO_ORE_INTERACT_KEY or Enum.KeyCode.E
-		local n = C.AUTO_ORE_INTERACT_PULSES or 3
+		local key = C.AUTO_ORE_INTERACT_KEY or Enum.KeyCode.F
+		local n = C.AUTO_ORE_INTERACT_PULSES or 1
 		if U.pressKey then
 			for _ = 1, n do
 				U.pressKey(key)
-				task.wait(0.12)
+				if n > 1 then
+					task.wait(0.08)
+				end
 			end
 		end
+	end
+
+	-- Mining session at a node: draw pickaxe, wait for prompt (optional), pulse F until ore gone or dwell.
+	local function mineAtOre(ore: Instance, orePos: Vector3): string
+		stopMove()
+		facePoint(orePos)
+		if not ensurePickaxeOut() then
+			return "no-pickaxe"
+		end
+		local t0 = os.clock()
+		local dwell = C.AUTO_ORE_DWELL or 4.0
+		local interval = C.AUTO_ORE_MINE_INTERVAL or 0.45
+		local needPrompt = C.AUTO_ORE_MINE_NEED_PROMPT == true
+		local waitPrompt = C.AUTO_ORE_MINE_WAIT_PROMPT or 1.2
+		local lastF = 0
+		local pressed = 0
+		local sawPrompt = false
+
+		while S.autoOreEnabled and ore.Parent and (os.clock() - t0) < dwell do
+			local me = playerPos()
+			if me then
+				facePoint(orePos)
+			end
+			if U.isWeaponDrawn and not U.isWeaponDrawn() then
+				ensurePickaxeOut()
+			end
+			local okPrompt, why = M.canMinePrompt()
+			if okPrompt then
+				sawPrompt = true
+			end
+			local allowF = true
+			if needPrompt and not okPrompt then
+				allowF = (os.clock() - t0) >= waitPrompt -- timeout fallback
+			elseif not needPrompt and not okPrompt then
+				-- Prefer waiting briefly for GUI so we don't F in the void
+				allowF = sawPrompt or (os.clock() - t0) >= waitPrompt
+			end
+			if allowF and (os.clock() - lastF) >= interval then
+				pressMineKey()
+				lastF = os.clock()
+				pressed += 1
+			end
+			setStatus(string.format(
+				"[auto-ore] mine F×%d prompt=%s %s",
+				pressed,
+				okPrompt and "Y" or "n",
+				why and string.sub(why, -40) or ore.Name
+			))
+			task.wait(0.1)
+		end
+		if not ore.Parent then
+			return "mined"
+		end
+		return sawPrompt and "dwell-done" or "dwell-no-prompt"
 	end
 
 	---------------------------------------------------------------------------
@@ -762,9 +1045,23 @@ return function(S)
 			end
 		end
 
-		-- ---- Horizontal path along A* segments ----
-		ensurePath(from, goal)
+		-- Stuck on flat: force repath (cooldown inside ensurePath)
+		if stuck then
+			ensurePath(from, goal, true)
+		else
+			ensurePath(from, goal, false)
+		end
 		local target, segLabel = segmentTarget(from, goal)
+		-- Extra: if next segment is through collide mesh, try skip / repath before walking into it
+		local nav = Nav()
+		if nav and nav.hasClearWalk and not nav.hasClearWalk(from, target) then
+			resolveClearSegment(from)
+			target, segLabel = segmentTarget(from, goal)
+			if not nav.hasClearWalk(from, target) then
+				ensurePath(from, goal, true)
+				target, segLabel = segmentTarget(from, goal)
+			end
+		end
 		local faceAlign = C.AUTO_ORE_FACE_ALIGN or C.KILL_AURA_FACE_ALIGN or 0.9
 		local faceSettle = C.AUTO_ORE_FACE_SETTLE or C.KILL_AURA_FACE_SETTLE or 0.18
 		local fd = facePoint(target, faceAlign)
@@ -896,7 +1193,6 @@ return function(S)
 					currentOre = inst
 					currentOrePos = pos
 					clearPath()
-					dwellUntil = 0
 					setStatus(string.format(
 						"[auto-ore] target %s (%s) d=%.0f",
 						inst.Name,
@@ -911,45 +1207,27 @@ return function(S)
 					end
 				end
 
-				if not currentOrePos then
+				if not currentOrePos or not currentOre then
 					currentOre = nil
-					return
-				end
-
-				-- Dwelling at node after arrive
-				if dwellUntil > 0 then
-					stopMove()
-					facePoint(currentOrePos)
-					if os.clock() >= dwellUntil then
-						visited[currentOre] = true
-						minedCount += 1
-						currentOre = nil
-						currentOrePos = nil
-						dwellUntil = 0
-						clearPath()
-						setStatus(string.format("[auto-ore] next… mined=%d", minedCount))
-					else
-						setStatus(string.format(
-							"[auto-ore] dwell %.1fs @ %s | mined=%d",
-							dwellUntil - os.clock(),
-							currentOre.Name,
-							minedCount
-						))
-					end
-					task.wait(0.12)
 					return
 				end
 
 				local tag = approachTick(from, currentOrePos)
 				if tag == "arrive" then
-					stopMove()
-					interactAtOre()
-					dwellUntil = os.clock() + (C.AUTO_ORE_DWELL or 2.5)
+					local result = mineAtOre(currentOre, currentOrePos)
+					visited[currentOre] = true
+					if result == "mined" or result == "dwell-done" then
+						minedCount += 1
+					end
+					currentOre = nil
+					currentOrePos = nil
+					clearPath()
 					setStatus(string.format(
-						"[auto-ore] arrived %s — interact+dwell",
-						currentOre.Name
+						"[auto-ore] %s → next | mined=%d",
+						result,
+						minedCount
 					))
-					task.wait(0.1)
+					task.wait(0.15)
 					return
 				end
 

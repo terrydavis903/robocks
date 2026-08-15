@@ -535,15 +535,34 @@ return function(S)
 	end
 
 	local function ensurePath(playerPos: Vector3, epos: Vector3, enemy: Model, range: number, force: boolean?)
-		local interval = C.PATH_REBUILD or C.PATH_VIZ_REFRESH or 0.85
+		local interval = C.PATH_REBUILD or 4.0
 		local need = force == true
 			or pathEnemy ~= enemy
 			or #pathPts < 2
 			or (os.clock() - pathBuiltAt) >= interval
 		if not need and pathIdx <= #pathPts then
 			-- drifted far from current waypoint → repath
-			if flatDist(playerPos, pathPts[pathIdx]) > 28 then
+			if flatDist(playerPos, pathPts[pathIdx]) > 36 then
 				need = true
+			end
+		end
+		-- Next segment through collide mesh → skip or repath
+		if not need and #pathPts >= 2 then
+			local nav = Nav()
+			if nav and nav.hasClearWalk and pathIdx <= #pathPts then
+				if not nav.hasClearWalk(playerPos, pathPts[pathIdx]) then
+					if nav.nextClearWaypoint then
+						local j = nav.nextClearWaypoint(playerPos, pathPts, pathIdx + 1)
+						if j then
+							pathIdx = j
+							faceOkSince = 0
+						else
+							need = true
+						end
+					else
+						need = true
+					end
+				end
 			end
 		end
 		if need then
