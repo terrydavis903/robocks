@@ -20,6 +20,7 @@ S.ui = {
 	setAntiAfkLabel = function(_on: boolean) end,
 	setWalkSpeedLabel = function(_on: boolean, _speed: number?) end,
 	setOreEspLabel = function(_on: boolean) end,
+	setAutoOreLabel = function(_on: boolean) end,
 	setMeshOutlineLabel = function(_on: boolean) end,
 	setPathVizLabel = function(_on: boolean) end, -- A* path lines
 	setClawBeamLabel = function(_on: boolean) end,
@@ -76,6 +77,11 @@ S.walkSpeedSaved = nil :: number? -- vanilla to restore on disable
 S.oreEspEnabled = false
 S.oreEspThread = nil
 S.Ore = nil :: any
+
+-- Auto Ore (path node→node; independent of ESP)
+S.autoOreEnabled = false
+S.autoOreThread = nil
+S.AutoOre = nil :: any
 
 -- Dev mesh outline (same filters as Dump Mesh)
 S.meshOutlineEnabled = false

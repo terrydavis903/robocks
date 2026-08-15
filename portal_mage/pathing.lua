@@ -1012,6 +1012,11 @@ return function(S)
 			end
 		end
 
+		-- Auto Ore owns movement when on — release it for Kill Aura
+		if S.autoOreEnabled and S.AutoOre and S.AutoOre.stop then
+			S.AutoOre.stop()
+		end
+
 		S.holdTarget = nil
 		S.combatBusy = false
 		S.waitAllCds = false

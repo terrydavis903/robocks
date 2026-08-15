@@ -462,6 +462,7 @@ S.Proximity = loadFactory("proximity")
 -- 3) optional / heavy (claw is large — isolate failures)
 S.Claw = tryFactory("claw")
 S.Ore = tryFactory("ore")
+S.AutoOre = tryFactory("auto_ore")
 S.MeshOutline = tryFactory("mesh_outline")
 S.UI = loadFactory("ui")
 
@@ -486,6 +487,9 @@ local function start()
 	end
 	if S.ui.setOreEspLabel then
 		S.ui.setOreEspLabel(S.oreEspEnabled)
+	end
+	if S.ui.setAutoOreLabel then
+		S.ui.setAutoOreLabel(S.autoOreEnabled == true)
 	end
 	if S.ui.setMeshOutlineLabel then
 		S.ui.setMeshOutlineLabel(S.meshOutlineEnabled)

@@ -473,6 +473,8 @@ return function(S)
 		by += 34
 		local oreEspBtn = mkButton(bot, "Ore ESP: OFF", by, Color3.fromRGB(70, 70, 80))
 		by += 34
+		local autoOreBtn = mkButton(bot, "Auto Ore: OFF", by, Color3.fromRGB(70, 70, 80))
+		by += 34
 		mkLabel(bot, "WalkSpeed force (re-applies every frame)", by)
 		by += 18
 		local speedBox = mkBox(bot, by, "speed e.g. 32")
@@ -518,6 +520,10 @@ return function(S)
 		S.ui.setOreEspLabel = function(on: boolean)
 			oreEspBtn.Text = on and "Ore ESP: ON" or "Ore ESP: OFF"
 			oreEspBtn.BackgroundColor3 = on and Color3.fromRGB(80, 160, 200) or Color3.fromRGB(70, 70, 80)
+		end
+		S.ui.setAutoOreLabel = function(on: boolean)
+			autoOreBtn.Text = on and "Auto Ore: ON" or "Auto Ore: OFF"
+			autoOreBtn.BackgroundColor3 = on and Color3.fromRGB(180, 120, 40) or Color3.fromRGB(70, 70, 80)
 		end
 		S.ui.setMeshOutlineLabel = function(on: boolean)
 			meshOutlineBtn.Text = on and "Outline Mesh: ON" or "Outline Mesh: OFF"
@@ -574,12 +580,18 @@ return function(S)
 			task.spawn(S.Dump.dumpGuiOnly)
 		end)
 		stopBtn.MouseButton1Click:Connect(function()
-			-- Bot-only stop (kill aura / combat). Claw is a separate module — use Claw tab Cancel.
+			-- Bot-only stop (kill aura / combat / auto ore). Claw is separate — use Claw tab Cancel.
 			S.proximityResumeWalk = false
 			S.respawnResumeWalk = false
+			if S.AutoOre and S.AutoOre.stop then
+				S.AutoOre.stop()
+			end
 			S.Combat.stopAll()
 			S.ui.setWalkLabel(false)
-			S.Util.setStatus("Stopped kill aura/combat (claw unaffected)")
+			if S.ui.setAutoOreLabel then
+				S.ui.setAutoOreLabel(false)
+			end
+			S.Util.setStatus("Stopped kill aura/combat/auto-ore (claw unaffected)")
 		end)
 		S.ui.registerWalkToggle(killAuraBtn, nil)
 		proxBtn.MouseButton1Click:Connect(function()
@@ -597,6 +609,13 @@ return function(S)
 				S.Ore.toggleOreEsp()
 			else
 				S.Util.setStatus("Ore module not loaded")
+			end
+		end)
+		autoOreBtn.MouseButton1Click:Connect(function()
+			if S.AutoOre and S.AutoOre.toggle then
+				S.AutoOre.toggle()
+			else
+				S.Util.setStatus("Auto Ore module not loaded — reload script")
 			end
 		end)
 		local function readSpeedBox(): number

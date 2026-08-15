@@ -177,6 +177,30 @@ return {
 		},
 	},
 
+	-- Auto Ore: A*/PFS between Spawn_Ore nodes (segment face→W; wall climb Space+W)
+	AUTO_ORE_ARRIVE = 6, -- studs XZ to count as at node
+	AUTO_ORE_DWELL = 2.5, -- seconds at node after interact before next
+	AUTO_ORE_INTERACT = true, -- pulse E (or INTERACT_KEY) on arrive
+	AUTO_ORE_INTERACT_KEY = Enum.KeyCode.E,
+	AUTO_ORE_INTERACT_PULSES = 3,
+	AUTO_ORE_PATH_REBUILD = 1.0,
+	AUTO_ORE_SEG_ARRIVE = 3.5, -- advance path waypoint
+	AUTO_ORE_FACE_ALIGN = 0.90,
+	AUTO_ORE_FACE_SETTLE = 0.18,
+	AUTO_ORE_FACE_TURN_RATE = 3.2,
+	AUTO_ORE_FACE_VIZ = true, -- cyan look / green want / turn wedge
+	AUTO_ORE_FACE_BEAM_LEN = 6,
+	AUTO_ORE_CLIMB_DY = 3.5, -- goal this much higher → wall climb if near wall
+	AUTO_ORE_WALL_NEAR = 4.5, -- must be this close to a wall to start climb
+	AUTO_ORE_WALL_PROBE = 10,
+	AUTO_ORE_WALL_DIRS = 12,
+	AUTO_ORE_CLIMB_FACE_ALIGN = 0.85, -- face into wall (beam) before Space+W
+	AUTO_ORE_CLIMB_MAX = 6.0, -- seconds per climb attempt
+	AUTO_ORE_CLIMB_MIN_RISE = 1.2,
+	AUTO_ORE_STUCK = 1.2, -- seconds barely moving before repath/climb
+	AUTO_ORE_SKIP_ROCK = false, -- true = skip basic rock/stone nodes
+	AUTO_ORE_TYPE_PRIORITY = {}, -- empty = all types; else e.g. {"aurorite","lumite"}
+
 	-- Claw machine one-shot (WASD aim → confirm → Space drop)
 	-- Key map (player-position deltas): W=+Z S=-Z A=+X D=-X
 	-- Movement: HOLD the cardinal key fluidly (no pulse spam). If we overshoot,
