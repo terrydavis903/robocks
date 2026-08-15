@@ -198,11 +198,10 @@ return {
 
 	-- Auto Ore: A*/PFS between Spawn_Ore nodes (segment face→W; wall climb Space+W)
 	AUTO_ORE_ARRIVE = 6, -- studs XZ to count as at node
-	AUTO_ORE_DWELL = 4.0, -- max seconds mining at node before next (ore despawn ends early)
+	AUTO_ORE_DWELL = 12.0, -- alias: max wait after F for ore to despawn
+	AUTO_ORE_MINE_TIMEOUT = 12.0, -- seconds to wait after single F for ore gone
 	AUTO_ORE_INTERACT = true, -- mine with F when prompt available + pickaxe out
-	AUTO_ORE_INTERACT_KEY = Enum.KeyCode.F, -- game mine key
-	AUTO_ORE_INTERACT_PULSES = 1, -- F presses per mine tick (hold rhythm via interval)
-	AUTO_ORE_MINE_INTERVAL = 0.45, -- seconds between F while mining
+	AUTO_ORE_INTERACT_KEY = Enum.KeyCode.F, -- game mine key (pressed once per node)
 	AUTO_ORE_MINE_NEED_PROMPT = false, -- true = only F when GUI mine prompt shown
 	AUTO_ORE_MINE_WAIT_PROMPT = 1.2, -- seconds to wait for prompt after arrive before F-anyway
 	-- Path rebuild: NOT every step — only stuck / blocked segment / goal jump / rare safety

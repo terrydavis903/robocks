@@ -967,23 +967,19 @@ return function(S)
 		return false
 	end
 
-	local function pressMineKey()
+	local function pressMineKeyOnce()
 		if C.AUTO_ORE_INTERACT == false then
-			return
+			return false
 		end
 		local key = C.AUTO_ORE_INTERACT_KEY or Enum.KeyCode.F
-		local n = C.AUTO_ORE_INTERACT_PULSES or 1
 		if U.pressKey then
-			for _ = 1, n do
-				U.pressKey(key)
-				if n > 1 then
-					task.wait(0.08)
-				end
-			end
+			U.pressKey(key)
+			return true
 		end
+		return false
 	end
 
-	-- Mining session at a node: draw pickaxe, wait for prompt (optional), pulse F until ore gone or dwell.
+	-- Mining: pickaxe out → wait for prompt (optional) → F once → wait until ore gone.
 	local function mineAtOre(ore: Instance, orePos: Vector3): string
 		stopMove()
 		facePoint(orePos)
@@ -991,19 +987,15 @@ return function(S)
 			return "no-pickaxe"
 		end
 		local t0 = os.clock()
-		local dwell = C.AUTO_ORE_DWELL or 4.0
-		local interval = C.AUTO_ORE_MINE_INTERVAL or 0.45
+		local maxWait = C.AUTO_ORE_MINE_TIMEOUT or C.AUTO_ORE_DWELL or 12.0
 		local needPrompt = C.AUTO_ORE_MINE_NEED_PROMPT == true
 		local waitPrompt = C.AUTO_ORE_MINE_WAIT_PROMPT or 1.2
-		local lastF = 0
-		local pressed = 0
 		local sawPrompt = false
+		local pressedF = false
 
-		while S.autoOreEnabled and ore.Parent and (os.clock() - t0) < dwell do
-			local me = playerPos()
-			if me then
-				facePoint(orePos)
-			end
+		-- 1) Ready: stay on node, optional prompt wait, then single F
+		while S.autoOreEnabled and ore.Parent and not pressedF and (os.clock() - t0) < maxWait do
+			facePoint(orePos)
 			if U.isWeaponDrawn and not U.isWeaponDrawn() then
 				ensurePickaxeOut()
 			end
@@ -1011,30 +1003,52 @@ return function(S)
 			if okPrompt then
 				sawPrompt = true
 			end
-			local allowF = true
-			if needPrompt and not okPrompt then
-				allowF = (os.clock() - t0) >= waitPrompt -- timeout fallback
-			elseif not needPrompt and not okPrompt then
-				-- Prefer waiting briefly for GUI so we don't F in the void
-				allowF = sawPrompt or (os.clock() - t0) >= waitPrompt
+			local ready = true
+			if needPrompt then
+				ready = okPrompt or (os.clock() - t0) >= waitPrompt
+			else
+				ready = sawPrompt or (os.clock() - t0) >= waitPrompt
 			end
-			if allowF and (os.clock() - lastF) >= interval then
-				pressMineKey()
-				lastF = os.clock()
-				pressed += 1
+			if ready then
+				if pressMineKeyOnce() then
+					pressedF = true
+					log(string.format(
+						"MINE F once ore=%s prompt=%s",
+						ore.Name,
+						okPrompt and (why or "Y") or "n"
+					))
+					setStatus(string.format("[auto-ore] F once — wait mine %s", ore.Name))
+				end
+				break
 			end
 			setStatus(string.format(
-				"[auto-ore] mine F×%d prompt=%s %s",
-				pressed,
-				okPrompt and "Y" or "n",
-				why and string.sub(why, -40) or ore.Name
+				"[auto-ore] wait prompt %s %s",
+				ore.Name,
+				why and string.sub(why, -32) or ""
 			))
 			task.wait(0.1)
 		end
+
+		if not pressedF then
+			return sawPrompt and "no-f" or "no-prompt"
+		end
+
+		-- 2) Do not re-press F — wait for ore despawn / finish
+		local mineT0 = os.clock()
+		while S.autoOreEnabled and ore.Parent and (os.clock() - mineT0) < maxWait do
+			facePoint(orePos)
+			setStatus(string.format(
+				"[auto-ore] mining… %.1fs %s",
+				os.clock() - mineT0,
+				ore.Name
+			))
+			task.wait(0.12)
+		end
+
 		if not ore.Parent then
 			return "mined"
 		end
-		return sawPrompt and "dwell-done" or "dwell-no-prompt"
+		return "mine-timeout"
 	end
 
 	---------------------------------------------------------------------------
@@ -1354,7 +1368,7 @@ return function(S)
 					local result = mineAtOre(currentOre, currentOrePos)
 					log(string.format("MINE result=%s ore=%s", result, currentOre.Name))
 					visited[currentOre] = true
-					if result == "mined" or result == "dwell-done" then
+					if result == "mined" then
 						minedCount += 1
 					end
 					currentOre = nil
