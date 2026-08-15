@@ -807,8 +807,7 @@ return function(S)
 	end
 
 	---------------------------------------------------------------------------
-	-- Mine prompt (GUI) + F with pickaxe unsheathed
-	-- Dump: PlayerGui.ThePortalUI.PlayerInteractionPanel / InteractionChoices
+	-- Mine when visible GUI text contains "Mine" (while Auto Ore is on)
 	---------------------------------------------------------------------------
 
 	local function guiObjectShown(gui: GuiObject): boolean
@@ -828,28 +827,15 @@ return function(S)
 		return true
 	end
 
-	local function textLooksMine(s: string): boolean
-		local l = string.lower(s)
-		if string.find(l, "mine", 1, true) then
-			return true
+	local function textHasMineWord(s: string): boolean
+		if type(s) ~= "string" or s == "" then
+			return false
 		end
-		if string.find(l, "mining", 1, true) then
-			return true
-		end
-		if string.find(l, "pickaxe", 1, true) then
-			return true
-		end
-		if string.find(l, "harvest", 1, true) and string.find(l, "ore", 1, true) then
-			return true
-		end
-		-- key chips often just show "F"
-		if l == "f" or l == "[f]" or string.find(l, "%[f%]") or string.find(l, "press f", 1, true) then
-			return true
-		end
-		return false
+		-- Word "Mine" / "mine" (not "mineral" alone without mine token — simple contains is OK for UI)
+		return string.find(string.lower(s), "mine", 1, true) ~= nil
 	end
 
-	-- Returns true when the game is offering a mine/interact prompt we can F.
+	-- True when any shown PlayerGui text contains "Mine".
 	function M.canMinePrompt(): (boolean, string?)
 		local lp = Players.LocalPlayer
 		if not lp then
@@ -859,90 +845,29 @@ return function(S)
 		if not pg then
 			return false, nil
 		end
+		-- Prefer ThePortalUI (game HUD); fall back to full PlayerGui
+		local roots: { Instance } = {}
 		local portal = pg:FindFirstChild("ThePortalUI")
-		if not portal then
-			-- fallback: any PlayerGui text "Mine" that is shown
-			for _, d in ipairs(pg:GetDescendants()) do
-				if d:IsA("GuiObject") and guiObjectShown(d :: GuiObject) then
-					local t = ""
-					pcall(function()
-						if d:IsA("TextLabel") or d:IsA("TextButton") then
-							t = (d :: any).Text or ""
-						end
-					end)
-					if textLooksMine(t) and (string.find(string.lower(t), "mine", 1, true) or string.find(string.lower(d.Name), "mine", 1, true)) then
-						return true, "gui:" .. d.Name
-					end
-				end
-			end
-			return false, nil
+		if portal then
+			table.insert(roots, portal)
+		else
+			table.insert(roots, pg)
 		end
-
-		local function scanRoot(root: Instance?): (boolean, string?)
-			if not root then
-				return false, nil
-			end
-			for _, d in ipairs(root:GetDescendants()) do
-				if d:IsA("GuiObject") and guiObjectShown(d :: GuiObject) then
-					local nameL = string.lower(d.Name)
-					local t = ""
-					pcall(function()
-						if d:IsA("TextLabel") or d:IsA("TextButton") or d:IsA("TextBox") then
-							t = tostring((d :: any).Text or "")
-						end
-					end)
-					if textLooksMine(t) then
-						return true, d:GetFullName()
-					end
-					-- Live interaction clones (not templates) under the panel
-					if string.find(nameL, "interaction", 1, true)
-						and not string.find(nameL, "template", 1, true)
-						and d.Name ~= "PlayerInteractionPanel"
-					then
-						if d:IsA("GuiButton") or d:IsA("TextButton") then
-							-- Prefer real buttons with non-empty / mine-like text
-							if t ~= "" and t ~= "Button" then
-								return true, d:GetFullName()
+		for _, root in ipairs(roots) do
+			local okDesc, descs = pcall(function()
+				return root:GetDescendants()
+			end)
+			if okDesc and type(descs) == "table" then
+				for _, d in ipairs(descs) do
+					if d:IsA("TextLabel") or d:IsA("TextButton") or d:IsA("TextBox") then
+						if guiObjectShown(d :: GuiObject) then
+							local t = ""
+							pcall(function()
+								t = tostring((d :: any).Text or "")
+							end)
+							if textHasMineWord(t) then
+								return true, d:GetFullName() .. " text=" .. t
 							end
-						end
-					end
-				end
-			end
-			return false, nil
-		end
-
-		local panel = portal:FindFirstChild("PlayerInteractionPanel")
-		local ok, why = scanRoot(panel)
-		if ok then
-			return true, why
-		end
-		-- Panel itself Visible with non-template children → interact available (mine when near ore)
-		if panel and panel:IsA("GuiObject") and guiObjectShown(panel :: GuiObject) then
-			for _, ch in ipairs(panel:GetChildren()) do
-				if ch:IsA("GuiObject")
-					and not string.find(string.lower(ch.Name), "template", 1, true)
-					and guiObjectShown(ch :: GuiObject)
-				then
-					return true, ch:GetFullName()
-				end
-			end
-		end
-		ok, why = scanRoot(portal:FindFirstChild("InteractionChoices"))
-		if ok then
-			return true, why
-		end
-		-- ProximityPrompt fallback
-		for _, d in ipairs(workspace:GetDescendants()) do
-			if d:IsA("ProximityPrompt") then
-				local pp = d :: ProximityPrompt
-				if pp.Enabled then
-					local action = string.lower(tostring(pp.ActionText or "") .. " " .. tostring(pp.ObjectText or ""))
-					if string.find(action, "mine", 1, true) or string.find(action, "ore", 1, true) then
-						local parent = pp.Parent
-						local ppos = parent and U.getInstancePosition and U.getInstancePosition(parent)
-						local me = playerPos()
-						if ppos and me and (ppos - me).Magnitude <= (pp.MaxActivationDistance or 10) + 2 then
-							return true, "prompt:" .. pp:GetFullName()
 						end
 					end
 				end
@@ -979,76 +904,78 @@ return function(S)
 		return false
 	end
 
-	-- Mining: pickaxe out → wait for prompt (optional) → F once → wait until ore gone.
-	local function mineAtOre(ore: Instance, orePos: Vector3): string
+	-- Mine session: pickaxe out → F once (Mine GUI is up) → wait until Mine GUI gone and/or ore gone.
+	local function mineWhilePrompt(ore: Instance?, orePos: Vector3?): string
 		stopMove()
-		facePoint(orePos)
+		if orePos then
+			facePoint(orePos)
+		end
 		if not ensurePickaxeOut() then
 			return "no-pickaxe"
 		end
-		local t0 = os.clock()
+
 		local maxWait = C.AUTO_ORE_MINE_TIMEOUT or C.AUTO_ORE_DWELL or 12.0
-		local needPrompt = C.AUTO_ORE_MINE_NEED_PROMPT == true
-		local waitPrompt = C.AUTO_ORE_MINE_WAIT_PROMPT or 1.2
-		local sawPrompt = false
-		local pressedF = false
-
-		-- 1) Ready: stay on node, optional prompt wait, then single F
-		while S.autoOreEnabled and ore.Parent and not pressedF and (os.clock() - t0) < maxWait do
-			facePoint(orePos)
-			if U.isWeaponDrawn and not U.isWeaponDrawn() then
-				ensurePickaxeOut()
-			end
-			local okPrompt, why = M.canMinePrompt()
-			if okPrompt then
-				sawPrompt = true
-			end
-			local ready = true
-			if needPrompt then
-				ready = okPrompt or (os.clock() - t0) >= waitPrompt
-			else
-				ready = sawPrompt or (os.clock() - t0) >= waitPrompt
-			end
-			if ready then
-				if pressMineKeyOnce() then
-					pressedF = true
-					log(string.format(
-						"MINE F once ore=%s prompt=%s",
-						ore.Name,
-						okPrompt and (why or "Y") or "n"
-					))
-					setStatus(string.format("[auto-ore] F once — wait mine %s", ore.Name))
-				end
-				break
-			end
-			setStatus(string.format(
-				"[auto-ore] wait prompt %s %s",
-				ore.Name,
-				why and string.sub(why, -32) or ""
-			))
-			task.wait(0.1)
+		local okPrompt, why = M.canMinePrompt()
+		if not okPrompt then
+			return "no-prompt"
 		end
 
-		if not pressedF then
-			return sawPrompt and "no-f" or "no-prompt"
+		if not pressMineKeyOnce() then
+			return "no-f"
 		end
+		log(string.format(
+			"MINE F once ore=%s prompt=%s",
+			ore and ore.Name or "?",
+			why or "Mine"
+		))
+		setStatus(string.format(
+			"[auto-ore] F once — wait until Mine GUI done (%s)",
+			ore and ore.Name or "?"
+		))
 
-		-- 2) Do not re-press F — wait for ore despawn / finish
+		-- Wait: Mine text leaves OR ore despawns. Never re-press F.
 		local mineT0 = os.clock()
-		while S.autoOreEnabled and ore.Parent and (os.clock() - mineT0) < maxWait do
-			facePoint(orePos)
+		while S.autoOreEnabled and (os.clock() - mineT0) < maxWait do
+			if orePos then
+				facePoint(orePos)
+			end
+			local stillMine = select(1, M.canMinePrompt())
+			local oreAlive = ore == nil or ore.Parent ~= nil
+			if not stillMine then
+				-- Prompt gone = mine action finished (or cancelled)
+				if ore and not ore.Parent then
+					return "mined"
+				end
+				-- brief settle in case despawn lags UI
+				task.wait(0.25)
+				if ore and not ore.Parent then
+					return "mined"
+				end
+				return "mined-prompt-gone"
+			end
+			if ore and not oreAlive then
+				return "mined"
+			end
 			setStatus(string.format(
-				"[auto-ore] mining… %.1fs %s",
+				"[auto-ore] mining… %.1fs (Mine GUI) %s",
 				os.clock() - mineT0,
-				ore.Name
+				ore and ore.Name or ""
 			))
 			task.wait(0.12)
 		end
 
-		if not ore.Parent then
+		if ore and not ore.Parent then
 			return "mined"
 		end
+		if not select(1, M.canMinePrompt()) then
+			return "mined-prompt-gone"
+		end
 		return "mine-timeout"
+	end
+
+	-- Back-compat name
+	local function mineAtOre(ore: Instance, orePos: Vector3): string
+		return mineWhilePrompt(ore, orePos)
 	end
 
 	---------------------------------------------------------------------------
@@ -1362,18 +1289,33 @@ return function(S)
 					return
 				end
 
-				local tag = approachTick(from, currentOrePos)
-				if tag == "arrive" then
-					log(string.format("ARRIVE %s at %s", currentOre.Name, vecStr(from)))
-					local result = mineAtOre(currentOre, currentOrePos)
+				-- As long as a GUI with the word "Mine" is shown → stop and mine (F once).
+				local mineGui, mineWhy = M.canMinePrompt()
+				if mineGui then
+					log(string.format(
+						"MINE_GUI %s near=%s",
+						mineWhy or "Mine",
+						currentOre.Name
+					))
+					local result = mineWhilePrompt(currentOre, currentOrePos)
 					log(string.format("MINE result=%s ore=%s", result, currentOre.Name))
-					visited[currentOre] = true
-					if result == "mined" then
+					if result == "mined" or result == "mined-prompt-gone" then
+						if currentOre then
+							visited[currentOre] = true
+						end
 						minedCount += 1
+						currentOre = nil
+						currentOrePos = nil
+						clearPath()
+					elseif result == "mine-timeout" then
+						-- still mark visited so we don't soft-lock on same rock
+						if currentOre then
+							visited[currentOre] = true
+						end
+						currentOre = nil
+						currentOrePos = nil
+						clearPath()
 					end
-					currentOre = nil
-					currentOrePos = nil
-					clearPath()
 					setStatus(string.format(
 						"[auto-ore] %s → next | mined=%d",
 						result,
@@ -1383,14 +1325,23 @@ return function(S)
 					return
 				end
 
+				local tag = approachTick(from, currentOrePos)
+				-- Arrive without Mine GUI yet: stand and wait a beat (prompt may appear)
+				if tag == "arrive" then
+					stopMove()
+					facePoint(currentOrePos)
+					setStatus(string.format(
+						"[auto-ore] at %s — wait Mine GUI",
+						currentOre.Name
+					))
+					task.wait(0.15)
+					return
+				end
+
 				local typeKey = "?"
 				local oreApi = Ore()
 				if oreApi and oreApi.oreTypeKey and currentOre then
 					typeKey = oreApi.oreTypeKey(currentOre)
-				end
-				-- Log phase changes (not every tick)
-				if string.find(tag, "climb", 1, true) or string.find(tag, "face", 1, true) == 1 then
-					-- light; stuck already logs
 				end
 				setStatus(string.format(
 					"[auto-ore] %s d=%.0f %s yaw=%+.2f turn=%s %s | %s mined=%d",
