@@ -256,11 +256,12 @@ return function(S)
 		if math.abs(err) < dead and d ~= nil and d > 0 then
 			return nil -- almost on-axis forward
 		end
-		-- err > 0 → goal left of facing → Left arrow
+		-- err > 0 = goal is to our LEFT of HRP look (math). This game's Left/Right
+		-- camera yaw is inverted vs that, so we press the opposite arrow.
 		if err > 0 then
-			return Enum.KeyCode.Left
+			return Enum.KeyCode.Right
 		end
-		return Enum.KeyCode.Right
+		return Enum.KeyCode.Left
 	end
 
 	-- WASD relative to reticle/face direction for the walk goal.

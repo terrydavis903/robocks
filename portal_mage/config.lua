@@ -66,17 +66,21 @@ return {
 	SMOOTH_WALK_FACE_ALPHA = 0.12, -- fallback soft yaw lerp per poll
 	-- Time-based yaw rate (higher = snappier). Used for U-turns at path tails.
 	SMOOTH_WALK_TURN_RATE = 5.5,
-	-- Free-path / face-enemy: Left/Right arrows + HRP/camera yaw (no RMB drag)
-	PATH_WALK_TURN_RATE = 18,
-	PATH_WALK_ALIGN_DOT = 0.72,
+	-- Free-path / segment face: Left/Right arrows + soft HRP/camera yaw (no RMB drag)
+	PATH_WALK_TURN_RATE = 8,
+	PATH_WALK_ALIGN_DOT = 0.78,
 	PATH_TURN_ARROWS = true,
 	PATH_TURN_PULSE = true, -- re-send arrow keydown each poll (games may ignore holds)
 	PATH_TURN_YAW_DEADZONE = 0.08,
-	PATH_CAMERA_YAW_DEG = 8, -- camera yaw nudge per poll while turning
-	KILL_AURA_FACE_ALIGN = 0.88, -- must face enemy this well before W/A/D
+	PATH_CAMERA_YAW_DEG = 3.5, -- small camera yaw nudge per poll while turning
+	-- Kill Aura face: must align to current A* segment before any W/A/D
+	KILL_AURA_FACE_ALIGN = 0.92, -- tighter look·segment before walk
+	KILL_AURA_FACE_TURN_RATE = 3.2, -- soft HRP yaw rate (lower = slower turn)
+	KILL_AURA_FACE_SETTLE = 0.22, -- seconds held aligned before releasing W
+	KILL_AURA_SEG_ARRIVE = 3.5, -- studs: advance to next path segment
 	KILL_AURA_PROBE = 4.5, -- wall/step probe studs
 	KILL_AURA_JUMP_DY = 2.8, -- enemy this much higher → Space+W
-	-- Face debug beams (Kill Aura on): cyan=HRP look, green=to enemy, pink/yellow=turn L/R
+	-- Face debug beams (Kill Aura on): cyan=HRP look, green=to segment, pink/yellow=turn L/R
 	KILL_AURA_FACE_VIZ = true,
 	KILL_AURA_FACE_BEAM_LEN = 6, -- studs; keep short/thin
 	-- If look·forward < this (~70°), disable AutoRotate and soft-lerp instead of snap
@@ -84,7 +88,7 @@ return {
 	-- Once look·forward >= this, re-enable AutoRotate (~25°)
 	SMOOTH_WALK_ALIGN_DOT = 0.90,
 	-- Spoof WASD for walk anim / games that read keys.
-	-- Kill Aura: face enemy then W / A|D (relative to face). Reticle combat uses relative WASD too.
+	-- Kill Aura: face A* segment → W along it (A/D only on walls). Reticle combat uses relative WASD too.
 	WALK_SPOOF_MOVE_KEYS = true,
 	WALK_KEY_DEADZONE = 0.28, -- |local axis| must exceed this to hold that key
 
@@ -97,7 +101,8 @@ return {
 	NAV_AGENT_CAN_JUMP = true,
 	NAV_WAYPOINT_SPACING = 6,
 	KILL_AURA_LOG = true, -- dumps/killaura_*.log
-	PATH_VIZ_REFRESH = 0.55, -- recompute A*/PFS draw while Path Viz ON (movement still face→W/A/D)
+	PATH_VIZ_REFRESH = 0.55, -- recompute A*/PFS (also drives segment approach when Kill Aura on)
+	PATH_REBUILD = 0.85, -- force path recompute while approaching (even if viz off)
 	NAV_RAY_UP = 50,
 	NAV_RAY_DOWN = 140,
 	NAV_MIN_NORMAL_Y = 0.45,

@@ -1,11 +1,11 @@
 -- portal_mage/pathing.lua — Kill Aura movement
 --
 -- Strict loop (no teleport, no S, no MoveTo spam):
---   1) Face enemy (←/→ + HRP/camera) until aligned
---   2) Move with only W / A / D (one at a time)
---   3) Corner/wall → switch A/D, re-face, continue
---   4) Need height → Space + W
---   5) Within fightRange → stop; combat does R + cast
+--   1) Compute A*/PFS path to stand ring (same segments Path Viz draws)
+--   2) Face current segment end (soft turn + arrows) until aligned + settle
+--   3) Walk W along segment; A/D only on walls; Space+W for height
+--   4) Advance waypoint when close; re-face next segment
+--   5) Within fightRange → stop; face enemy; combat does R + cast
 return function(S)
 	local C = S.Config
 	local U = S.Util
@@ -67,7 +67,7 @@ return function(S)
 			if U.ensureDir then
 				U.ensureDir(dir)
 			end
-			writefile(logFile, "# portal_mage kill aura v4 face→W|A|D (+Space) stand@30\n# " .. stamp .. "\n")
+			writefile(logFile, "# portal_mage kill aura v5 face-seg→W|A|D (+Space) stand@30\n# " .. stamp .. "\n")
 		end)
 	end
 
@@ -305,16 +305,19 @@ return function(S)
 	end
 
 	---------------------------------------------------------------------------
-	-- Face enemy (must succeed before any W/A/D)
+	-- Face a world point (segment end / enemy). Soft turn only — no hard snap.
+	-- Must align before any W/A/D.
 	---------------------------------------------------------------------------
 
-	local faceAlign = C.KILL_AURA_FACE_ALIGN or 0.88
+	local faceAlign = C.KILL_AURA_FACE_ALIGN or 0.92
+	local faceSettle = C.KILL_AURA_FACE_SETTLE or 0.22
 	-- Last face decision (for status)
 	local lastFaceDot = 0
 	local lastYawErr = 0
 	local lastTurnName = "-"
+	local faceOkSince = 0 -- os.clock when first hit faceAlign; 0 = not aligned
 
-	local function faceEnemy(epos: Vector3): number
+	local function facePoint(target: Vector3): number
 		local hrp = getHrp()
 		local hum = getHum()
 		if not hrp then
@@ -327,7 +330,7 @@ return function(S)
 		end
 
 		local pos = hrp.Position
-		local flat = Vector3.new(epos.X - pos.X, 0, epos.Z - pos.Z)
+		local flat = Vector3.new(target.X - pos.X, 0, target.Z - pos.Z)
 		local measuredLook = Vector3.new(hrp.CFrame.LookVector.X, 0, hrp.CFrame.LookVector.Z)
 		if measuredLook.Magnitude > 1e-4 then
 			measuredLook = measuredLook.Unit
@@ -342,40 +345,47 @@ return function(S)
 			lastFaceDot = 1
 			lastYawErr = 0
 			lastTurnName = "-"
-			updateFaceViz(hrp, epos, measuredLook, 0, nil)
+			faceOkSince = os.clock()
+			updateFaceViz(hrp, target, measuredLook, 0, nil)
 			return 1
 		end
 
-		-- Measure BEFORE forcing CFrame so viz + turn use true facing
-		local dBefore = (U.facingDotTo and U.facingDotTo(epos.X, epos.Z)) or 0
-		local yawErr = (U.yawErrorTo and U.yawErrorTo(epos.X, epos.Z)) or 0
+		-- Measure BEFORE soft correction so viz + turn use true facing
+		local dBefore = (U.facingDotTo and U.facingDotTo(target.X, target.Z)) or 0
+		local yawErr = (U.yawErrorTo and U.yawErrorTo(target.X, target.Z)) or 0
+		local poll = C.SMOOTH_WALK_POLL or 0.06
+		local turnRate = C.KILL_AURA_FACE_TURN_RATE or 3.2
 
-		-- 1) Hard set character yaw toward enemy every tick (primary)
+		-- 1) Soft HRP yaw toward segment/enemy (slow, no hard snap)
 		pcall(function()
-			local lookAt = Vector3.new(epos.X, pos.Y, epos.Z)
-			hrp.CFrame = CFrame.lookAt(pos, lookAt)
+			local lookAt = Vector3.new(target.X, pos.Y, target.Z)
+			local desired = CFrame.lookAt(pos, lookAt)
+			local alpha = 1 - math.exp(-turnRate * poll)
+			hrp.CFrame = hrp.CFrame:Lerp(desired, math.clamp(alpha, 0.02, 0.45))
 		end)
 
-		-- 2) Camera yaw toward enemy (many games drive move from camera)
+		-- 2) Camera yaw nudge (game often drives move from camera). Sign matches
+		--    inverted Left/Right (math left → negative Y rot for this game).
 		local cam = workspace.CurrentCamera
 		if cam then
 			pcall(function()
 				local cpos = cam.CFrame.Position
 				local look = cam.CFrame.LookVector
-				local to = Vector3.new(epos.X - cpos.X, 0, epos.Z - cpos.Z)
+				local to = Vector3.new(target.X - cpos.X, 0, target.Z - cpos.Z)
 				if to.Magnitude > 0.2 then
 					to = to.Unit
 					local flatLook = Vector3.new(look.X, 0, look.Z)
 					if flatLook.Magnitude > 0.1 then
 						flatLook = flatLook.Unit
-						local cross = flatLook.X * to.Z - flatLook.Z * to.X -- >0 enemy left of cam
+						local cross = flatLook.X * to.Z - flatLook.Z * to.X -- >0 target left of cam
 						local dot = flatLook:Dot(to)
 						if dot < 0.98 then
-							local deg = (C.PATH_CAMERA_YAW_DEG or 10) * (if cross > 0 then 1 else -1)
+							-- Flipped vs math: cross>0 (left) → negative yaw for this game
+							local deg = (C.PATH_CAMERA_YAW_DEG or 3.5) * (if cross > 0 then -1 else 1)
 							if dot < 0 then
-								deg = deg * 2.2
+								deg = deg * 1.8
 							elseif dot < 0.5 then
-								deg = deg * 1.5
+								deg = deg * 1.25
 							end
 							local newLook = (CFrame.Angles(0, math.rad(deg), 0) * Vector3.new(look.X, 0, look.Z))
 							if newLook.Magnitude > 0.1 then
@@ -389,20 +399,21 @@ return function(S)
 			end)
 		end
 
-		-- 3) Left/Right arrows from yaw error (pulse). Decision uses pre-snap error
-		--    so viz matches why we pressed the key.
-		local d = (U.facingDotTo and U.facingDotTo(epos.X, epos.Z)) or dBefore
+		-- 3) Left/Right arrows from yaw error (pulse). Uses util mapping (inverted for game).
+		local d = (U.facingDotTo and U.facingDotTo(target.X, target.Z)) or dBefore
 		local turnKey: Enum.KeyCode? = nil
 		if d < faceAlign then
-			-- Prefer pre-face yawErr for turn side (stable)
-			local dead = C.PATH_TURN_YAW_DEADZONE or 0.08
-			if math.abs(yawErr) >= dead or d < 0.5 then
-				if yawErr > 0 then
-					turnKey = Enum.KeyCode.Left -- enemy left of face → Left
-				elseif yawErr < 0 then
-					turnKey = Enum.KeyCode.Right
-				else
-					turnKey = U.turnKeyToward and U.turnKeyToward(epos.X, epos.Z, faceAlign)
+			if U.turnKeyToward then
+				turnKey = U.turnKeyToward(target.X, target.Z, faceAlign)
+			else
+				local dead = C.PATH_TURN_YAW_DEADZONE or 0.08
+				if math.abs(yawErr) >= dead or d < 0.5 then
+					-- Same invert as util.turnKeyToward
+					if yawErr > 0 then
+						turnKey = Enum.KeyCode.Right
+					elseif yawErr < 0 then
+						turnKey = Enum.KeyCode.Left
+					end
 				end
 			end
 		end
@@ -417,10 +428,163 @@ return function(S)
 			elseif turnKey == Enum.KeyCode.Right then "RIGHT"
 			else "-"
 
-		-- Cyan = pre-correction face (what drove L/R); green = to enemy
-		updateFaceViz(hrp, epos, measuredLook, yawErr, turnKey)
+		-- Cyan = pre-correction face; green = desired (segment or enemy)
+		updateFaceViz(hrp, target, measuredLook, yawErr, turnKey)
 
 		return d
+	end
+
+	-- Back-compat name used at stand band
+	local function faceEnemy(epos: Vector3): number
+		return facePoint(epos)
+	end
+
+	---------------------------------------------------------------------------
+	-- A* / PFS path: same segments Path Viz draws; movement follows them.
+	---------------------------------------------------------------------------
+
+	local pathPts: { Vector3 } = {}
+	local pathIdx = 1
+	local pathEnemy: Model? = nil
+	local pathBuiltAt = 0
+	local lastVizKind = ""
+	local lastSegLabel = "-"
+
+	local function standGoalNear(playerPos: Vector3, epos: Vector3, range: number): Vector3
+		local flat = Vector3.new(playerPos.X - epos.X, 0, playerPos.Z - epos.Z)
+		if flat.Magnitude < 0.2 then
+			flat = Vector3.new(0, 0, 1)
+		else
+			flat = flat.Unit
+		end
+		local dest = epos + flat * range
+		local nav = Nav()
+		if nav and nav.sampleFloor then
+			local s = nav.sampleFloor(dest.X, dest.Z, playerPos.Y, { requireClear = false })
+			if s and s.pos then
+				return s.pos
+			end
+		end
+		return Vector3.new(dest.X, playerPos.Y, dest.Z)
+	end
+
+	local function advancePathIndex(playerPos: Vector3)
+		local arrive = C.KILL_AURA_SEG_ARRIVE or 3.5
+		local advanced = false
+		-- Advance only while a *next* waypoint exists (don't thrash on last node)
+		while pathIdx < #pathPts and flatDist(playerPos, pathPts[pathIdx]) <= arrive do
+			pathIdx += 1
+			advanced = true
+		end
+		if advanced then
+			faceOkSince = 0 -- re-settle face on next segment
+		end
+		if pathIdx < 1 then
+			pathIdx = 1
+		end
+		if #pathPts > 0 and pathIdx > #pathPts then
+			pathIdx = #pathPts
+		end
+	end
+
+	-- Rebuild path to stand ring. Always used for movement; draws when Path Viz ON.
+	local function rebuildPath(playerPos: Vector3, epos: Vector3, enemy: Model, range: number)
+		local goal = standGoalNear(playerPos, epos, range)
+		local nav = Nav()
+		local pts: { Vector3 }
+		local kind = "line"
+		if nav and nav.computePath then
+			pts, kind = nav.computePath(playerPos, goal)
+		elseif nav and nav.findPath then
+			pts = nav.findPath(playerPos, goal) or { playerPos, goal }
+			kind = "grid"
+			if S.pathVizEnabled and nav.showPathViz then
+				nav.showPathViz(pts, kind)
+			end
+		else
+			pts = { playerPos, goal }
+			if S.pathVizEnabled and nav and nav.showPathViz then
+				nav.showPathViz(pts, "line")
+			end
+		end
+		if not pts or #pts == 0 then
+			pts = { playerPos, goal }
+			kind = "line"
+		end
+		pathPts = pts
+		pathEnemy = enemy
+		pathBuiltAt = os.clock()
+		lastVizKind = kind or "path"
+		pathIdx = 1
+		advancePathIndex(playerPos)
+		if pathIdx < #pathPts and flatDist(playerPos, pathPts[pathIdx]) < 1.0 and pathIdx < #pathPts then
+			-- skip near-start duplicate
+			pathIdx = math.min(pathIdx + 1, #pathPts)
+		end
+		faceOkSince = 0
+		log(string.format(
+			"path %s wps=%d idx=%d goal=(%.1f,%.1f,%.1f) → %s",
+			lastVizKind,
+			#pathPts,
+			pathIdx,
+			goal.X,
+			goal.Y,
+			goal.Z,
+			enemy.Name
+		))
+	end
+
+	local function ensurePath(playerPos: Vector3, epos: Vector3, enemy: Model, range: number, force: boolean?)
+		local interval = C.PATH_REBUILD or C.PATH_VIZ_REFRESH or 0.85
+		local need = force == true
+			or pathEnemy ~= enemy
+			or #pathPts < 2
+			or (os.clock() - pathBuiltAt) >= interval
+		if not need and pathIdx <= #pathPts then
+			-- drifted far from current waypoint → repath
+			if flatDist(playerPos, pathPts[pathIdx]) > 28 then
+				need = true
+			end
+		end
+		if need then
+			rebuildPath(playerPos, epos, enemy, range)
+		else
+			advancePathIndex(playerPos)
+		end
+	end
+
+	-- Next world point to face/walk toward (segment end). Final leg → stand ring / enemy.
+	local function segmentTarget(playerPos: Vector3, epos: Vector3, range: number): (Vector3, string)
+		local distEnemy = flatDist(playerPos, epos)
+		if distEnemy <= range + 1.5 then
+			return epos, "enemy"
+		end
+		if #pathPts >= 1 and pathIdx >= 1 and pathIdx <= #pathPts then
+			local wp = pathPts[pathIdx]
+			-- Last path node is stand ring; if we're on last node, still walk to it
+			local label = string.format("seg%d/%d", pathIdx, #pathPts)
+			return wp, label
+		end
+		return standGoalNear(playerPos, epos, range), "stand"
+	end
+
+	local function clearPathState()
+		pathPts = {}
+		pathIdx = 1
+		pathEnemy = nil
+		pathBuiltAt = 0
+		faceOkSince = 0
+		lastSegLabel = "-"
+	end
+
+	local function clearPathVizIfOff()
+		if S.pathVizEnabled then
+			return
+		end
+		local nav = Nav()
+		if nav and nav.clearPathViz then
+			nav.clearPathViz()
+		end
 	end
 
 	---------------------------------------------------------------------------
@@ -460,7 +624,9 @@ return function(S)
 		end
 
 		local dist = flatDist(playerPos, epos)
-		local faceDot = faceEnemy(epos)
+		local target, segLabel = segmentTarget(playerPos, epos, range)
+		lastSegLabel = segLabel
+		local faceDot = facePoint(target)
 
 		if dist <= range then
 			setMoveKey(nil)
@@ -470,16 +636,34 @@ return function(S)
 			if U.holdTurnKey then
 				U.holdTurnKey(nil)
 			end
+			faceOkSince = 0
 			return "stand"
 		end
 
-		-- PHASE 1: turn only until facing enemy
+		-- PHASE 1: turn only until facing current path segment
 		if faceDot < faceAlign then
 			setMoveKey(nil)
 			if U.holdJump then
 				U.holdJump(false)
 			end
-			return string.format("face d=%.2f", faceDot)
+			faceOkSince = 0
+			return string.format("face %s d=%.2f", segLabel, faceDot)
+		end
+
+		-- PHASE 1b: hold still briefly once aligned so turn settles before W
+		local now = os.clock()
+		if faceOkSince <= 0 then
+			faceOkSince = now
+		end
+		if (now - faceOkSince) < faceSettle then
+			setMoveKey(nil)
+			if U.holdJump then
+				U.holdJump(false)
+			end
+			if U.holdTurnKey then
+				U.holdTurnKey(nil)
+			end
+			return string.format("settle %s d=%.2f", segLabel, faceDot)
 		end
 
 		-- Facing: stop arrow spam so W is clean
@@ -487,13 +671,16 @@ return function(S)
 			U.holdTurnKey(nil)
 		end
 
-		local faceDir = Vector3.new(epos.X - playerPos.X, 0, epos.Z - playerPos.Z)
+		-- Walk along segment direction (to next waypoint), not straight at enemy
+		local faceDir = Vector3.new(target.X - playerPos.X, 0, target.Z - playerPos.Z)
 		if faceDir.Magnitude < 0.2 then
+			-- arrived at waypoint mid-tick; advance and re-face next
+			advancePathIndex(playerPos)
 			setMoveKey(nil)
 			if U.holdJump then
 				U.holdJump(false)
 			end
-			return "stand"
+			return "seg-next"
 		end
 		faceDir = faceDir.Unit
 		local probe = C.KILL_AURA_PROBE or 4.5
@@ -514,8 +701,8 @@ return function(S)
 		end
 		lastPos = playerPos
 
-		-- Jump when we need height
-		local jump = needJumpUp(playerPos, epos, faceDir)
+		-- Jump when we need height (use enemy height + segment ahead)
+		local jump = needJumpUp(playerPos, epos, faceDir) or needJumpUp(playerPos, target, faceDir)
 		if U.holdJump then
 			U.holdJump(jump)
 		end
@@ -524,7 +711,7 @@ return function(S)
 		if not blocked then
 			lastSlide = nil
 			setMoveKey("W")
-			return if jump then "W+Space" else "W"
+			return string.format("%s %s", if jump then "W+Space" else "W", segLabel)
 		end
 
 		-- Corner / wall: pick A or D (not both, never S)
@@ -539,102 +726,13 @@ return function(S)
 		elseif lastSlide and (os.clock() - lastSlideAt) < 1.5 then
 			pick = lastSlide
 		else
-			-- Prefer side that points slightly toward enemy offset
-			local toE = faceDir
-			local preferD = toE:Dot(right) > 0 -- shouldn't happen when facing; use sticky flip
-			pick = if preferD then "D" else "A"
-			if lastSlide == pick then
-				pick = if pick == "A" then "D" else "A"
-			end
+			pick = if lastSlide == "A" then "D" else "A"
 		end
 		lastSlide = pick
 		lastSlideAt = os.clock()
 		stuckSince = 0
 		setMoveKey(pick)
-		return "turn-" .. pick .. (jump and "+Space" or "")
-	end
-
-	---------------------------------------------------------------------------
-	-- Path Viz only (movement does NOT follow A* — face→W/A/D does)
-	---------------------------------------------------------------------------
-
-	local vizEnemy: Model? = nil
-	local vizAt = 0
-	local lastVizKind = ""
-
-	local function standGoalNear(playerPos: Vector3, epos: Vector3, range: number): Vector3
-		local flat = Vector3.new(playerPos.X - epos.X, 0, playerPos.Z - epos.Z)
-		if flat.Magnitude < 0.2 then
-			flat = Vector3.new(0, 0, 1)
-		else
-			flat = flat.Unit
-		end
-		local dest = epos + flat * range
-		local nav = Nav()
-		if nav and nav.sampleFloor then
-			local s = nav.sampleFloor(dest.X, dest.Z, playerPos.Y, { requireClear = false })
-			if s and s.pos then
-				return s.pos
-			end
-		end
-		return Vector3.new(dest.X, playerPos.Y, dest.Z)
-	end
-
-	-- Recompute + draw path when Path Viz is ON (throttled).
-	local function refreshPathViz(playerPos: Vector3, epos: Vector3, enemy: Model, range: number)
-		if not S.pathVizEnabled then
-			return
-		end
-		local nav = Nav()
-		if not nav then
-			return
-		end
-		local now = os.clock()
-		local interval = C.PATH_VIZ_REFRESH or 0.55
-		local need = (vizEnemy ~= enemy) or (now - vizAt >= interval)
-		if not need then
-			return
-		end
-		vizEnemy = enemy
-		vizAt = now
-		local goal = standGoalNear(playerPos, epos, range)
-		local pts: { Vector3 }
-		local kind = "line"
-		if nav.computePath then
-			pts, kind = nav.computePath(playerPos, goal)
-		elseif nav.findPath then
-			pts = nav.findPath(playerPos, goal) or { playerPos, goal }
-			kind = "grid"
-			if nav.showPathViz then
-				nav.showPathViz(pts, kind)
-			end
-		else
-			pts = { playerPos, goal }
-			if nav.showPathViz then
-				nav.showPathViz(pts, "line")
-			end
-		end
-		lastVizKind = kind or "path"
-		log(string.format(
-			"viz %s wps=%d goal=(%.1f,%.1f,%.1f) → %s",
-			lastVizKind,
-			pts and #pts or 0,
-			goal.X,
-			goal.Y,
-			goal.Z,
-			enemy.Name
-		))
-	end
-
-	local function clearPathVizIfOff()
-		if S.pathVizEnabled then
-			return
-		end
-		local nav = Nav()
-		if nav and nav.clearPathViz then
-			nav.clearPathViz()
-		end
-		vizEnemy = nil
+		return string.format("turn-%s %s%s", pick, segLabel, jump and "+Space" or "")
 	end
 
 	---------------------------------------------------------------------------
@@ -643,7 +741,7 @@ return function(S)
 
 	local function runWalker()
 		logOpen()
-		log("walker start v4 face→W|A|D(+Space) stand@30 + pathviz")
+		log("walker start v5 face-seg→W|A|D(+Space) stand@30")
 
 		while S.walking do
 			local ok, err = pcall(function()
@@ -719,6 +817,7 @@ return function(S)
 
 				if not model or not epos then
 					stopMove()
+					clearPathState()
 					U.setStatus(string.format("[scan] no enemies ≤%d | %s", Targets.scanRange(), cds()))
 					task.wait(0.2)
 					return
@@ -728,10 +827,10 @@ return function(S)
 					dist = flatDist(playerPos, epos)
 				end
 
-				-- Path Viz: draw A*/PFS to stand ring (display only)
-				refreshPathViz(playerPos, epos, model, range)
+				-- A*/PFS path = movement segments (+ Path Viz when ON)
+				ensurePath(playerPos, epos, model, range)
 
-				-- Stand band: stop move, keep facing for combat
+				-- Stand band: stop move, face enemy for combat
 				if dist <= range + sticky then
 					local fd = faceEnemy(epos)
 					setMoveKey(nil)
@@ -741,7 +840,7 @@ return function(S)
 					if U.holdTurnKey then
 						U.holdTurnKey(nil)
 					end
-					local viz = if S.pathVizEnabled then (" viz=" .. lastVizKind) else ""
+					local pathInfo = string.format(" %s#%d", lastVizKind, #pathPts)
 					U.setStatus(string.format(
 						"[stand] d=%.1f face=%.2f yaw=%+.2f turn=%s %s%s | %s",
 						dist,
@@ -749,7 +848,7 @@ return function(S)
 						lastYawErr,
 						lastTurnName,
 						model.Name,
-						viz,
+						pathInfo,
 						cds()
 					))
 					task.wait(0.08)
@@ -757,18 +856,17 @@ return function(S)
 				end
 
 				local tag = approachStep(playerPos, epos, range)
-				local viz = if S.pathVizEnabled then (" viz=" .. lastVizKind) else ""
 				U.setStatus(string.format(
-					"[approach] d=%.1f %s yaw=%+.2f turn=%s → %s%s | %s",
+					"[approach] d=%.1f %s yaw=%+.2f turn=%s → %s %s | %s",
 					dist,
 					tag,
 					lastYawErr,
 					lastTurnName,
 					model.Name,
-					viz,
+					lastVizKind,
 					cds()
 				))
-				if string.sub(tag, 1, 4) == "face" then
+				if string.find(tag, "face", 1, true) == 1 or string.find(tag, "settle", 1, true) == 1 then
 					log(string.format(
 						"%s yaw=%+.3f turn=%s enemy=%s dist=%.1f",
 						tag,
@@ -791,6 +889,7 @@ return function(S)
 
 		stopMove()
 		clearFaceViz()
+		clearPathState()
 		clearPathVizIfOff()
 		local nav = Nav()
 		if nav and nav.clearPathViz then
@@ -798,7 +897,6 @@ return function(S)
 				nav.clearPathViz()
 			end)
 		end
-		vizEnemy = nil
 		log("walker stop")
 		if logFile then
 			U.setStatus("Kill Aura stopped — log " .. tostring(logFile))
@@ -823,10 +921,10 @@ return function(S)
 				nav.clearPathViz()
 			end
 		end
-		-- Force redraw next approach tick
-		vizAt = 0
-		vizEnemy = nil
-		if S.pathVizEnabled and S.walking then
+		-- Force path rebuild so viz (and segment index) refresh immediately
+		pathBuiltAt = 0
+		pathEnemy = nil
+		if S.walking then
 			local p = U.getLivePlayerVector and U.getLivePlayerVector()
 			local model, epos = nil, nil
 			if T() and T().getHold then
@@ -836,7 +934,7 @@ return function(S)
 				end
 			end
 			if p and model and epos then
-				refreshPathViz(p, epos, model, T().fightRange())
+				ensurePath(p, epos, model, T().fightRange(), true)
 			end
 		end
 	end
@@ -854,8 +952,8 @@ return function(S)
 				nav.clearPathViz()
 			end
 		end
-		vizAt = 0
-		vizEnemy = nil
+		pathBuiltAt = 0
+		pathEnemy = nil
 	end
 
 	function M.toggleWalk(_opts: any?)
@@ -924,9 +1022,10 @@ return function(S)
 		lastSlide = nil
 		lastPos = nil
 		stuckSince = 0
+		clearPathState()
 
 		U.setStatus(string.format(
-			"Kill Aura ON — face→W/A/D(+Space)→stand@%d→R/cast (no TP)",
+			"Kill Aura ON — face segment→W/A/D(+Space)→stand@%d→R/cast",
 			T().fightRange()
 		))
 
