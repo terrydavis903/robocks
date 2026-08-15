@@ -309,13 +309,15 @@ return function(S)
 	-- Must align before any W/A/D.
 	---------------------------------------------------------------------------
 
-	local faceAlign = C.KILL_AURA_FACE_ALIGN or 0.92
-	local faceSettle = C.KILL_AURA_FACE_SETTLE or 0.22
+	local faceAlign = C.KILL_AURA_FACE_ALIGN or 0.82 -- enter walk
+	local faceKeep = C.KILL_AURA_FACE_KEEP or 0.55 -- exit walk (hysteresis)
+	local faceSettle = C.KILL_AURA_FACE_SETTLE or 0.06
 	-- Last face decision (for status)
 	local lastFaceDot = 0
 	local lastYawErr = 0
 	local lastTurnName = "-"
 	local faceOkSince = 0 -- os.clock when first hit faceAlign; 0 = not aligned
+	local walkingFacing = false -- true while allowed to hold W without re-settle
 
 	local function facePoint(target: Vector3): number
 		local hrp = getHrp()
@@ -354,61 +356,60 @@ return function(S)
 		local dBefore = (U.facingDotTo and U.facingDotTo(target.X, target.Z)) or 0
 		local yawErr = (U.yawErrorTo and U.yawErrorTo(target.X, target.Z)) or 0
 		local poll = C.SMOOTH_WALK_POLL or 0.06
-		local turnRate = C.KILL_AURA_FACE_TURN_RATE or 3.2
+		local turnRate = C.KILL_AURA_FACE_TURN_RATE or 4.0
+		local needTurn = if walkingFacing then (dBefore < faceKeep) else (dBefore < faceAlign)
 
-		-- 1) Soft HRP yaw toward segment/enemy (slow, no hard snap)
-		pcall(function()
-			local lookAt = Vector3.new(target.X, pos.Y, target.Z)
-			local desired = CFrame.lookAt(pos, lookAt)
-			local alpha = 1 - math.exp(-turnRate * poll)
-			hrp.CFrame = hrp.CFrame:Lerp(desired, math.clamp(alpha, 0.02, 0.45))
-		end)
-
-		-- 2) Camera yaw nudge (game often drives move from camera). Sign matches
-		--    inverted Left/Right (math left → negative Y rot for this game).
-		local cam = workspace.CurrentCamera
-		if cam then
+		-- Soft HRP/camera only while actively turning (avoid overshoot thrash when walking)
+		if needTurn then
 			pcall(function()
-				local cpos = cam.CFrame.Position
-				local look = cam.CFrame.LookVector
-				local to = Vector3.new(target.X - cpos.X, 0, target.Z - cpos.Z)
-				if to.Magnitude > 0.2 then
-					to = to.Unit
-					local flatLook = Vector3.new(look.X, 0, look.Z)
-					if flatLook.Magnitude > 0.1 then
-						flatLook = flatLook.Unit
-						local cross = flatLook.X * to.Z - flatLook.Z * to.X -- >0 target left of cam
-						local dot = flatLook:Dot(to)
-						if dot < 0.98 then
-							-- Flipped vs math: cross>0 (left) → negative yaw for this game
-							local deg = (C.PATH_CAMERA_YAW_DEG or 3.5) * (if cross > 0 then -1 else 1)
-							if dot < 0 then
-								deg = deg * 1.8
-							elseif dot < 0.5 then
-								deg = deg * 1.25
-							end
-							local newLook = (CFrame.Angles(0, math.rad(deg), 0) * Vector3.new(look.X, 0, look.Z))
-							if newLook.Magnitude > 0.1 then
-								newLook = newLook.Unit
-								local aim = Vector3.new(newLook.X, look.Y, newLook.Z)
-								cam.CFrame = CFrame.lookAt(cpos, cpos + aim)
+				local lookAt = Vector3.new(target.X, pos.Y, target.Z)
+				local desired = CFrame.lookAt(pos, lookAt)
+				local alpha = 1 - math.exp(-turnRate * poll)
+				hrp.CFrame = hrp.CFrame:Lerp(desired, math.clamp(alpha, 0.02, 0.45))
+			end)
+
+			local cam = workspace.CurrentCamera
+			if cam then
+				pcall(function()
+					local cpos = cam.CFrame.Position
+					local look = cam.CFrame.LookVector
+					local to = Vector3.new(target.X - cpos.X, 0, target.Z - cpos.Z)
+					if to.Magnitude > 0.2 then
+						to = to.Unit
+						local flatLook = Vector3.new(look.X, 0, look.Z)
+						if flatLook.Magnitude > 0.1 then
+							flatLook = flatLook.Unit
+							local cross = flatLook.X * to.Z - flatLook.Z * to.X
+							local dot = flatLook:Dot(to)
+							if dot < 0.98 then
+								local deg = (C.PATH_CAMERA_YAW_DEG or 3.5) * (if cross > 0 then -1 else 1)
+								if dot < 0 then
+									deg = deg * 1.8
+								elseif dot < 0.5 then
+									deg = deg * 1.25
+								end
+								local newLook = (CFrame.Angles(0, math.rad(deg), 0) * Vector3.new(look.X, 0, look.Z))
+								if newLook.Magnitude > 0.1 then
+									newLook = newLook.Unit
+									cam.CFrame = CFrame.lookAt(cpos, cpos + Vector3.new(newLook.X, look.Y, newLook.Z))
+								end
 							end
 						end
 					end
-				end
-			end)
+				end)
+			end
 		end
 
-		-- 3) Left/Right arrows from yaw error (pulse). Uses util mapping (inverted for game).
+		-- Left/Right arrows only while needTurn
 		local d = (U.facingDotTo and U.facingDotTo(target.X, target.Z)) or dBefore
+		needTurn = if walkingFacing then (d < faceKeep) else (d < faceAlign)
 		local turnKey: Enum.KeyCode? = nil
-		if d < faceAlign then
+		if needTurn then
 			if U.turnKeyToward then
-				turnKey = U.turnKeyToward(target.X, target.Z, faceAlign)
+				turnKey = U.turnKeyToward(target.X, target.Z, if walkingFacing then faceKeep else faceAlign)
 			else
 				local dead = C.PATH_TURN_YAW_DEADZONE or 0.08
 				if math.abs(yawErr) >= dead or d < 0.5 then
-					-- Same invert as util.turnKeyToward
 					if yawErr > 0 then
 						turnKey = Enum.KeyCode.Right
 					elseif yawErr < 0 then
@@ -477,7 +478,8 @@ return function(S)
 			advanced = true
 		end
 		if advanced then
-			faceOkSince = 0 -- re-settle face on next segment
+			-- Soft reset only — hysteresis may still allow W if facing similar dir
+			faceOkSince = 0
 		end
 		if pathIdx < 1 then
 			pathIdx = 1
@@ -521,7 +523,12 @@ return function(S)
 			-- skip near-start duplicate
 			pathIdx = math.min(pathIdx + 1, #pathPts)
 		end
+		-- Keep walkingFacing if possible — full face reset was thrashing (killaura log)
 		faceOkSince = 0
+		local parts = {}
+		for i, p in ipairs(pathPts) do
+			table.insert(parts, string.format("%d:%.0f,%.0f,%.0f", i, p.X, p.Y, p.Z))
+		end
 		log(string.format(
 			"path %s wps=%d idx=%d goal=(%.1f,%.1f,%.1f) → %s",
 			lastVizKind,
@@ -532,6 +539,9 @@ return function(S)
 			goal.Z,
 			enemy.Name
 		))
+		if #parts > 0 then
+			log("  WPS " .. table.concat(parts, " | "))
+		end
 	end
 
 	local function ensurePath(playerPos: Vector3, epos: Vector3, enemy: Model, range: number, force: boolean?)
@@ -593,6 +603,7 @@ return function(S)
 		pathEnemy = nil
 		pathBuiltAt = 0
 		faceOkSince = 0
+		walkingFacing = false
 		lastSegLabel = "-"
 	end
 
@@ -654,33 +665,49 @@ return function(S)
 				U.holdTurnKey(nil)
 			end
 			faceOkSince = 0
+			walkingFacing = false
 			return "stand"
 		end
 
-		-- PHASE 1: turn only until facing current path segment
-		if faceDot < faceAlign then
-			setMoveKey(nil)
-			if U.holdJump then
-				U.holdJump(false)
+		-- Face hysteresis: once walking, only re-face if look drifts below faceKeep
+		if walkingFacing then
+			if faceDot < faceKeep then
+				walkingFacing = false
+				faceOkSince = 0
+				setMoveKey(nil)
+				if U.holdJump then
+					U.holdJump(false)
+				end
+				return string.format("reface %s d=%.2f", segLabel, faceDot)
 			end
-			faceOkSince = 0
-			return string.format("face %s d=%.2f", segLabel, faceDot)
-		end
+			-- stay in walk mode — skip settle
+		else
+			-- PHASE 1: turn only until facing current path segment (enter threshold)
+			if faceDot < faceAlign then
+				setMoveKey(nil)
+				if U.holdJump then
+					U.holdJump(false)
+				end
+				faceOkSince = 0
+				return string.format("face %s d=%.2f", segLabel, faceDot)
+			end
 
-		-- PHASE 1b: hold still briefly once aligned so turn settles before W
-		local now = os.clock()
-		if faceOkSince <= 0 then
-			faceOkSince = now
-		end
-		if (now - faceOkSince) < faceSettle then
-			setMoveKey(nil)
-			if U.holdJump then
-				U.holdJump(false)
+			-- PHASE 1b: brief settle once aligned before first W
+			local now = os.clock()
+			if faceOkSince <= 0 then
+				faceOkSince = now
 			end
-			if U.holdTurnKey then
-				U.holdTurnKey(nil)
+			if (now - faceOkSince) < faceSettle then
+				setMoveKey(nil)
+				if U.holdJump then
+					U.holdJump(false)
+				end
+				if U.holdTurnKey then
+					U.holdTurnKey(nil)
+				end
+				return string.format("settle %s d=%.2f", segLabel, faceDot)
 			end
-			return string.format("settle %s d=%.2f", segLabel, faceDot)
+			walkingFacing = true
 		end
 
 		-- Facing: stop arrow spam so W is clean
@@ -883,14 +910,17 @@ return function(S)
 					lastVizKind,
 					cds()
 				))
-				if string.find(tag, "face", 1, true) == 1 or string.find(tag, "settle", 1, true) == 1 then
+				-- Log face thrash + movement (W was invisible in stuck log)
+				local head = string.sub(tag, 1, 4)
+				if head == "face" or head == "sett" or head == "reface" or string.sub(tag, 1, 1) == "W" or string.sub(tag, 1, 4) == "turn" then
 					log(string.format(
-						"%s yaw=%+.3f turn=%s enemy=%s dist=%.1f",
+						"%s yaw=%+.3f turn=%s enemy=%s dist=%.1f walkFace=%s",
 						tag,
 						lastYawErr,
 						lastTurnName,
 						model.Name,
-						dist
+						dist,
+						tostring(walkingFacing)
 					))
 				end
 				task.wait(C.SMOOTH_WALK_POLL or 0.06)

@@ -73,11 +73,12 @@ return {
 	PATH_TURN_PULSE = true, -- re-send arrow keydown each poll (games may ignore holds)
 	PATH_TURN_YAW_DEADZONE = 0.08,
 	PATH_CAMERA_YAW_DEG = 3.5, -- small camera yaw nudge per poll while turning
-	-- Kill Aura face: must align to current A* segment before any W/A/D
-	KILL_AURA_FACE_ALIGN = 0.92, -- tighter look·segment before walk
-	KILL_AURA_FACE_TURN_RATE = 3.2, -- soft HRP yaw rate (lower = slower turn)
-	KILL_AURA_FACE_SETTLE = 0.22, -- seconds held aligned before releasing W
-	KILL_AURA_SEG_ARRIVE = 3.5, -- studs: advance to next path segment
+	-- Kill Aura face: hysteresis so we don't thrash face/settle forever (see killaura log 19-16-54)
+	KILL_AURA_FACE_ALIGN = 0.82, -- enter walk when look·segment >= this
+	KILL_AURA_FACE_KEEP = 0.55, -- stay walking until look drops below this
+	KILL_AURA_FACE_TURN_RATE = 4.0, -- soft HRP yaw while turning
+	KILL_AURA_FACE_SETTLE = 0.06, -- brief hold once aligned (was 0.22 — too sticky)
+	KILL_AURA_SEG_ARRIVE = 4.0, -- studs: advance to next path segment
 	KILL_AURA_PROBE = 4.5, -- wall/step probe studs
 	KILL_AURA_JUMP_DY = 2.8, -- enemy this much higher → Space+W
 	-- Face debug beams (Kill Aura on): cyan=HRP look, green=to segment, pink/yellow=turn L/R
@@ -102,7 +103,7 @@ return {
 	NAV_WAYPOINT_SPACING = 6,
 	KILL_AURA_LOG = true, -- dumps/killaura_*.log
 	PATH_VIZ_REFRESH = 0.55, -- redraw Path Viz polyline only (not movement thrash)
-	PATH_REBUILD = 4.0, -- Kill Aura path recompute ceiling (stuck/enemy change also rebuild)
+	PATH_REBUILD = 8.0, -- Kill Aura path recompute ceiling (avoid face reset thrash)
 	NAV_RAY_UP = 50,
 	NAV_RAY_DOWN = 140,
 	NAV_MIN_NORMAL_Y = 0.45,
