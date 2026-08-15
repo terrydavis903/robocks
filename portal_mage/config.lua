@@ -201,14 +201,13 @@ return {
 	CLAW_LOG_DIR = "dumps",
 	CLAW_LOG_UI_LINES = 12, -- last N lines on Claw tab (cleared every Start)
 
-	-- Claw travel AABB (world XZ) = flush with machine walls (W/A/S/D max dumps).
-	-- There is NO imaginary inset/inner hitbox — prizes pressed against glass are grabbable.
-	-- A prize is REACH if its body (center ± radius) intersects this box (not center-only).
+	-- Claw travel AABB (world XZ) = machine walls from W/A/S/D max dumps, then a small
+	-- keep-out so prizes flush against glass are invalid (center must be inside inset).
 	--   W: 19-21-14 (-79.044, 37.938)  A: 19-21-17 (-79.232, 40.136)
 	--   S: 19-21-22 (-82.835, 37.612)  D: 19-21-25 (-82.870, 40.734)
 	CLAW_REACH_ENABLED = true,
-	CLAW_REACH_MARGIN = 0.0, -- never shrink the box (was "inset" keep-out — removed)
-	CLAW_OUTSIDE_REACH_SLACK = 0.0, -- no extra imaginary slack; use prize radius instead
+	CLAW_REACH_MARGIN = 0.12, -- small wall keep-out (studs) on each side of the flush box
+	CLAW_OUTSIDE_REACH_SLACK = 0.0,
 	CLAW_PRIZE_DEFAULT_RADIUS_XZ = 0.375, -- if prize has no measured radiusXZ
 	CLAW_REACH_X_MIN = -82.87033081054688,
 	CLAW_REACH_X_MAX = -79.04434967041016,

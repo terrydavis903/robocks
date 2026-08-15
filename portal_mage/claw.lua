@@ -143,20 +143,26 @@ return function(S)
 	end
 
 	---------------------------------------------------------------------------
-	-- Reachable bounds = machine wall box (flush). No imaginary inset hitbox.
-	-- Claw travel limits from W/A/S/D max dumps; prizes on the glass are valid.
+	-- Reachable bounds = wall-flush machine box minus a small keep-out margin.
+	-- Flush wall dumps define the outer AABB; margin shrinks it so prizes
+	-- completely against glass (center on the wall edge) are invalid.
 	---------------------------------------------------------------------------
 
-	-- Absolute wall-flush AABB (never shrink with margin — margin kept for compat only).
 	function M.getReachBounds()
 		if C.CLAW_REACH_ENABLED == false then
 			return nil
 		end
-		-- Do NOT apply CLAW_REACH_MARGIN as an inset — that was the false inner hitbox.
 		local xMin = C.CLAW_REACH_X_MIN or -math.huge
 		local xMax = C.CLAW_REACH_X_MAX or math.huge
 		local zMin = C.CLAW_REACH_Z_MIN or -math.huge
 		local zMax = C.CLAW_REACH_Z_MAX or math.huge
+		local m = C.CLAW_REACH_MARGIN or 0
+		if type(m) == "number" and m > 0 then
+			xMin += m
+			xMax -= m
+			zMin += m
+			zMax -= m
+		end
 		if xMin > xMax or zMin > zMax then
 			return nil
 		end
@@ -231,24 +237,17 @@ return function(S)
 		return C.CLAW_PRIZE_DEFAULT_RADIUS_XZ or 0.375
 	end
 
-	-- REACH = prize *body* intersects wall-flush machine box.
-	-- Center may sit slightly outside the claw AABB when the ball is pressed on glass;
-	-- if center is within radius of the box edge, it is still grabbable.
-	-- Optional 4th arg: radiusXZ (or pass prize table as 1st via isPrizeReachablePrize).
-	function M.isPrizeReachable(x: number, z: number, _priority: number?, radiusXZ: number?): boolean
+	-- REACH = prize *center* is inside the inset keep-out box (not body-vs-flush walls).
+	-- Flush-against-glass prizes fail; slightly inset centers remain valid.
+	function M.isPrizeReachable(x: number, z: number, _priority: number?, _radiusXZ: number?): boolean
 		if C.CLAW_REACH_ENABLED == false then
 			return true
 		end
-		local xMin = M.getReachBounds()
+		local xMin, xMax, zMin, zMax = M.getReachBounds()
 		if xMin == nil then
 			return false
 		end
-		local r = radiusXZ
-		if type(r) ~= "number" or r < 0 then
-			r = M.defaultPrizeRadius()
-		end
-		local slack = M.reachSlack()
-		return M.prizeDistanceToReachBox(x, z) <= (r + slack + 1e-4)
+		return x >= xMin and x <= xMax and z >= zMin and z <= zMax
 	end
 
 	function M.isPrizeEntryReachable(p: any): boolean
@@ -263,13 +262,14 @@ return function(S)
 		if xMin == nil then
 			return "disabled"
 		end
+		local m = C.CLAW_REACH_MARGIN or 0
 		return string.format(
-			"walls X[%.2f,%.2f] Z[%.2f,%.2f] flush r=%.2f",
+			"reach X[%.2f,%.2f] Z[%.2f,%.2f] margin=%.2f (center inside)",
 			xMin,
 			xMax,
 			zMin,
 			zMax,
-			M.defaultPrizeRadius()
+			m
 		)
 	end
 
@@ -447,7 +447,7 @@ return function(S)
 	end
 
 	-- Pick highest priority reachable prize.
-	-- Same priority: closer to claw wins. Wall-edge prizes are valid (no inset bias).
+	-- Same priority: closer to claw wins. Centers in wall keep-out are invalid.
 	function M.pickBestPrize(prizes: { any }, clawPos: Vector3?, opts: any?): any?
 		opts = opts or {}
 		local requireReachable = opts.requireReachable ~= false
