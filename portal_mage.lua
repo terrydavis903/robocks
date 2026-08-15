@@ -462,6 +462,7 @@ S.Proximity = loadFactory("proximity")
 -- 3) optional / heavy (claw is large — isolate failures)
 S.Claw = tryFactory("claw")
 S.Ore = tryFactory("ore")
+S.Esp = tryFactory("esp")
 S.AutoOre = tryFactory("auto_ore")
 S.MeshOutline = tryFactory("mesh_outline")
 S.UI = loadFactory("ui")
@@ -487,6 +488,12 @@ local function start()
 	end
 	if S.ui.setOreEspLabel then
 		S.ui.setOreEspLabel(S.oreEspEnabled)
+	end
+	if S.ui.setPlayerEspLabel then
+		S.ui.setPlayerEspLabel(S.playerEspEnabled == true)
+	end
+	if S.ui.setEnemyEspLabel then
+		S.ui.setEnemyEspLabel(S.enemyEspEnabled == true)
 	end
 	if S.ui.setAutoOreLabel then
 		S.ui.setAutoOreLabel(S.autoOreEnabled == true)

@@ -163,10 +163,12 @@ return {
 			fill = Color3.fromRGB(160, 160, 175),
 			outline = Color3.fromRGB(220, 230, 255),
 		},
+		-- was cyan; dark orange so Player ESP can own cyan
 		aurorite = {
-			fill = Color3.fromRGB(40, 160, 220),
-			outline = Color3.fromRGB(80, 230, 255),
+			fill = Color3.fromRGB(200, 90, 25),
+			outline = Color3.fromRGB(255, 140, 40),
 		},
+		-- gold / yellow (unchanged)
 		lumite = {
 			fill = Color3.fromRGB(200, 170, 40),
 			outline = Color3.fromRGB(255, 240, 90),
@@ -175,6 +177,23 @@ return {
 			fill = Color3.fromRGB(180, 60, 220),
 			outline = Color3.fromRGB(255, 120, 255),
 		},
+	},
+
+	-- Player ESP (other players) — cyan
+	PLAYER_ESP_INTERVAL = 0.5,
+	PLAYER_ESP_FILL_T = 0.65,
+	PLAYER_ESP_OUTLINE_T = 0.0,
+	PLAYER_ESP_COLORS = {
+		fill = Color3.fromRGB(40, 200, 230),
+		outline = Color3.fromRGB(120, 240, 255),
+	},
+	-- Enemy ESP (Mobs.Active) — red
+	ENEMY_ESP_INTERVAL = 0.5,
+	ENEMY_ESP_FILL_T = 0.65,
+	ENEMY_ESP_OUTLINE_T = 0.0,
+	ENEMY_ESP_COLORS = {
+		fill = Color3.fromRGB(220, 40, 40),
+		outline = Color3.fromRGB(255, 90, 90),
 	},
 
 	-- Auto Ore: A*/PFS between Spawn_Ore nodes (segment face→W; wall climb Space+W)

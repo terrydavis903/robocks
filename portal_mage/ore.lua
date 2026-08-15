@@ -174,8 +174,8 @@ return function(S)
 			outline = Color3.fromRGB(220, 230, 255),
 		},
 		aurorite = {
-			fill = Color3.fromRGB(40, 160, 220),
-			outline = Color3.fromRGB(80, 230, 255),
+			fill = Color3.fromRGB(200, 90, 25),
+			outline = Color3.fromRGB(255, 140, 40),
 		},
 		lumite = {
 			fill = Color3.fromRGB(200, 170, 40),

@@ -20,6 +20,8 @@ S.ui = {
 	setAntiAfkLabel = function(_on: boolean) end,
 	setWalkSpeedLabel = function(_on: boolean, _speed: number?) end,
 	setOreEspLabel = function(_on: boolean) end,
+	setPlayerEspLabel = function(_on: boolean) end,
+	setEnemyEspLabel = function(_on: boolean) end,
 	setAutoOreLabel = function(_on: boolean) end,
 	setMeshOutlineLabel = function(_on: boolean) end,
 	setPathVizLabel = function(_on: boolean) end, -- A* path lines
@@ -77,6 +79,13 @@ S.walkSpeedSaved = nil :: number? -- vanilla to restore on disable
 S.oreEspEnabled = false
 S.oreEspThread = nil
 S.Ore = nil :: any
+
+-- Player / Enemy ESP (through-wall highlights)
+S.playerEspEnabled = false
+S.playerEspThread = nil
+S.enemyEspEnabled = false
+S.enemyEspThread = nil
+S.Esp = nil :: any
 
 -- Auto Ore (path node→node; independent of ESP)
 S.autoOreEnabled = false

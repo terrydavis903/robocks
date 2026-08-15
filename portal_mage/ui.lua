@@ -473,6 +473,10 @@ return function(S)
 		by += 34
 		local oreEspBtn = mkButton(bot, "Ore ESP: OFF", by, Color3.fromRGB(70, 70, 80))
 		by += 34
+		local playerEspBtn = mkButton(bot, "Player ESP: OFF", by, Color3.fromRGB(70, 70, 80))
+		by += 34
+		local enemyEspBtn = mkButton(bot, "Enemy ESP: OFF", by, Color3.fromRGB(70, 70, 80))
+		by += 34
 		local autoOreBtn = mkButton(bot, "Auto Ore: OFF", by, Color3.fromRGB(70, 70, 80))
 		by += 34
 		mkLabel(bot, "WalkSpeed force (re-applies every frame)", by)
@@ -519,7 +523,16 @@ return function(S)
 		end
 		S.ui.setOreEspLabel = function(on: boolean)
 			oreEspBtn.Text = on and "Ore ESP: ON" or "Ore ESP: OFF"
-			oreEspBtn.BackgroundColor3 = on and Color3.fromRGB(80, 160, 200) or Color3.fromRGB(70, 70, 80)
+			-- dark orange when on (matches aurorite ore color, not cyan)
+			oreEspBtn.BackgroundColor3 = on and Color3.fromRGB(180, 100, 35) or Color3.fromRGB(70, 70, 80)
+		end
+		S.ui.setPlayerEspLabel = function(on: boolean)
+			playerEspBtn.Text = on and "Player ESP: ON" or "Player ESP: OFF"
+			playerEspBtn.BackgroundColor3 = on and Color3.fromRGB(40, 170, 200) or Color3.fromRGB(70, 70, 80)
+		end
+		S.ui.setEnemyEspLabel = function(on: boolean)
+			enemyEspBtn.Text = on and "Enemy ESP: ON" or "Enemy ESP: OFF"
+			enemyEspBtn.BackgroundColor3 = on and Color3.fromRGB(180, 45, 45) or Color3.fromRGB(70, 70, 80)
 		end
 		S.ui.setAutoOreLabel = function(on: boolean)
 			autoOreBtn.Text = on and "Auto Ore: ON" or "Auto Ore: OFF"
@@ -609,6 +622,20 @@ return function(S)
 				S.Ore.toggleOreEsp()
 			else
 				S.Util.setStatus("Ore module not loaded")
+			end
+		end)
+		playerEspBtn.MouseButton1Click:Connect(function()
+			if S.Esp and S.Esp.togglePlayerEsp then
+				S.Esp.togglePlayerEsp()
+			else
+				S.Util.setStatus("ESP module not loaded — reload script")
+			end
+		end)
+		enemyEspBtn.MouseButton1Click:Connect(function()
+			if S.Esp and S.Esp.toggleEnemyEsp then
+				S.Esp.toggleEnemyEsp()
+			else
+				S.Util.setStatus("ESP module not loaded — reload script")
 			end
 		end)
 		autoOreBtn.MouseButton1Click:Connect(function()
