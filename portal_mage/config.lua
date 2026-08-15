@@ -76,6 +76,9 @@ return {
 	KILL_AURA_FACE_ALIGN = 0.88, -- must face enemy this well before W/A/D
 	KILL_AURA_PROBE = 4.5, -- wall/step probe studs
 	KILL_AURA_JUMP_DY = 2.8, -- enemy this much higher → Space+W
+	-- Face debug beams (Kill Aura on): cyan=HRP look, green=to enemy, pink/yellow=turn L/R
+	KILL_AURA_FACE_VIZ = true,
+	KILL_AURA_FACE_BEAM_LEN = 6, -- studs; keep short/thin
 	-- If look·forward < this (~70°), disable AutoRotate and soft-lerp instead of snap
 	SMOOTH_WALK_SOFT_TURN_DOT = 0.35,
 	-- Once look·forward >= this, re-enable AutoRotate (~25°)

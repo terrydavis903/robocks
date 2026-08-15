@@ -156,10 +156,144 @@ return function(S)
 	end
 
 	---------------------------------------------------------------------------
+	-- Face viz: thin beams from character (actual face vs desired vs turn)
+	---------------------------------------------------------------------------
+
+	local FACE_VIZ_FOLDER = "PortalMage_FaceViz"
+	local faceVizFolder: Folder? = nil
+	local faceVizFace: BasePart? = nil -- cyan: what we think you're facing (HRP look)
+	local faceVizWant: BasePart? = nil -- lime: desired direction to enemy
+	local faceVizTurn: BasePart? = nil -- yellow/magenta: left/right decision wedge
+
+	local function styleFacePart(p: BasePart, color: Color3)
+		p.Anchored = true
+		p.CanCollide = false
+		p.CanQuery = false
+		p.CanTouch = false
+		p.CastShadow = false
+		p.Material = Enum.Material.Neon
+		p.Color = color
+		p.Transparency = 0.15
+	end
+
+	local function ensureFaceViz()
+		if C.KILL_AURA_FACE_VIZ == false then
+			return
+		end
+		if faceVizFolder and faceVizFolder.Parent then
+			return
+		end
+		pcall(function()
+			local old = workspace:FindFirstChild(FACE_VIZ_FOLDER)
+			if old then
+				old:Destroy()
+			end
+			local f = Instance.new("Folder")
+			f.Name = FACE_VIZ_FOLDER
+			f.Parent = workspace
+			faceVizFolder = f
+
+			local function mk(name: string, color: Color3): BasePart
+				local p = Instance.new("Part")
+				p.Name = name
+				p.Shape = Enum.PartType.Cylinder
+				p.Size = Vector3.new(4, 0.12, 0.12)
+				styleFacePart(p, color)
+				p.Parent = f
+				return p
+			end
+			faceVizFace = mk("FaceLook", Color3.fromRGB(80, 220, 255)) -- cyan = measured face
+			faceVizWant = mk("WantEnemy", Color3.fromRGB(120, 255, 100)) -- green = to enemy
+			faceVizTurn = mk("TurnHint", Color3.fromRGB(255, 200, 60)) -- yellow = turn bias
+		end)
+	end
+
+	local function clearFaceViz()
+		pcall(function()
+			if faceVizFolder and faceVizFolder.Parent then
+				faceVizFolder:Destroy()
+			end
+			local old = workspace:FindFirstChild(FACE_VIZ_FOLDER)
+			if old then
+				old:Destroy()
+			end
+		end)
+		faceVizFolder = nil
+		faceVizFace = nil
+		faceVizWant = nil
+		faceVizTurn = nil
+	end
+
+	-- Place a thin cylinder from a→b (length along X after 90° yaw)
+	local function placeRod(part: BasePart?, a: Vector3, b: Vector3, thick: number?)
+		if not part or not part.Parent then
+			return
+		end
+		local delta = b - a
+		local dist = delta.Magnitude
+		if dist < 0.05 then
+			part.Transparency = 1
+			return
+		end
+		local t = thick or 0.1
+		part.Transparency = 0.12
+		part.Size = Vector3.new(dist, t, t)
+		part.CFrame = CFrame.lookAt(a + delta * 0.5, b) * CFrame.Angles(0, math.rad(90), 0)
+	end
+
+	-- Update viz from current HRP look + enemy + turn decision.
+	-- faceLen short; wantLen a bit longer so both are readable.
+	local function updateFaceViz(hrp: BasePart, epos: Vector3, faceDot: number, yawErr: number?, turnKey: Enum.KeyCode?)
+		if C.KILL_AURA_FACE_VIZ == false then
+			clearFaceViz()
+			return
+		end
+		ensureFaceViz()
+		local origin = hrp.Position + Vector3.new(0, 1.4, 0) -- chest/head height
+		local look = hrp.CFrame.LookVector
+		local flatLook = Vector3.new(look.X, 0, look.Z)
+		if flatLook.Magnitude < 1e-4 then
+			flatLook = Vector3.new(0, 0, -1)
+		else
+			flatLook = flatLook.Unit
+		end
+		local faceLen = C.KILL_AURA_FACE_BEAM_LEN or 6
+		local wantLen = faceLen * 1.15
+
+		-- Cyan: what pathing thinks you face
+		placeRod(faceVizFace, origin, origin + flatLook * faceLen, 0.1)
+
+		-- Green: desired flat direction to enemy
+		local toE = Vector3.new(epos.X - origin.X, 0, epos.Z - origin.Z)
+		if toE.Magnitude > 0.15 then
+			toE = toE.Unit
+			placeRod(faceVizWant, origin + Vector3.new(0, 0.12, 0), origin + Vector3.new(0, 0.12, 0) + toE * wantLen, 0.08)
+		elseif faceVizWant then
+			faceVizWant.Transparency = 1
+		end
+
+		-- Yellow/magenta: which way we turn (perpendicular hint from look)
+		if turnKey and faceVizTurn then
+			local right = Vector3.new(-flatLook.Z, 0, flatLook.X)
+			local side = if turnKey == Enum.KeyCode.Left then -right else right
+			faceVizTurn.Color = if turnKey == Enum.KeyCode.Left
+				then Color3.fromRGB(255, 120, 220) -- magenta = LEFT
+				else Color3.fromRGB(255, 200, 50) -- yellow = RIGHT
+			placeRod(faceVizTurn, origin + Vector3.new(0, -0.12, 0), origin + Vector3.new(0, -0.12, 0) + side * (faceLen * 0.55), 0.09)
+		elseif faceVizTurn then
+			faceVizTurn.Transparency = 1
+		end
+	end
+
+	---------------------------------------------------------------------------
 	-- Face enemy (must succeed before any W/A/D)
 	---------------------------------------------------------------------------
 
 	local faceAlign = C.KILL_AURA_FACE_ALIGN or 0.88
+	-- Last face decision (for status)
+	local lastFaceDot = 0
+	local lastYawErr = 0
+	local lastTurnName = "-"
 
 	local function faceEnemy(epos: Vector3): number
 		local hrp = getHrp()
@@ -179,9 +313,16 @@ return function(S)
 			if U.holdTurnKey then
 				U.holdTurnKey(nil)
 			end
+			lastFaceDot = 1
+			lastYawErr = 0
+			lastTurnName = "-"
+			updateFaceViz(hrp, epos, 1, 0, nil)
 			return 1
 		end
-		flat = flat.Unit
+
+		-- Measure BEFORE forcing CFrame so viz shows true face vs desired
+		local dBefore = (U.facingDotTo and U.facingDotTo(epos.X, epos.Z)) or 0
+		local yawErr = (U.yawErrorTo and U.yawErrorTo(epos.X, epos.Z)) or 0
 
 		-- 1) Hard set character yaw toward enemy every tick (primary)
 		pcall(function()
@@ -205,18 +346,15 @@ return function(S)
 						local dot = flatLook:Dot(to)
 						if dot < 0.98 then
 							local deg = (C.PATH_CAMERA_YAW_DEG or 10) * (if cross > 0 then 1 else -1)
-							-- stronger turn when very misaligned
 							if dot < 0 then
 								deg = deg * 2.2
 							elseif dot < 0.5 then
 								deg = deg * 1.5
 							end
-							local cf = cam.CFrame
 							local newLook = (CFrame.Angles(0, math.rad(deg), 0) * Vector3.new(look.X, 0, look.Z))
 							if newLook.Magnitude > 0.1 then
 								newLook = newLook.Unit
-								local pitchY = look.Y
-								local aim = Vector3.new(newLook.X, pitchY, newLook.Z)
+								local aim = Vector3.new(newLook.X, look.Y, newLook.Z)
 								cam.CFrame = CFrame.lookAt(cpos, cpos + aim)
 							end
 						end
@@ -225,19 +363,38 @@ return function(S)
 			end)
 		end
 
-		-- 3) Left/Right arrows (pulse every poll)
-		local d = (U.facingDotTo and U.facingDotTo(epos.X, epos.Z)) or 0
-		if d >= faceAlign then
-			if U.holdTurnKey then
-				U.holdTurnKey(nil)
+		-- 3) Left/Right arrows from yaw error (pulse). Decision uses pre-snap error
+		--    so viz matches why we pressed the key.
+		local d = (U.facingDotTo and U.facingDotTo(epos.X, epos.Z)) or dBefore
+		local turnKey: Enum.KeyCode? = nil
+		if d < faceAlign then
+			-- Prefer pre-face yawErr for turn side (stable)
+			local dead = C.PATH_TURN_YAW_DEADZONE or 0.08
+			if math.abs(yawErr) >= dead or d < 0.5 then
+				if yawErr > 0 then
+					turnKey = Enum.KeyCode.Left -- enemy left of face → Left
+				elseif yawErr < 0 then
+					turnKey = Enum.KeyCode.Right
+				else
+					turnKey = U.turnKeyToward and U.turnKeyToward(epos.X, epos.Z, faceAlign)
+				end
 			end
-			return d
 		end
-		local turnKey = U.turnKeyToward and U.turnKeyToward(epos.X, epos.Z, faceAlign)
 		if U.holdTurnKey then
-			U.holdTurnKey(turnKey, true) -- pulse
+			U.holdTurnKey(turnKey, true)
 		end
-		return (U.facingDotTo and U.facingDotTo(epos.X, epos.Z)) or 0
+
+		lastFaceDot = d
+		lastYawErr = yawErr
+		lastTurnName = if turnKey == Enum.KeyCode.Left
+			then "LEFT"
+			elseif turnKey == Enum.KeyCode.Right then "RIGHT"
+			else "-"
+
+		-- Viz uses CURRENT look after CFrame set (cyan) + desired (green) + turn (pink/yellow)
+		updateFaceViz(hrp, epos, d, yawErr, turnKey)
+
+		return d
 	end
 
 	---------------------------------------------------------------------------
@@ -560,9 +717,11 @@ return function(S)
 					end
 					local viz = if S.pathVizEnabled then (" viz=" .. lastVizKind) else ""
 					U.setStatus(string.format(
-						"[stand] d=%.1f face=%.2f %s%s | %s",
+						"[stand] d=%.1f face=%.2f yaw=%+.2f turn=%s %s%s | %s",
 						dist,
 						fd,
+						lastYawErr,
+						lastTurnName,
 						model.Name,
 						viz,
 						cds()
@@ -574,15 +733,24 @@ return function(S)
 				local tag = approachStep(playerPos, epos, range)
 				local viz = if S.pathVizEnabled then (" viz=" .. lastVizKind) else ""
 				U.setStatus(string.format(
-					"[approach] d=%.1f %s → %s%s | %s",
+					"[approach] d=%.1f %s yaw=%+.2f turn=%s → %s%s | %s",
 					dist,
 					tag,
+					lastYawErr,
+					lastTurnName,
 					model.Name,
 					viz,
 					cds()
 				))
 				if string.sub(tag, 1, 4) == "face" then
-					log(string.format("%s enemy=%s dist=%.1f", tag, model.Name, dist))
+					log(string.format(
+						"%s yaw=%+.3f turn=%s enemy=%s dist=%.1f",
+						tag,
+						lastYawErr,
+						lastTurnName,
+						model.Name,
+						dist
+					))
 				end
 				task.wait(C.SMOOTH_WALK_POLL or 0.06)
 			end)
@@ -596,6 +764,7 @@ return function(S)
 		end
 
 		stopMove()
+		clearFaceViz()
 		clearPathVizIfOff()
 		local nav = Nav()
 		if nav and nav.clearPathViz then
