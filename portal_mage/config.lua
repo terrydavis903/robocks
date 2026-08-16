@@ -260,7 +260,7 @@ return {
 	CLAW_ORBIT_HOLDS = 8, -- after this many near-target holds without improvement, soft-OK
 	CLAW_MOVE_STEP_STUDS = 0.12, -- reference granularity
 	CLAW_HOLD_POLL = 0.03, -- sample rate while key is held down
-	CLAW_HOLD_MAX = 2.5, -- max seconds per WASD key hold while aiming, then re-pick axis
+	CLAW_HOLD_MAX = 1.0, -- max seconds per WASD key hold while aiming (was 2.5 — overshot/drift)
 	CLAW_CORRECT_TAP = 0.05, -- opposite-key tap duration after overshoot
 	CLAW_HOLD_RELEASE_SLACK = 0.02, -- release slightly early before thr (inertia)
 	CLAW_NEAR_TAP_DIST = 0.22, -- below this, use short taps not long holds
