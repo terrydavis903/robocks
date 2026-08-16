@@ -6,9 +6,9 @@
 
 return {
 	{ key = "spirit", tier = 2 }, -- spirit stones; own tier under P1
-	{ key = "enchantedbark", tier = 5 },
+	{ key = "enchantedbark", tier = 4 }, -- Prize_Mat_EnchantedBark (above wood)
 	{ key = "heartwood", tier = 4 }, -- also matches AncientHeartwood
-	{ key = "enchantedwood", tier = 5 },
+	{ key = "enchantedwood", tier = 5 }, -- Prize_Mat_EnchantedWood
 	{ key = "mysticessence", tier = 6 },
 	{ key = "briarvine", tier = 6 },
 	{ key = "memorysap", tier = 6 },
