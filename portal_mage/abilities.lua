@@ -241,13 +241,36 @@ return function(S)
 	end
 
 	---------------------------------------------------------------------------
-	-- Handlers (combat schematics)
+	-- Handlers = mob match → quickslot + QUICKSLOT_USAGE steps (no skill names)
 	---------------------------------------------------------------------------
 
+	-- Build a castable handler from slot (+ optional steps override on the row).
+	function M.handlerForSlot(slot: number, match: string?, stepsOverride: any?): any
+		local usage = (C.QUICKSLOT_USAGE or {})[slot]
+		local steps = stepsOverride
+		if type(steps) ~= "table" and usage and type(usage.steps) == "table" then
+			steps = usage.steps
+		end
+		if type(steps) ~= "table" then
+			steps = { { key = Enum.KeyCode.E } }
+		end
+		return {
+			id = string.format("s%d", slot), -- display / CD label only
+			slot = slot,
+			match = match,
+			steps = steps,
+		}
+	end
+
 	function M.findHandler(model: Model)
-		for _, handler in ipairs(C.COMBAT_HANDLERS or {}) do
-			if string.find(model.Name, handler.match, 1, true) then
-				return handler
+		if not model then
+			return nil
+		end
+		for _, row in ipairs(C.COMBAT_HANDLERS or {}) do
+			local m = row.match
+			if type(m) == "string" and m ~= "" and string.find(model.Name, m, 1, true) then
+				local slot = row.slot or C.DEFAULT_COMBAT_SLOT or 4
+				return M.handlerForSlot(slot, m, row.steps)
 			end
 		end
 		return nil
@@ -255,31 +278,46 @@ return function(S)
 
 	M.findHandlerForModel = M.findHandler
 
+	-- id is "s1"…"s4" (slot id). Legacy "meteor"/"aqua" map to slot 1 / default.
 	function M.getById(id: string)
-		for _, handler in ipairs(C.COMBAT_HANDLERS or {}) do
-			if handler.id == id then
-				return handler
-			end
+		if type(id) ~= "string" then
+			return nil
+		end
+		local n = string.match(id, "^s(%d+)$") or string.match(id, "^slot(%d+)$")
+		if n then
+			return M.handlerForSlot(tonumber(n) :: number, nil, nil)
+		end
+		-- Legacy aliases (pre-slot-only config)
+		if id == "meteor" or id == "aurora" then
+			return M.handlerForSlot(1, nil, nil)
+		end
+		if id == "aqua" or id == "holywounds" or id == "holy_wounds" then
+			return M.handlerForSlot(C.DEFAULT_COMBAT_SLOT or 4, nil, nil)
 		end
 		return nil
 	end
 
+	function M.getDefaultHandler()
+		return M.handlerForSlot(C.DEFAULT_COMBAT_SLOT or 4, nil, nil)
+	end
+
+	-- Compat aliases (old names → default / slot 1)
 	function M.getAquaHandler()
-		return M.getById("aqua")
+		return M.getDefaultHandler()
 	end
 
 	function M.getMeteorHandler()
-		return M.getById("meteor")
+		return M.handlerForSlot(1, nil, nil)
 	end
 
-	-- Handler for model; if useDefaultAqua and unmatched, first aqua schematic.
-	function M.resolve(model: Model, useDefaultAqua: boolean?)
+	-- Handler for model; if useDefault and unmatched, DEFAULT_COMBAT_SLOT.
+	function M.resolve(model: Model, useDefault: boolean?)
 		local h = M.findHandler(model)
 		if h then
 			return h
 		end
-		if useDefaultAqua then
-			return M.getAquaHandler()
+		if useDefault then
+			return M.getDefaultHandler()
 		end
 		return nil
 	end
@@ -288,13 +326,9 @@ return function(S)
 
 	function M.formatCds(): string
 		local parts = {}
-		local seen = {}
-		for _, h in ipairs(C.COMBAT_HANDLERS or {}) do
-			if not seen[h.id] then
-				seen[h.id] = true
-				local on = if M.isSlotOn(h.slot) then "on" else "off"
-				table.insert(parts, string.format("%s %.0f %s", h.id, M.getCooldownRemaining(h.slot), on))
-			end
+		for _, slot in ipairs(M.combatSlots()) do
+			local on = if M.isSlotOn(slot) then "on" else "off"
+			table.insert(parts, string.format("s%d %.0f %s", slot, M.getCooldownRemaining(slot), on))
 		end
 		return table.concat(parts, " | ")
 	end

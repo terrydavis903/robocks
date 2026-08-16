@@ -49,9 +49,9 @@ S.combatPhase = "fight" :: string
 -- After a kill: wait until combat-schema CDs are ready before picking next enemy.
 -- Player death/respawn clears this (death resets CDs).
 S.waitAllCds = false
--- Barrel: open with meteor once, then aqua
+-- Barrel fight bookkeeping (slot usage only; no skill names)
 S.barrelFightModel = nil :: Model?
-S.barrelMeteorOpened = false
+S.barrelMeteorOpened = false -- legacy flag name; slot-1 open once if used
 -- Low mana: "hold" (pause casts until reds clear) → "regen" (Z sit recover)
 S.resourceRecoverPhase = nil :: string?
 S.Targets = nil :: any

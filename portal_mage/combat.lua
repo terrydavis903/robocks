@@ -257,8 +257,8 @@ return function(S)
 		local rem = A().getCooldownRemaining(handler.slot)
 		if rem > 0.35 then
 			U.setStatus(string.format(
-				"[fight] CD %s %.1fs | %s d=%.1f",
-				handler.id,
+				"[fight] CD s%d %.1fs | %s d=%.1f",
+				handler.slot or 0,
 				rem,
 				hold.Name,
 				dist

@@ -292,82 +292,47 @@ return {
 	PLAYER_PROXIMITY_PAUSE_STUDS = 150,
 	PLAYER_PROXIMITY_CHECK_INTERVAL = 0.15,
 
-	-- Barrel Champion: absolute combat priority — open meteor (slot 1), then aqua loop
-	BARREL_CHAMPION_MATCH = "BarrelChampion", -- also matches "Barrel Champion" / "Barrel_Champion"
+	-- Named boss/mob tags (match substrings on model.Name). Combat uses slots only.
+	BARREL_CHAMPION_MATCH = "BarrelChampion",
 	BARREL_CHAMPION_TAGS = { "Barrel Champion", "BarrelChampion", "Barrel_Champion" },
-	-- Junk King / Tin Tortoise: permanent aqua bubble spam (no meteor)
 	JUNK_KING_MATCH = "JunkKing",
 	JUNK_KING_TAGS = { "Junk King", "JunkKing", "Junk_King" },
 	JUNK_KING_ENGAGE_RANGE = 30,
 	TIN_TORTOISE_MATCH = "TinTortoise",
 	TIN_TORTOISE_TAGS = { "Tin Tortoise", "TinTortoise", "Tin_Tortoise" },
 	TIN_TORTOISE_ENGAGE_RANGE = 30,
-	AQUA_SLOT = 4,
 
-	-- Ability readiness comes from QuickSlotN.CooldownTimer (not hardset seconds).
-	-- ALL abilities are TOGGLES: press slot key (1–4) to arm (Slot_Select diamond ON).
-	-- Cast pipeline (abilities.lua): ensure slot ON once → settle → steps fire only.
-	-- Do NOT put One/Two/… in steps (re-pressing toggles OFF). Use handler.slot to arm.
-	-- R is reticle cycle only (not in steps).
-	-- Red-name (aggro) mobs with no match use the first `aqua` handler as default.
+	-- Quickslot USAGE only (1–4). What to press when that slot is armed — not skill names.
+	-- ALL slots are TOGGLES: press 1–4 to arm (Slot_Select diamond ON), then fire steps.
+	-- Do NOT put One/Two/… in steps (re-pressing toggles OFF). Cast arms via handler.slot.
+	QUICKSLOT_USAGE = {
+		[1] = {
+			-- tap cast (e.g. Aurora on your bar)
+			steps = { { key = Enum.KeyCode.E } },
+		},
+		[2] = {
+			steps = { { key = Enum.KeyCode.E } },
+		},
+		[3] = {
+			steps = { { key = Enum.KeyCode.E } },
+		},
+		[4] = {
+			-- hold cast (e.g. Holy Wounds on your bar)
+			steps = { { hold = Enum.KeyCode.E, duration = 6 } },
+		},
+	},
+	-- Unmatched / default combat uses this quickslot
+	DEFAULT_COMBAT_SLOT = 4,
+
+	-- Mob name substring → which quickslot to use. Optional per-row `steps` overrides
+	-- QUICKSLOT_USAGE[slot]. No ability skill names here.
 	COMBAT_HANDLERS = {
-		{
-			id = "meteor",
-			match = "ScarecrowGoblin",
-			slot = 1, -- toggle arm QuickSlot1
-			steps = {
-				{ key = Enum.KeyCode.E },
-			},
-		},
-		-- Dump: Monster_PatchHound_* / Monster_KettleBeetle_* (same meteor kit as scarecrow)
-		{
-			id = "meteor",
-			match = "PatchHound",
-			slot = 1,
-			steps = {
-				{ key = Enum.KeyCode.E },
-			},
-		},
-		{
-			id = "meteor",
-			match = "KettleBeetle",
-			slot = 1,
-			steps = {
-				{ key = Enum.KeyCode.E },
-			},
-		},
-		{
-			id = "aqua",
-			match = "JunkKing",
-			slot = 4, -- toggle arm QuickSlot4
-			steps = {
-				{ hold = Enum.KeyCode.E, duration = 6 },
-			},
-		},
-		{
-			id = "aqua",
-			match = "TinTortoise",
-			slot = 4,
-			steps = {
-				{ hold = Enum.KeyCode.E, duration = 6 },
-			},
-		},
-		{
-			id = "aqua",
-			match = "BucketheadGoblin",
-			slot = 4,
-			steps = {
-				{ hold = Enum.KeyCode.E, duration = 6 },
-			},
-		},
-		-- Critter goblin: meteor only (same as scarecrow / patch / kettle)
-		{
-			id = "meteor",
-			match = "CritterGoblin",
-			slot = 1,
-			steps = {
-				{ key = Enum.KeyCode.E },
-			},
-		},
+		{ match = "ScarecrowGoblin", slot = 1 },
+		{ match = "PatchHound", slot = 1 },
+		{ match = "KettleBeetle", slot = 1 },
+		{ match = "CritterGoblin", slot = 1 },
+		{ match = "JunkKing", slot = 4 },
+		{ match = "TinTortoise", slot = 4 },
+		{ match = "BucketheadGoblin", slot = 4 },
 	},
 }
