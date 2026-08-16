@@ -165,7 +165,7 @@ do
 
 return {
 	{ key = "spirit", tier = 2 },
-	{ key = "enchantedbark", tier = 5 },
+	{ key = "enchantedbark", tier = 4 },
 	{ key = "heartwood", tier = 4 },
 	{ key = "enchantedwood", tier = 5 },
 	{ key = "mysticessence", tier = 6 },
