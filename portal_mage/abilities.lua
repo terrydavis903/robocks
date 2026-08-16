@@ -180,17 +180,25 @@ return function(S)
 		return M.isSlotReady(handler.slot)
 	end
 
-	-- Unique slots used by COMBAT_HANDLERS (meteor 1, aqua 4, …)
+	-- Unique slots used by COMBAT_HANDLERS + QUICKSLOT_USAGE / DEFAULT_COMBAT_SLOT
 	function M.combatSlots(): { number }
 		local seen = {}
 		local out = {}
-		for _, h in ipairs(C.COMBAT_HANDLERS or {}) do
-			local s = h.slot
-			if type(s) == "number" and not seen[s] then
-				seen[s] = true
-				table.insert(out, s)
+		local function add(s: any)
+			local n = tonumber(s)
+			if type(n) == "number" and n >= 1 and n <= 9 and not seen[n] then
+				seen[n] = true
+				table.insert(out, n)
 			end
 		end
+		for _, h in ipairs(C.COMBAT_HANDLERS or {}) do
+			add(h.slot)
+		end
+		add(C.DEFAULT_COMBAT_SLOT or 4)
+		for slot, _ in pairs(C.QUICKSLOT_USAGE or {}) do
+			add(slot)
+		end
+		table.sort(out)
 		return out
 	end
 
