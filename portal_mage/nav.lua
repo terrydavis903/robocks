@@ -610,23 +610,36 @@ return function(S)
 		return (to.Y - from.Y) <= -allow
 	end
 
-	-- Player body hitbox for clearance probes (HRP size, slight pad).
-	local function playerHitboxSize(): Vector3
-		local pad = cfg("NAV_HITBOX_PAD", 0.15)
+	-- Player body hitbox for clearance probes (HRP size × scale + pad).
+	-- Exported for hitbox viz button.
+	function M.playerHitboxSize(): Vector3
+		local pad = cfg("NAV_HITBOX_PAD", 0.05)
+		local scale = cfg("NAV_HITBOX_SCALE", 0.8)
+		if scale < 0.4 then
+			scale = 0.4
+		elseif scale > 1.2 then
+			scale = 1.2
+		end
 		local lp = Players.LocalPlayer
 		local char = lp and lp.Character
 		local hrp = char and char:FindFirstChild("HumanoidRootPart")
 		if hrp and hrp:IsA("BasePart") then
 			local s = (hrp :: BasePart).Size
-			return Vector3.new(s.X + pad * 2, s.Y + pad * 2, s.Z + pad * 2)
+			return Vector3.new(
+				s.X * scale + pad * 2,
+				s.Y * scale + pad * 2,
+				s.Z * scale + pad * 2
+			)
 		end
-		local r = (cfg("NAV_AGENT_RADIUS", 2) or 2) * 2
-		local h = cfg("NAV_AGENT_HEIGHT", 5) or 5
+		local r = (cfg("NAV_AGENT_RADIUS", 2) or 2) * 2 * scale
+		local h = (cfg("NAV_AGENT_HEIGHT", 5) or 5) * scale
 		return Vector3.new(r, h, r)
 	end
 
+	local HITBOX_VIZ_FOLDER = "PortalMage_HitboxViz"
+	local lastClearProbeSamples: { any } = {} -- for viz trail after hasClearWalk
+
 	-- Exclude self/mobs/viz only — NEVER exclude InvisibleWall (map bounds).
-	-- Log 03-20-46: clearance skipped barriers → grid path walked past map edge.
 	local function clearanceOverlapParams(): OverlapParams
 		local params = OverlapParams.new()
 		params.FilterType = Enum.RaycastFilterType.Exclude
@@ -646,6 +659,7 @@ return function(S)
 				"PortalMage_TerrainFloorOutline",
 				"PortalMage_PathViz",
 				"PortalMage_FaceViz",
+				HITBOX_VIZ_FOLDER,
 			}) do
 				local f = workspace:FindFirstChild(name)
 				if f then
@@ -658,7 +672,8 @@ return function(S)
 		return params
 	end
 
-	-- Does this part block a player-sized box? Ground under feet = no; walls/stalls = yes.
+	-- Soft by default: only barriers, named obstacles, and clearly tall walls.
+	-- Strict mode (NAV_CLEAR_STRICT): any non-floor collide in the box.
 	local function partBlocksHitbox(bp: BasePart, samplePos: Vector3, boxSize: Vector3): boolean
 		if not bp.CanCollide then
 			return false
@@ -679,35 +694,66 @@ return function(S)
 		-- Anything whose top is only at foot level is ground clutter / floor
 		local footY = samplePos.Y - boxSize.Y * 0.5
 		local topY = bp.Position.Y + bp.Size.Y * 0.5
-		if topY <= footY + 0.7 then
+		if topY <= footY + 0.9 then
 			return false
 		end
 		if isWalkFloorPart(bp) then
 			return false
 		end
-		-- Body-volume intersection with non-floor collide = wall/prop
+		if bp:IsA("Terrain") then
+			return false
+		end
+		local strict = cfg("NAV_CLEAR_STRICT", false) == true
+		if not strict then
+			-- Soft: only treat as wall if it rises well into torso (not curb/step/rubble)
+			local chestY = samplePos.Y - boxSize.Y * 0.15
+			if topY < chestY then
+				return false
+			end
+			-- Thin ground-ish slabs
+			local s = bp.Size
+			if math.min(s.X, s.Y, s.Z) <= 1.2 and math.max(s.X, s.Z) >= 4 then
+				return false
+			end
+		end
 		return true
 	end
 
-	-- True if player hitbox fits along from→to every NAV_CLEAR_STEP (default 0.5 studs).
-	-- Floor/void check only at endpoints + sparse samples (dense floor checks rejected
-	-- every real path — log 03-24-10 all computePath → blocked → combat "wait stand").
+	-- Soft clearance: sparse player hitbox along from→to.
+	-- Elevation drops always clear (walk off ledge — do not treat cliff as wall).
+	-- Dense 0.5-stud sweeps + full HRP caused permanent BLOCKED/repath loops.
 	function M.hasClearWalk(from: Vector3, to: Vector3): boolean
 		local flat = Vector3.new(to.X - from.X, 0, to.Z - from.Z)
 		local dist = flat.Magnitude
-		if dist < 0.25 then
+		if dist < 0.35 then
+			lastClearProbeSamples = {}
+			return true
+		end
+		-- Drop to lower elevation: walk forward; gravity lands you
+		if M.isElevationDrop(from, to) then
+			lastClearProbeSamples = {
+				{
+					pos = from,
+					size = M.playerHitboxSize(),
+					dir = flat.Unit,
+					blocked = false,
+					note = "drop",
+				},
+			}
 			return true
 		end
 		local dir = flat.Unit
-		local boxSize = playerHitboxSize()
-		local step = cfg("NAV_CLEAR_STEP", 0.5)
-		if step < 0.25 then
-			step = 0.25
+		local boxSize = M.playerHitboxSize()
+		local step = cfg("NAV_CLEAR_STEP", 2.5)
+		if step < 1.0 then
+			step = 1.0 -- never denser than 1 stud (old 0.5 thrashed)
 		end
 		local maxFall = cfg("NAV_MAX_DROP_Y", 40)
-		local floorEvery = math.max(1, math.floor((cfg("NAV_FLOOR_CHECK_EVERY", 2.0)) / step))
+		local floorEvery = math.max(1, math.floor((cfg("NAV_FLOOR_CHECK_EVERY", 5.0)) / step))
 		local overlap = clearanceOverlapParams()
 		local nSteps = math.max(1, math.ceil(dist / step))
+		local samples: { any } = {}
+		local blocked = false
 
 		for s = 0, nSteps do
 			local t = math.min(dist, s * step)
@@ -715,39 +761,61 @@ return function(S)
 			local hintY = from.Y + (to.Y - from.Y) * alpha
 			local pos = Vector3.new(from.X + dir.X * t, hintY, from.Z + dir.Z * t)
 
-			-- Sparse floor/void: ends always; middle every ~2 studs
 			local needFloor = (s == 0) or (s == nSteps) or (s % floorEvery == 0)
 			local standY = hintY
 			if needFloor then
 				local floor = M.sampleFloor(pos.X, pos.Z, hintY, { requireClear = false })
 				if floor and floor.pos then
 					if floor.pos.Y < hintY - maxFall then
-						return false -- void / off-map drop
+						-- void under mid hop only fails soft if both ends are void-ish
+						if s == 0 or s == nSteps then
+							table.insert(samples, {
+								pos = Vector3.new(pos.X, hintY, pos.Z),
+								size = boxSize,
+								dir = dir,
+								blocked = true,
+								note = "void",
+							})
+							lastClearProbeSamples = samples
+							return false
+						end
+					else
+						standY = floor.pos.Y + boxSize.Y * 0.5 + 0.05
 					end
-					standY = floor.pos.Y + boxSize.Y * 0.5 + 0.05
-				elseif s == 0 or s == nSteps then
-					-- Endpoints must have ground
-					return false
 				end
-				-- Mid samples without floor: still run hitbox at hintY (bridge gaps)
-			else
-				standY = hintY
+				-- Endpoints without floor: do NOT hard-fail (was rejecting every drop/ledge).
 			end
 
 			local standPos = Vector3.new(pos.X, standY, pos.Z)
 			local cf = CFrame.lookAt(standPos, standPos + dir)
+			local hitBlock = false
 			local ok, res = pcall(function()
 				return workspace:GetPartBoundsInBox(cf, boxSize, overlap)
 			end)
 			if ok and type(res) == "table" then
 				for _, inst in ipairs(res) do
 					if inst:IsA("BasePart") and partBlocksHitbox(inst :: BasePart, standPos, boxSize) then
-						return false
+						hitBlock = true
+						break
 					end
 				end
 			end
+			table.insert(samples, {
+				pos = standPos,
+				size = boxSize,
+				dir = dir,
+				blocked = hitBlock,
+			})
+			if hitBlock then
+				blocked = true
+				break
+			end
 		end
-		return true
+		lastClearProbeSamples = samples
+		if S.hitboxVizEnabled then
+			M.refreshHitboxViz()
+		end
+		return not blocked
 	end
 
 	-- If next waypoint is through a collide mesh, skip ahead while clear; nil if need repath.
@@ -935,17 +1003,19 @@ return function(S)
 		return inf
 	end
 
-	-- Try one goal: PFS (fully validated) → floor A* (validated). Nil if clip stalls/walls.
-	-- No more "partial" accept of PFS that only checks the first hop (astar 03-10-46
-	-- accepted a full pfs loop through Goblin_Stall_Round_1).
+	-- Prefer PFS / grid with soft first-hop check. Full pathSegmentsClear is advisory
+	-- only (hard reject of every hop caused permanent blocked→repath loops).
 	local function tryRoute(from: Vector3, goal: Vector3): ({ Vector3 }?, string, { boolean }?)
 		local native, _nWhy, jumps = M.computeNativePath(from, goal)
 		if native and #native >= 2 then
+			-- Soft accept PFS if first hop is ok (full-path reject was permanent blocked loop)
+			if M.hasClearWalk(native[1], native[2]) then
+				return native, "pfs", jumps or {}
+			end
 			if M.pathSegmentsClear(native) then
 				return native, "pfs", jumps or {}
 			end
-			-- Truncate to longest clear prefix, then try A* from prefix end → goal
-			-- (prefix-only left us short of stand and orbiting — log 03-30-02).
+			-- Longest clear prefix as fallback
 			if #native >= 3 then
 				local prefix = { native[1] }
 				for i = 2, #native do
@@ -955,40 +1025,11 @@ return function(S)
 					table.insert(prefix, native[i])
 				end
 				if #prefix >= 2 then
-					local last = prefix[#prefix]
-					local remain = Vector3.new(goal.X - last.X, 0, goal.Z - last.Z).Magnitude
-					if remain < 4 and M.pathSegmentsClear(prefix) then
-						return prefix, "pfs:prefix", jumpsFromPts(prefix)
-					end
-					if remain >= 4 then
-						local cell = cfg("NAV_CELL", 4)
-						local tail = M.findPath(last, goal, {
-							maxCells = math.max(20, math.ceil(remain / cell) + 6),
-							cell = cell,
-						})
-						if tail and #tail >= 1 then
-							local merged: { Vector3 } = {}
-							for _, p in ipairs(prefix) do
-								table.insert(merged, p)
-							end
-							for i, p in ipairs(tail) do
-								local d = Vector3.new(p.X - last.X, 0, p.Z - last.Z).Magnitude
-								if i == 1 and d < 2 then
-									continue
-								end
-								table.insert(merged, p)
-							end
-							if M.pathSegmentsClear(merged) then
-								return merged, "pfs+grid", jumpsFromPts(merged)
-							end
-						end
-					end
+					return prefix, "pfs:prefix", jumpsFromPts(prefix)
 				end
 			end
 		elseif native and #native == 1 then
-			if M.hasClearWalk(from, native[1]) then
-				return { from, native[1] }, "pfs", { false, false }
-			end
+			return { from, native[1] }, "pfs", { false, false }
 		end
 
 		local dist = Vector3.new(goal.X - from.X, 0, goal.Z - from.Z).Magnitude
@@ -997,7 +1038,8 @@ return function(S)
 		local custom = M.findPath(from, goal, { maxCells = maxCells, cell = cell })
 		if custom and #custom >= 1 then
 			local pts = if #custom == 1 then { from, custom[1] } else custom
-			if M.pathSegmentsClear(pts) then
+			-- Soft: accept grid if first hop clear (do not require every hop)
+			if #pts < 2 or M.hasClearWalk(pts[1], pts[2]) or M.pathSegmentsClear(pts) then
 				return pts, "grid", jumpsFromPts(pts)
 			end
 		end
@@ -1055,20 +1097,14 @@ return function(S)
 			end
 		end
 
-		-- Last resort: straight line ONLY if actually clear (includes elevation drops)
-		if M.hasClearWalk(from, primary) then
-			local line = { from, primary }
-			if S.pathVizEnabled then
-				M.showPathViz(line, "line")
-			end
-			return line, "line", { false, (primary.Y - from.Y) >= 3.5 }
-		end
-
-		-- Stuck: no walkable route. Return single point (pathing should drop / re-aim).
+		-- Last resort: always give a line path (never empty blocked — that froze movement).
+		-- Soft clear preferred for kind tag only.
+		local line = { from, primary }
+		local lineKind = if M.hasClearWalk(from, primary) then "line" else "line:soft"
 		if S.pathVizEnabled then
-			M.showPathViz({ from }, "blocked:" .. tostring(lastWhy))
+			M.showPathViz(line, lineKind)
 		end
-		return { from }, "blocked", { false }
+		return line, lineKind, { false, (primary.Y - from.Y) >= 3.5 }
 	end
 
 	function M.setPathVizEnabled(on: boolean)
@@ -1090,6 +1126,142 @@ return function(S)
 
 	function M.togglePathViz()
 		M.setPathVizEnabled(not S.pathVizEnabled)
+	end
+
+	---------------------------------------------------------------------------
+	-- Clearance hitbox visualization (player box + last probe samples)
+	---------------------------------------------------------------------------
+
+	function M.clearHitboxViz()
+		pcall(function()
+			if S.hitboxVizFolder and S.hitboxVizFolder.Parent then
+				S.hitboxVizFolder:Destroy()
+			end
+		end)
+		pcall(function()
+			local f = workspace:FindFirstChild(HITBOX_VIZ_FOLDER)
+			if f then
+				f:Destroy()
+			end
+		end)
+		S.hitboxVizFolder = nil
+	end
+
+	local function ensureHitboxVizFolder(): Folder
+		local f = S.hitboxVizFolder
+		if f and f.Parent then
+			return f :: Folder
+		end
+		f = workspace:FindFirstChild(HITBOX_VIZ_FOLDER)
+		if not (f and f:IsA("Folder")) then
+			f = Instance.new("Folder")
+			f.Name = HITBOX_VIZ_FOLDER
+			f.Parent = workspace
+		end
+		S.hitboxVizFolder = f
+		return f :: Folder
+	end
+
+	local function mkHitboxPart(name: string, size: Vector3, cf: CFrame, color: Color3, parent: Folder): BasePart
+		local p = Instance.new("Part")
+		p.Name = name
+		p.Anchored = true
+		p.CanCollide = false
+		p.CanQuery = false
+		p.CanTouch = false
+		p.CastShadow = false
+		p.Material = Enum.Material.ForceField
+		p.Color = color
+		p.Transparency = 0.55
+		p.Size = size
+		p.CFrame = cf
+		p.Parent = parent
+		return p
+	end
+
+	function M.refreshHitboxViz()
+		if not S.hitboxVizEnabled then
+			return
+		end
+		local folder = ensureHitboxVizFolder()
+		-- Clear previous samples (keep player part if present)
+		for _, ch in ipairs(folder:GetChildren()) do
+			if ch.Name ~= "PlayerHitbox" then
+				ch:Destroy()
+			end
+		end
+		-- Live player hitbox at HRP
+		local lp = Players.LocalPlayer
+		local char = lp and lp.Character
+		local hrp = char and char:FindFirstChild("HumanoidRootPart")
+		local boxSize = M.playerHitboxSize()
+		local playerPart = folder:FindFirstChild("PlayerHitbox")
+		if hrp and hrp:IsA("BasePart") then
+			local cf = (hrp :: BasePart).CFrame
+			if playerPart and playerPart:IsA("BasePart") then
+				playerPart.Size = boxSize
+				playerPart.CFrame = cf
+			else
+				mkHitboxPart("PlayerHitbox", boxSize, cf, Color3.fromRGB(80, 220, 255), folder)
+			end
+		elseif playerPart then
+			playerPart:Destroy()
+		end
+		-- Last hasClearWalk probe samples
+		for i, sample in ipairs(lastClearProbeSamples) do
+			if type(sample) == "table" and sample.pos and sample.size then
+				local dir = sample.dir
+				if typeof(dir) ~= "Vector3" or dir.Magnitude < 1e-4 then
+					dir = Vector3.new(0, 0, -1)
+				end
+				local cf = CFrame.lookAt(sample.pos, sample.pos + dir)
+				local col = if sample.blocked
+					then Color3.fromRGB(255, 70, 70)
+					else Color3.fromRGB(90, 220, 100)
+				mkHitboxPart(
+					string.format("Probe_%02d", i),
+					sample.size,
+					cf,
+					col,
+					folder
+				)
+			end
+		end
+	end
+
+	function M.setHitboxVizEnabled(on: boolean)
+		S.hitboxVizEnabled = on and true or false
+		if S.ui and S.ui.setHitboxVizLabel then
+			S.ui.setHitboxVizLabel(S.hitboxVizEnabled)
+		end
+		if not S.hitboxVizEnabled then
+			if S.hitboxVizThread then
+				pcall(task.cancel, S.hitboxVizThread)
+				S.hitboxVizThread = nil
+			end
+			M.clearHitboxViz()
+			if U and U.setStatus then
+				U.setStatus("Clear Hitbox OFF")
+			end
+			return
+		end
+		if U and U.setStatus then
+			U.setStatus("Clear Hitbox ON — cyan=player, green/red=path probes")
+		end
+		M.refreshHitboxViz()
+		if S.hitboxVizThread then
+			pcall(task.cancel, S.hitboxVizThread)
+		end
+		S.hitboxVizThread = task.spawn(function()
+			while S.hitboxVizEnabled do
+				M.refreshHitboxViz()
+				task.wait(0.12)
+			end
+		end)
+	end
+
+	function M.toggleHitboxViz()
+		M.setHitboxVizEnabled(not S.hitboxVizEnabled)
 	end
 
 	-- Snap goal to floor, pathfind, follow with smooth MoveTo.

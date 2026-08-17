@@ -461,6 +461,8 @@ return function(S)
 		by += 34
 		local pathVizBtn = mkButton(bot, "Path Viz (A*): OFF", by, Color3.fromRGB(70, 70, 80))
 		by += 34
+		local hitboxVizBtn = mkButton(bot, "Clear Hitbox: OFF", by, Color3.fromRGB(70, 70, 80))
+		by += 34
 		local pathRecBtn = mkButton(bot, "A* Rec: OFF", by, Color3.fromRGB(70, 70, 80))
 		by += 34
 		local dumpAstarBtn = mkButton(bot, "Dump A* path", by, Color3.fromRGB(35, 100, 140))
@@ -517,6 +519,10 @@ return function(S)
 			pathVizBtn.Text = on and "Path Viz (A*): ON" or "Path Viz (A*): OFF"
 			pathVizBtn.BackgroundColor3 = on and Color3.fromRGB(40, 120, 180) or Color3.fromRGB(70, 70, 80)
 		end
+		S.ui.setHitboxVizLabel = function(on: boolean)
+			hitboxVizBtn.Text = on and "Clear Hitbox: ON" or "Clear Hitbox: OFF"
+			hitboxVizBtn.BackgroundColor3 = on and Color3.fromRGB(50, 150, 120) or Color3.fromRGB(70, 70, 80)
+		end
 		S.ui.setPathRecLabel = function(on: boolean)
 			pathRecBtn.Text = on and "A* Rec: ON" or "A* Rec: OFF"
 			pathRecBtn.BackgroundColor3 = on and Color3.fromRGB(50, 160, 90) or Color3.fromRGB(70, 70, 80)
@@ -548,6 +554,13 @@ return function(S)
 				S.Nav.togglePathViz()
 			else
 				S.Util.setStatus("Path Viz not loaded — reload script")
+			end
+		end)
+		hitboxVizBtn.MouseButton1Click:Connect(function()
+			if S.Nav and S.Nav.toggleHitboxViz then
+				S.Nav.toggleHitboxViz()
+			else
+				S.Util.setStatus("Clear Hitbox not loaded — reload script")
 			end
 		end)
 		pathRecBtn.MouseButton1Click:Connect(function()

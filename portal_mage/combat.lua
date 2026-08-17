@@ -241,8 +241,8 @@ return function(S)
 			dist = T().dist(hold) or 999
 		end
 
-		-- Only fight after pathing has approached. Do NOT overwrite pathing status
-		-- while walking in (was spamming "wait stand" when path was blocked / still moving).
+		-- Only fight after pathing has approached. Distance-only — no hasClearWalk
+		-- gate (wall LOS false-negatives froze combat in "wait path" forever).
 		local maxFight = range + sticky -- e.g. ~34
 		if dist > maxFight then
 			if not S.walking then
@@ -255,19 +255,6 @@ return function(S)
 			end
 			task.wait(0.12)
 			return
-		end
-		if dist > range and eposFlat and playerFlat and S.Nav and S.Nav.hasClearWalk then
-			if not S.Nav.hasClearWalk(playerFlat, eposFlat) then
-				if not S.walking then
-					U.setStatus(string.format(
-						"[fight] wait path d=%.1f (wall LOS) | %s",
-						dist,
-						hold.Name
-					))
-				end
-				task.wait(0.12)
-				return
-			end
 		end
 
 		-- Face enemy with hard snap only — never Left/Right arrows (permanent spin).

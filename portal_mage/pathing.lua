@@ -571,6 +571,7 @@ return function(S)
 
 	-- Stand on the player-side of the enemy only (small ±yaw). Never opposite-side
 	-- goals — those force long arc paths and look like walking in circles.
+	-- Soft floor snap only — do not requireClear / hasClearWalk (that looped repaths).
 	local function standGoalNear(playerPos: Vector3, epos: Vector3, range: number, angleOffsetRad: number?): Vector3
 		local nav = Nav()
 		local base = Vector3.new(playerPos.X - epos.X, 0, playerPos.Z - epos.Z)
@@ -579,10 +580,8 @@ return function(S)
 		else
 			base = base.Unit
 		end
-		-- Clamp offset to ±35° so we never orbit to the far side of the mob
 		local off0 = math.clamp(angleOffsetRad or 0, -0.6, 0.6)
 		local offsets = { off0, off0 + 0.35, off0 - 0.35, 0 }
-		local bestFallback: Vector3? = nil
 		for _, off in ipairs(offsets) do
 			local flat = base
 			if math.abs(off) > 1e-4 then
@@ -594,27 +593,13 @@ return function(S)
 			end
 			local dest = epos + flat * range
 			if nav and nav.sampleFloor then
-				local s = nav.sampleFloor(dest.X, dest.Z, playerPos.Y, { requireClear = true })
+				local s = nav.sampleFloor(dest.X, dest.Z, playerPos.Y, { requireClear = false })
 				if s and s.pos then
-					if not nav.hasClearWalk or nav.hasClearWalk(playerPos, s.pos) then
-						return s.pos
-					end
-					if not bestFallback then
-						bestFallback = s.pos
-					end
-				end
-				if not bestFallback then
-					local s2 = nav.sampleFloor(dest.X, dest.Z, playerPos.Y, { requireClear = false })
-					if s2 and s2.pos then
-						bestFallback = s2.pos
-					end
+					return s.pos
 				end
 			else
 				return Vector3.new(dest.X, playerPos.Y, dest.Z)
 			end
-		end
-		if bestFallback then
-			return bestFallback
 		end
 		local dest = epos + base * range
 		return Vector3.new(dest.X, playerPos.Y, dest.Z)
@@ -790,21 +775,11 @@ return function(S)
 		return standGoalNear(playerPos, epos, range), "stand"
 	end
 
-	-- Stop for combat only if close AND not aiming through a wall.
-	-- Sticky band with blocked LOS → keep following path around geometry.
+	-- Distance-only stand band. hasClearWalk gate here caused permanent approach
+	-- loops when soft LOS failed (log: wait stand / around wall forever).
 	local function canStandForCombat(playerPos: Vector3, epos: Vector3, range: number, sticky: number): boolean
 		local dist = flatDist(playerPos, epos)
-		if dist > range + sticky then
-			return false
-		end
-		if dist <= range then
-			return true
-		end
-		local nav = Nav()
-		if nav and nav.hasClearWalk then
-			return nav.hasClearWalk(playerPos, epos) == true
-		end
-		return true
+		return dist <= range + sticky
 	end
 
 	local function clearPathState()
@@ -1099,7 +1074,7 @@ return function(S)
 					lastVizKind = "line:enemy"
 				end
 
-				-- Stand band only with clear walk to enemy (else keep pathing around wall).
+				-- Stand band = distance only (no clearance LOS gate).
 				-- hardFace only — never facePoint/arrows (that was permanent spin at stand).
 				if canStandForCombat(playerPos, epos, range, sticky) then
 					hardFace(epos)
@@ -1125,17 +1100,6 @@ return function(S)
 					))
 					task.wait(0.08)
 					return
-				end
-
-				-- Sticky range but LOS blocked: stay on path (status notes the conflict)
-				if dist <= range + sticky then
-					U.setStatus(string.format(
-						"[approach] around wall d=%.1f path→%s %s | %s",
-						dist,
-						lastSegLabel,
-						model.Name,
-						cds()
-					))
 				end
 
 				local tag = approachStep(playerPos, epos, range)

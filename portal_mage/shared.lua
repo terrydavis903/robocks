@@ -25,6 +25,7 @@ S.ui = {
 	setAutoOreLabel = function(_on: boolean) end,
 	setMeshOutlineLabel = function(_on: boolean) end,
 	setPathVizLabel = function(_on: boolean) end, -- A* path lines
+	setHitboxVizLabel = function(_on: boolean) end, -- clearance hitbox probes
 	setPathRecLabel = function(_on: boolean) end, -- human A* walk recorder
 	setClawBeamLabel = function(_on: boolean) end,
 	setClawPrizeBeamsLabel = function(_on: boolean) end,
@@ -101,6 +102,11 @@ S.MeshOutline = nil :: any
 -- A* path visualization (neon polyline when pathfinding runs)
 S.pathVizEnabled = false
 S.pathVizFolder = nil :: any
+
+-- Clearance hitbox viz (player box + last hasClearWalk probe samples)
+S.hitboxVizEnabled = false
+S.hitboxVizFolder = nil :: any
+S.hitboxVizThread = nil :: any
 
 -- Human path recording (samples + keys → dumps/pathrec_*.json)
 S.pathRecEnabled = false
