@@ -610,74 +610,130 @@ return function(S)
 		return (to.Y - from.Y) <= -allow
 	end
 
-	-- True if horizontal walk from→to is not blocked by a wall-like / collide mesh.
-	-- Body-width + multi-height rays; dense samples so stall MeshParts are not missed
-	-- (astar 03-10-46: PFS path through Goblin_Stall_Round_1 with hopClear all true).
-	-- Downward path hops: clear (walk off ledge) — cliff faces false-positive as walls.
+	-- Player body hitbox for clearance probes (HRP size, slight pad).
+	local function playerHitboxSize(): Vector3
+		local pad = cfg("NAV_HITBOX_PAD", 0.15)
+		local lp = Players.LocalPlayer
+		local char = lp and lp.Character
+		local hrp = char and char:FindFirstChild("HumanoidRootPart")
+		if hrp and hrp:IsA("BasePart") then
+			local s = (hrp :: BasePart).Size
+			return Vector3.new(s.X + pad * 2, s.Y + pad * 2, s.Z + pad * 2)
+		end
+		local r = (cfg("NAV_AGENT_RADIUS", 2) or 2) * 2
+		local h = cfg("NAV_AGENT_HEIGHT", 5) or 5
+		return Vector3.new(r, h, r)
+	end
+
+	local function clearanceOverlapParams(): OverlapParams
+		local params = OverlapParams.new()
+		params.FilterType = Enum.RaycastFilterType.Exclude
+		local exclude: { Instance } = {}
+		local lp = Players.LocalPlayer
+		if lp and lp.Character then
+			table.insert(exclude, lp.Character)
+		end
+		pcall(function()
+			local maps = workspace:FindFirstChild("Maps")
+			local inv = maps and maps:FindFirstChild("InvisibleWall")
+			if inv then
+				table.insert(exclude, inv)
+			end
+		end)
+		pcall(function()
+			local mobs = workspace:FindFirstChild("Mobs")
+			if mobs then
+				table.insert(exclude, mobs)
+			end
+		end)
+		pcall(function()
+			for _, name in ipairs({
+				"PortalMage_TerrainFloorOutline",
+				"PortalMage_PathViz",
+				"PortalMage_FaceViz",
+			}) do
+				local f = workspace:FindFirstChild(name)
+				if f then
+					table.insert(exclude, f)
+				end
+			end
+		end)
+		params.FilterDescendantsInstances = exclude
+		params.RespectCanCollide = true
+		return params
+	end
+
+	-- Does this part block a player-sized box at sample center?
+	local function partBlocksHitbox(bp: BasePart, samplePos: Vector3, boxSize: Vector3): boolean
+		if not bp.CanCollide then
+			return false
+		end
+		if isBarrierInstance(bp) then
+			return true
+		end
+		if isNamedObstacle(bp) then
+			return true
+		end
+		if isCollideProp(bp) then
+			return true
+		end
+		-- Floor under feet: ignore (box sits on ground)
+		local footY = samplePos.Y - boxSize.Y * 0.5
+		local topY = bp.Position.Y + bp.Size.Y * 0.5
+		if isWalkFloorPart(bp) and topY <= footY + 0.75 then
+			return false
+		end
+		-- Large thin floor slabs under the probe
+		local minNy = cfg("NAV_MIN_NORMAL_Y", 0.45)
+		if isWalkFloorPart(bp) then
+			return false
+		end
+		-- Generic: any other collide part intersecting the hitbox blocks
+		return true
+	end
+
+	-- True if player hitbox can sweep from→to every NAV_CLEAR_STEP studs (default 0.5).
+	-- Downward path hops: clear (walk off ledge).
 	function M.hasClearWalk(from: Vector3, to: Vector3): boolean
 		local flat = Vector3.new(to.X - from.X, 0, to.Z - from.Z)
 		local dist = flat.Magnitude
-		if dist < 0.5 then
+		if dist < 0.25 then
 			return true
 		end
-		-- Drop to lower elevation: walk forward only; do not treat cliff edge as blocked
 		if M.isElevationDrop(from, to) then
 			return true
 		end
 		local dir = flat.Unit
-		local right = Vector3.new(-dir.Z, 0, dir.X)
-		local params = M.rayParams()
-		local minNy = cfg("NAV_MIN_NORMAL_Y", 0.45)
-		local halfW = math.max(0.75, (cfg("NAV_AGENT_RADIUS", 2) or 2) * 0.65)
-		local heights = cfg("NAV_BODY_HEIGHTS", { 0.9, 1.6, 2.4, 3.4, 4.5 })
-		local laterals = { 0, -halfW * 0.5, halfW * 0.5, -halfW, halfW }
-
-		local function blocksWalk(hit: RaycastResult): boolean
-			local inst = hit.Instance
-			if not inst then
-				return false
-			end
-			if isBarrierInstance(inst) then
-				return true
-			end
-			-- Stalls / tents / tarps / sails / named props always block
-			if isNamedObstacle(inst) and inst:IsA("BasePart") and (inst :: BasePart).CanCollide then
-				return true
-			end
-			if isCollideProp(inst) then
-				return true
-			end
-			if inst:IsA("Terrain") then
-				return hit.Normal.Y < minNy
-			end
-			if inst:IsA("BasePart") then
-				local bp = inst :: BasePart
-				if not bp.CanCollide then
-					return false
-				end
-				if isWalkFloorPart(bp) and hit.Normal.Y >= minNy then
-					return false
-				end
-				return true
-			end
-			return hit.Normal.Y < minNy
+		local boxSize = playerHitboxSize()
+		local step = cfg("NAV_CLEAR_STEP", 0.5)
+		if step < 0.25 then
+			step = 0.25
 		end
-
-		-- Dense steps along the hop (stall posts/glass are easy to miss at 10-stud chunks)
-		local step = cfg("NAV_CLEAR_STEP", 2.5)
+		local overlap = clearanceOverlapParams()
 		local nSteps = math.max(1, math.ceil(dist / step))
-		for s = 0, nSteps - 1 do
-			local t0 = (s / nSteps) * dist
-			local t1 = ((s + 1) / nSteps) * dist
-			local segLen = math.max(0.15, t1 - t0)
-			for _, hy in ipairs(heights) do
-				for _, lat in ipairs(laterals) do
-					local origin = from + dir * t0 + Vector3.new(0, hy, 0) + right * lat
-					local start = origin + dir * 0.05
-					local hit = workspace:Raycast(start, dir * segLen, params)
-					if hit and blocksWalk(hit) then
-						return false
-					end
+
+		for s = 0, nSteps do
+			local t = math.min(dist, s * step)
+			local alpha = if dist > 1e-4 then t / dist else 0
+			local pos = Vector3.new(
+				from.X + dir.X * t,
+				from.Y + (to.Y - from.Y) * alpha,
+				from.Z + dir.Z * t
+			)
+			-- Orient box along walk direction (player footprint)
+			local cf = CFrame.lookAt(pos, pos + dir)
+			local hits: { Instance }
+			local ok, res = pcall(function()
+				return workspace:GetPartBoundsInBox(cf, boxSize, overlap)
+			end)
+			if ok and type(res) == "table" then
+				hits = res
+			else
+				hits = {}
+			end
+			for _, inst in ipairs(hits) do
+				if inst:IsA("BasePart") and partBlocksHitbox(inst :: BasePart, pos, boxSize) then
+					return false
 				end
 			end
 		end
