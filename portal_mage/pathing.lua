@@ -587,8 +587,8 @@ return function(S)
 	local standAngleIdx = 0 -- rotate stand ring when line/blocked thrash
 	local blockedRouteFails = 0 -- consecutive unusable routes → drop hold
 
-	-- Stand on ring around enemy. Prefer a floor sample with wall clearance that we
-	-- can actually walk to (requireClear) so stand goals do not land inside stalls.
+	-- Stand on the player-side of the enemy only (small ±yaw). Never opposite-side
+	-- goals — those force long arc paths and look like walking in circles.
 	local function standGoalNear(playerPos: Vector3, epos: Vector3, range: number, angleOffsetRad: number?): Vector3
 		local nav = Nav()
 		local base = Vector3.new(playerPos.X - epos.X, 0, playerPos.Z - epos.Z)
@@ -597,9 +597,9 @@ return function(S)
 		else
 			base = base.Unit
 		end
-		local off0 = angleOffsetRad or 0
-		-- Try preferred angle first, then a few ring offsets for open stand slots
-		local offsets = { off0, off0 + 0.7, off0 - 0.7, off0 + 1.4, off0 - 1.4, off0 + math.pi }
+		-- Clamp offset to ±35° so we never orbit to the far side of the mob
+		local off0 = math.clamp(angleOffsetRad or 0, -0.6, 0.6)
+		local offsets = { off0, off0 + 0.35, off0 - 0.35, 0 }
 		local bestFallback: Vector3? = nil
 		for _, off in ipairs(offsets) do
 			local flat = base
@@ -612,10 +612,8 @@ return function(S)
 			end
 			local dest = epos + flat * range
 			if nav and nav.sampleFloor then
-				-- requireClear avoids pinching into stall/wall corners
 				local s = nav.sampleFloor(dest.X, dest.Z, playerPos.Y, { requireClear = true })
 				if s and s.pos then
-					-- Prefer goals we can walk to from here (or that are elevation drops)
 					if not nav.hasClearWalk or nav.hasClearWalk(playerPos, s.pos) then
 						return s.pos
 					end
@@ -638,6 +636,14 @@ return function(S)
 		end
 		local dest = epos + base * range
 		return Vector3.new(dest.X, playerPos.Y, dest.Z)
+	end
+
+	local function pathFlatLength(pts: { Vector3 }): number
+		local len = 0
+		for i = 2, #pts do
+			len += flatDist(pts[i - 1], pts[i])
+		end
+		return len
 	end
 
 	local function advancePathIndex(playerPos: Vector3)
@@ -687,16 +693,28 @@ return function(S)
 					return false
 				end
 			end
+			-- Reject long arc / orbit paths (walk-in-circles feel)
+			local straight = flatDist(playerPos, tryPts[#tryPts])
+			local plen = pathFlatLength(tryPts)
+			if straight > 4 and plen > straight * (C.KILL_AURA_MAX_PATH_DETOR or 2.2) then
+				log(string.format(
+					"path REJECT detour plen=%.0f straight=%.0f kind=%s",
+					plen,
+					straight,
+					tryKind
+				))
+				return false
+			end
 			pts = tryPts
 			kind = tryKind
 			return true
 		end
 
-		-- Attempt 1: stand toward player→enemy at current standAngle
+		-- Attempt 1: stand on player-side of enemy only
 		local tryPts: { Vector3 }? = nil
 		local tryKind = "line"
 		if nav and nav.computePath then
-			tryPts, tryKind = nav.computePath(playerPos, goal, { maxGoals = 6 })
+			tryPts, tryKind = nav.computePath(playerPos, goal, { maxGoals = 4, ringN = 2 })
 		elseif nav and nav.findPath then
 			tryPts = nav.findPath(playerPos, goal)
 			tryKind = "grid"
@@ -705,19 +723,23 @@ return function(S)
 			tryKind = "line"
 		end
 		if not acceptRoute(tryPts, tryKind) then
-			-- Attempt 2: rotate stand 90° (one more full compute, not 7)
-			standAngleIdx = (standAngleIdx + 2) % 8
-			goal = standGoalNear(playerPos, epos, range, standAngleIdx * (math.pi / 4))
+			-- Attempt 2: slight stand wobble (±20°), not a full orbit
+			standAngleIdx = (standAngleIdx + 1) % 3 -- 0, +1, -1 only
+			local wobble = if standAngleIdx == 1 then 0.35 elseif standAngleIdx == 2 then -0.35 else 0
+			goal = standGoalNear(playerPos, epos, range, wobble)
 			task.wait()
 			if nav and nav.computePath then
-				tryPts, tryKind = nav.computePath(playerPos, goal, {
-					maxGoals = 6,
-					ringPhase = standAngleIdx * 0.4,
-				})
+				tryPts, tryKind = nav.computePath(playerPos, goal, { maxGoals = 4, ringN = 2 })
 			end
 			if not acceptRoute(tryPts, tryKind) then
-				pts = { playerPos }
-				kind = "blocked"
+				-- Prefer short line to player-side stand if clear
+				if nav and nav.hasClearWalk and nav.hasClearWalk(playerPos, goal) then
+					pts = { playerPos, goal }
+					kind = "line:direct"
+				else
+					pts = { playerPos }
+					kind = "blocked"
+				end
 			else
 				kind = kind .. ":a2"
 			end
@@ -728,14 +750,12 @@ return function(S)
 			kind = "blocked"
 		end
 
-		-- Unusable route thrash → rotate + eventually drop hold
+		-- Unusable route → drop hold (do not spin standAngle around the mob forever)
 		local unusable = kind == "blocked"
-			or (kind == "line" and nav and nav.hasClearWalk and not nav.hasClearWalk(playerPos, pts[#pts]))
 		if unusable then
 			blockedRouteFails += 1
-			standAngleIdx = (standAngleIdx + 1) % 8
 			log(string.format(
-				"path BLOCKED n=%d kind=%s → %s (rotate stand)",
+				"path BLOCKED n=%d kind=%s → %s",
 				blockedRouteFails,
 				kind,
 				enemy.Name
@@ -746,13 +766,10 @@ return function(S)
 					Targets.clearHold("path_blocked")
 				end
 				blockedRouteFails = 0
-				-- Keep previous path if we had one so we still move this tick
-				if #pathPts < 2 then
-					pathPts = { playerPos }
-					pathEnemy = nil
-					pathIdx = 1
-					segBlocked = true
-				end
+				pathPts = { playerPos }
+				pathEnemy = nil
+				pathIdx = 1
+				segBlocked = true
 				pathBuiltAt = os.clock()
 				lastRepathAt = pathBuiltAt
 				lastVizKind = "blocked"
@@ -1053,8 +1070,11 @@ return function(S)
 		end
 
 		-- Walk when facing is good enough, or during force-walk grace after face stuck.
+		-- Use HRP-only for stop while walking — min(hrp,cam) was thrashing reface
+		-- (log 03-30-02: W → reface d=-0.98 → face spin = walk in circles).
 		if walkingFacing or forceWalk then
-			if not forceWalk and faceDot < faceStop then
+			local stopDot = if lastHrpDot ~= 0 then lastHrpDot else faceDot
+			if not forceWalk and stopDot < faceStop then
 				walkingFacing = false
 				faceOkSince = 0
 				faceStuckSince = 0
@@ -1162,10 +1182,10 @@ return function(S)
 			U.holdJump(jump)
 		end
 
-		-- Drop only when the hop still has ground / does not clip map walls
+		-- Prefer W. Strafe only for a short burst; alternating WA/WD = walking circles.
 		local blocked = stuck or segBlocked or (not hopClear) or ((not dropping) and wallAhead(playerPos, faceDir, probe))
 		if dropping and hopClear then
-			blocked = stuck -- allow walk-off when floor continues; never ignore map barriers
+			blocked = stuck
 		end
 		if not blocked then
 			lastSlide = nil
@@ -1176,28 +1196,29 @@ return function(S)
 			return string.format("%s %s", if jump then "W+Space" else "W", segLabel)
 		end
 
-		-- Blocked hop / wall: W+strafe (human pathrec: W+D around obstacle)
+		-- Blocked: repath soon instead of orbiting with A/D
+		if stuck or (os.clock() - lastSlideAt) > 1.2 then
+			pathBuiltAt = 0
+			lastRepathAt = 0
+		end
+		-- Single preferred strafe side (sticky) — never flip every tick
 		local right = Vector3.new(-faceDir.Z, 0, faceDir.X).Unit
 		local leftBlocked = wallAhead(playerPos, -right, probe)
 		local rightBlocked = wallAhead(playerPos, right, probe)
 		local pick: string
-		if not leftBlocked and rightBlocked then
+		if lastSlide and (os.clock() - lastSlideAt) < 2.5 then
+			pick = lastSlide
+		elseif not leftBlocked and rightBlocked then
 			pick = "WA"
 		elseif leftBlocked and not rightBlocked then
 			pick = "WD"
-		elseif lastSlide and (os.clock() - lastSlideAt) < 1.8 then
-			pick = lastSlide
 		else
 			local toE = Vector3.new(epos.X - playerPos.X, 0, epos.Z - playerPos.Z)
 			if toE.Magnitude > 0.2 then
 				toE = toE.Unit
 				pick = if toE:Dot(right) > 0 then "WD" else "WA"
 			else
-				pick = if lastSlide == "WA" then "WD" else "WA"
-			end
-			-- Alternate strafe side after repeated no-progress
-			if noProgressRepaths % 2 == 1 then
-				pick = if pick == "WA" then "WD" else "WA"
+				pick = "WA"
 			end
 		end
 		lastSlide = pick

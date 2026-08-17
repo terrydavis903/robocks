@@ -176,6 +176,7 @@ return {
 	KILL_AURA_APPROACH = 30, -- alias
 	KILL_AURA_STICKY = 4,
 	KILL_AURA_HOLD_STICKY = 8, -- studs closer to switch hold when in/near fight range
+	KILL_AURA_MAX_PATH_DETOR = 2.2, -- reject paths longer than this × straight (anti-circle)
 	-- Optional name priority (first match wins). Empty = nearest schema mob only.
 	-- Example: { "ScarecrowGoblin", "PatchHound", "CritterGoblin" }
 	KILL_AURA_PRIORITY = {},

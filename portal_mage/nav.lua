@@ -944,7 +944,8 @@ return function(S)
 			if M.pathSegmentsClear(native) then
 				return native, "pfs", jumps or {}
 			end
-			-- Truncate to longest clear prefix (still better than through a stall)
+			-- Truncate to longest clear prefix, then try A* from prefix end → goal
+			-- (prefix-only left us short of stand and orbiting — log 03-30-02).
 			if #native >= 3 then
 				local prefix = { native[1] }
 				for i = 2, #native do
@@ -953,11 +954,34 @@ return function(S)
 					end
 					table.insert(prefix, native[i])
 				end
-				if #prefix >= 2 and M.pathSegmentsClear(prefix) then
-					-- Only useful if we actually advanced toward goal
-					local gain = Vector3.new(prefix[#prefix].X - from.X, 0, prefix[#prefix].Z - from.Z).Magnitude
-					if gain >= 6 then
+				if #prefix >= 2 then
+					local last = prefix[#prefix]
+					local remain = Vector3.new(goal.X - last.X, 0, goal.Z - last.Z).Magnitude
+					if remain < 4 and M.pathSegmentsClear(prefix) then
 						return prefix, "pfs:prefix", jumpsFromPts(prefix)
+					end
+					if remain >= 4 then
+						local cell = cfg("NAV_CELL", 4)
+						local tail = M.findPath(last, goal, {
+							maxCells = math.max(20, math.ceil(remain / cell) + 6),
+							cell = cell,
+						})
+						if tail and #tail >= 1 then
+							local merged: { Vector3 } = {}
+							for _, p in ipairs(prefix) do
+								table.insert(merged, p)
+							end
+							for i, p in ipairs(tail) do
+								local d = Vector3.new(p.X - last.X, 0, p.Z - last.Z).Magnitude
+								if i == 1 and d < 2 then
+									continue
+								end
+								table.insert(merged, p)
+							end
+							if M.pathSegmentsClear(merged) then
+								return merged, "pfs+grid", jumpsFromPts(merged)
+							end
+						end
 					end
 				end
 			end
