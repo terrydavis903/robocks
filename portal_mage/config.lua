@@ -75,16 +75,16 @@ return {
 	PATH_TURN_YAW_DEADZONE = 0.08,
 	PATH_CAMERA_YAW_DEG = 5, -- camera yaw nudge per poll (path face uses this always)
 	-- Kill Aura face: rigorous continuous aim at path (log 19-39-53: walk w/o re-aim drifted)
-	KILL_AURA_FACE_ALIGN = 0.90, -- start W only when HRP+camera this aligned to path
-	KILL_AURA_FACE_STOP = 0.25, -- stop W only if look this bad (was 0.35 — too harsh after escape)
-	KILL_AURA_FACE_WALK_ALIGN = 0.94, -- keep micro turn-keys while walking until this good
+	KILL_AURA_FACE_ALIGN = 0.72, -- start W when roughly aimed (high values = face thrash circles)
+	KILL_AURA_FACE_STOP = 0.15, -- stop W only if nearly backwards (HRP)
+	KILL_AURA_FACE_WALK_ALIGN = 0.85, -- soft aim while walking (no turn keys while walking)
 	KILL_AURA_FACE_TURN_RATE = 8.0, -- soft HRP yaw when establishing face
 	KILL_AURA_FACE_WALK_RATE = 7.0, -- soft HRP yaw WHILE walking (must not be 0)
-	KILL_AURA_FACE_SETTLE = 0.04, -- brief hold; hardFace then W
-	KILL_AURA_FACE_STUCK = 0.7, -- no face progress → hardFace + force-walk grace
-	KILL_AURA_FORCE_WALK = 1.4, -- seconds to keep W after face-stuck escape (prevents 1-tick reface)
-	KILL_AURA_NO_PROGRESS = 2.4, -- XZ stall → repath + force walk / drop hold
-	KILL_AURA_FACE_KEEP = 0.25, -- legacy alias of FACE_STOP
+	KILL_AURA_FACE_SETTLE = 0.02, -- brief hold; hardFace then W
+	KILL_AURA_FACE_STUCK = 0.5, -- no face progress → hardFace + force-walk grace
+	KILL_AURA_FORCE_WALK = 1.4, -- seconds to keep W after face-stuck escape
+	KILL_AURA_NO_PROGRESS = 2.0, -- XZ stall → repath / drop hold
+	KILL_AURA_FACE_KEEP = 0.15, -- legacy alias of FACE_STOP
 	KILL_AURA_SEG_ARRIVE = 4.0, -- studs: advance to next path segment
 	KILL_AURA_PROBE = 4.5, -- wall probe studs
 	-- Jump: path ledge / short step only — NOT "enemy is higher" (flat-ground spam)
