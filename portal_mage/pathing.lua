@@ -633,27 +633,85 @@ return function(S)
 		end
 	end
 
-	-- Always produce a walkable polyline to player-side stand (or enemy).
-	-- Never leave empty/blocked with nudge — that froze movement (log 03-38-54).
+	-- Build a clear polyline to player-side stand. Never walk a line through a wall.
 	local function rebuildPath(playerPos: Vector3, epos: Vector3, enemy: Model, range: number)
 		local nav = Nav()
 		local goal = standGoalNear(playerPos, epos, range, 0)
-		local pts: { Vector3 } = { playerPos, goal }
-		local kind = "line"
+		local pts: { Vector3 } = {}
+		local kind = "none"
+		local maxGoals = C.NAV_PATH_MAX_GOALS or 6
 
 		if nav and nav.computePath then
-			local tryPts, tryKind = nav.computePath(playerPos, goal, { maxGoals = 1 })
-			if tryPts and #tryPts >= 2 and tryKind ~= "blocked" and string.sub(tryKind, 1, 7) ~= "blocked" then
-				local straight = flatDist(playerPos, tryPts[#tryPts])
-				local plen = pathFlatLength(tryPts)
-				local maxDet = C.KILL_AURA_MAX_PATH_DETOR or 1.8
-				if straight < 4 or plen <= straight * maxDet then
-					-- Prefer computed path if not a long detour; skip full pathSegmentsClear
-					-- gate (that was rejecting every route → permanent BLOCKED).
-					pts = tryPts
-					kind = tryKind
+			local tryPts, tryKind = nav.computePath(playerPos, goal, {
+				maxGoals = maxGoals,
+				ringN = 6,
+				ringR = { 10, 18, 28 },
+			})
+			local blocked = (not tryPts)
+				or #tryPts < 2
+				or tryKind == "blocked"
+				or (type(tryKind) == "string" and string.sub(tryKind, 1, 7) == "blocked")
+				or tryKind == "line:soft"
+			if not blocked and tryPts then
+				-- First hop must be clear (belt-and-suspenders)
+				local hopTo = tryPts[math.min(2, #tryPts)]
+				if not nav.hasClearWalk or nav.hasClearWalk(playerPos, hopTo) then
+					local straight = flatDist(playerPos, tryPts[#tryPts])
+					local plen = pathFlatLength(tryPts)
+					local maxDet = C.KILL_AURA_MAX_PATH_DETOR or 2.4
+					if straight < 4 or plen <= straight * maxDet then
+						pts = tryPts
+						kind = tryKind
+					end
 				end
 			end
+		end
+
+		-- Clear straight line only as last local fallback
+		if #pts < 2 then
+			if nav and nav.hasClearWalk and nav.hasClearWalk(playerPos, goal) then
+				pts = { playerPos, goal }
+				kind = "line"
+			elseif not nav or not nav.hasClearWalk then
+				pts = { playerPos, goal }
+				kind = "line:nocheck"
+			else
+				-- Try a few clear lateral stand points around the enemy
+				local base = Vector3.new(playerPos.X - epos.X, 0, playerPos.Z - epos.Z)
+				if base.Magnitude < 0.2 then
+					base = Vector3.new(0, 0, 1)
+				else
+					base = base.Unit
+				end
+				for _, ang in ipairs({ 0.5, -0.5, 1.0, -1.0, 1.4, -1.4 }) do
+					local c, s = math.cos(ang), math.sin(ang)
+					local flat = Vector3.new(base.X * c - base.Z * s, 0, base.X * s + base.Z * c)
+					local cand = epos + flat.Unit * range
+					if nav.hasClearWalk(playerPos, cand) then
+						pts = { playerPos, cand }
+						kind = "line:side"
+						goal = cand
+						break
+					end
+				end
+			end
+		end
+
+		if #pts < 2 then
+			-- Still nothing clear — stay put (do not W into wall)
+			pts = { playerPos }
+			kind = "blocked"
+			blockedRouteFails += 1
+			log(string.format("path BLOCKED n=%d → %s", blockedRouteFails, enemy.Name))
+			if blockedRouteFails >= 4 then
+				local Targets = T()
+				if Targets and Targets.clearHold then
+					Targets.clearHold("path_blocked")
+				end
+				blockedRouteFails = 0
+			end
+		else
+			blockedRouteFails = 0
 		end
 
 		pathPts = pts
@@ -662,8 +720,7 @@ return function(S)
 		lastRepathAt = pathBuiltAt
 		lastVizKind = kind
 		pathIdx = 1
-		segBlocked = false
-		blockedRouteFails = 0
+		segBlocked = kind == "blocked"
 		advancePathIndex(playerPos)
 		if pathIdx < #pathPts and flatDist(playerPos, pathPts[pathIdx]) < 1.0 then
 			pathIdx = math.min(pathIdx + 1, #pathPts)
@@ -682,7 +739,7 @@ return function(S)
 			goal = { x = goal.X, y = goal.Y, z = goal.Z },
 			from = { x = playerPos.X, y = playerPos.Y, z = playerPos.Z },
 			enemy = enemy and enemy.Name or nil,
-			segBlocked = false,
+			segBlocked = segBlocked,
 			at = os.clock(),
 		}
 		S.lastBotPath = S.lastKillAuraPath
@@ -728,11 +785,37 @@ return function(S)
 				why = "drift"
 			end
 		end
-		-- Do not gate movement on hasClearWalk mid-run (was permanent BLOCKED).
-		-- Only advance index / rebuild on timer / enemy change / empty path.
-		segBlocked = false
+		-- Mid-run: if current hop hits a wall, repath (rate-limited).
+		if not need and #pathPts >= 2 and pathIdx <= #pathPts then
+			local nav = Nav()
+			local hop = pathPts[pathIdx]
+			if nav and nav.hasClearWalk and hop and not nav.hasClearWalk(playerPos, hop) then
+				-- Try skip to a later clear waypoint before full rebuild
+				if nav.nextClearWaypoint then
+					local j = nav.nextClearWaypoint(playerPos, pathPts, pathIdx)
+					if j and j > pathIdx then
+						pathIdx = j
+						segBlocked = false
+					else
+						need = true
+						why = "wall"
+						segBlocked = true
+					end
+				else
+					need = true
+					why = "wall"
+					segBlocked = true
+				end
+			else
+				segBlocked = false
+			end
+		end
 		if need then
-			if force or pathEnemy ~= enemy or #pathPts < 2 or (now - lastRepathAt) >= repathCd then
+			local canRebuild = force
+				or pathEnemy ~= enemy
+				or #pathPts < 2
+				or (now - lastRepathAt) >= repathCd
+			if canRebuild then
 				log(string.format("PATH_NEED %s", why))
 				rebuildPath(playerPos, epos, enemy, range)
 			else
@@ -949,6 +1032,35 @@ return function(S)
 			lastCamDot = camDot
 		end
 
+		-- Never drive W into a wall. Skip hop / repath instead (line:soft caused this).
+		local nav = Nav()
+		if nav and nav.hasClearWalk and not nav.hasClearWalk(playerPos, target) then
+			if nav.nextClearWaypoint and #pathPts >= 2 then
+				local j = nav.nextClearWaypoint(playerPos, pathPts, pathIdx)
+				if j and j ~= pathIdx then
+					pathIdx = j
+					target = pathPts[pathIdx]
+					segLabel = string.format("skip%d/%d", pathIdx, #pathPts)
+					lastSegLabel = segLabel
+					faceDir = Vector3.new(target.X - playerPos.X, 0, target.Z - playerPos.Z)
+					if faceDir.Magnitude > 0.2 and nav.hasClearWalk(playerPos, target) then
+						faceDir = faceDir.Unit
+						hardFace(target)
+						driveForward(faceDir, false)
+						return "W " .. segLabel
+					end
+				end
+			end
+			-- Force repath (rate-limited); do not hold W into geometry
+			local nowWall = os.clock()
+			if (nowWall - lastRepathAt) >= (C.PATH_REPATH_COOLDOWN or 1.5) then
+				pathBuiltAt = 0
+			end
+			segBlocked = true
+			driveStop()
+			return "wall-repath"
+		end
+
 		local jump = needJumpUp(playerPos, target, faceDir)
 		driveForward(faceDir, jump)
 
@@ -1062,16 +1174,21 @@ return function(S)
 				-- A*/PFS path = movement segments (+ Path Viz when ON)
 				ensurePath(playerPos, epos, model, range)
 
-						-- Always have at least a line path after rebuildPath
+						-- Need a clear multi-point path. Never force line:enemy through walls.
 				if #pathPts < 2 then
 					rebuildPath(playerPos, epos, model, range)
 				end
 				if #pathPts < 2 then
-					-- Absolute fallback: walk at enemy
-					pathPts = { playerPos, epos }
-					pathIdx = 2
-					pathEnemy = model
-					lastVizKind = "line:enemy"
+					-- Blocked: stop moving, wait for repath / new enemy
+					driveStop()
+					U.setStatus(string.format(
+						"[path] blocked d=%.1f %s | %s",
+						dist,
+						model.Name,
+						cds()
+					))
+					task.wait(0.2)
+					return
 				end
 
 				-- Stand band = distance only (no clearance LOS gate).
@@ -1118,7 +1235,7 @@ return function(S)
 				local head = string.sub(tag, 1, 4)
 				if head == "face"
 					or head == "sett"
-					or head == "refa"
+					or head == "wall"
 					or head == "stra"
 					or head == "no-p"
 					or head == "W dr"

@@ -672,56 +672,81 @@ return function(S)
 		return params
 	end
 
-	-- Soft by default: only barriers, named obstacles, and clearly tall walls.
-	-- Strict mode (NAV_CLEAR_STRICT): any non-floor collide in the box.
-	local function partBlocksHitbox(bp: BasePart, samplePos: Vector3, boxSize: Vector3): boolean
-		if not bp.CanCollide then
-			return false
+	-- Wall ray params: exclude self/mobs/viz only. Do NOT exclude InvisibleWall
+	-- (map bounds must block). Floor sample rays may still use M.rayParams().
+	local function wallRayParams(): RaycastParams
+		local params = RaycastParams.new()
+		params.FilterType = Enum.RaycastFilterType.Exclude
+		local exclude: { Instance } = {}
+		local lp = Players.LocalPlayer
+		if lp and lp.Character then
+			table.insert(exclude, lp.Character)
 		end
-		if isBarrierInstance(bp) then
-			return true
-		end
-		local n = string.lower(bp.Name)
-		local path = string.lower(bp:GetFullName())
-		if string.find(path, "invisiblewall", 1, true)
-			or string.find(n, "invisible wall", 1, true)
-		then
-			return true
-		end
-		if isNamedObstacle(bp) then
-			return true
-		end
-		-- Anything whose top is only at foot level is ground clutter / floor
-		local footY = samplePos.Y - boxSize.Y * 0.5
-		local topY = bp.Position.Y + bp.Size.Y * 0.5
-		if topY <= footY + 0.9 then
-			return false
-		end
-		if isWalkFloorPart(bp) then
-			return false
-		end
-		if bp:IsA("Terrain") then
-			return false
-		end
-		local strict = cfg("NAV_CLEAR_STRICT", false) == true
-		if not strict then
-			-- Soft: only treat as wall if it rises well into torso (not curb/step/rubble)
-			local chestY = samplePos.Y - boxSize.Y * 0.15
-			if topY < chestY then
-				return false
+		pcall(function()
+			local mobs = workspace:FindFirstChild("Mobs")
+			if mobs then
+				table.insert(exclude, mobs)
 			end
-			-- Thin ground-ish slabs
-			local s = bp.Size
-			if math.min(s.X, s.Y, s.Z) <= 1.2 and math.max(s.X, s.Z) >= 4 then
-				return false
+		end)
+		pcall(function()
+			for _, name in ipairs({
+				"PortalMage_TerrainFloorOutline",
+				"PortalMage_PathViz",
+				"PortalMage_FaceViz",
+				HITBOX_VIZ_FOLDER,
+			}) do
+				local f = workspace:FindFirstChild(name)
+				if f then
+					table.insert(exclude, f)
+				end
 			end
-		end
-		return true
+		end)
+		params.FilterDescendantsInstances = exclude
+		params.IgnoreWater = false
+		return params
 	end
 
-	-- Soft clearance: sparse player hitbox along from→to.
-	-- Elevation drops always clear (walk off ledge — do not treat cliff as wall).
-	-- Dense 0.5-stud sweeps + full HRP caused permanent BLOCKED/repath loops.
+	local function rayBlocksWalk(hit: RaycastResult): boolean
+		local inst = hit.Instance
+		if not inst then
+			return false
+		end
+		if isBarrierInstance(inst) then
+			return true
+		end
+		if isNamedObstacle(inst) and inst:IsA("BasePart") and (inst :: BasePart).CanCollide then
+			return true
+		end
+		if isCollideProp(inst) then
+			return true
+		end
+		local minNy = cfg("NAV_MIN_NORMAL_Y", 0.45)
+		if inst:IsA("Terrain") then
+			return hit.Normal.Y < minNy -- steep cliff face
+		end
+		if inst:IsA("BasePart") then
+			local bp = inst :: BasePart
+			if not bp.CanCollide then
+				return false
+			end
+			-- Real floor with upward normal = walk on it, not a wall
+			if isWalkFloorPart(bp) and hit.Normal.Y >= minNy then
+				return false
+			end
+			-- Vertical-ish collide = wall
+			if hit.Normal.Y < minNy then
+				return true
+			end
+			-- Upward normal on non-floor prop still blocks (stall roof, crate top)
+			return true
+		end
+		return hit.Normal.Y < minNy
+	end
+
+	-- True if horizontal walk from→to is not blocked by a wall/prop.
+	-- Primary: multi-height + lateral rays (reliable for walls).
+	-- Secondary: sparse hitbox for fat props rays can miss.
+	-- Elevation drops always clear (walk off ledge).
 	function M.hasClearWalk(from: Vector3, to: Vector3): boolean
 		local flat = Vector3.new(to.X - from.X, 0, to.Z - from.Z)
 		local dist = flat.Magnitude
@@ -729,7 +754,6 @@ return function(S)
 			lastClearProbeSamples = {}
 			return true
 		end
-		-- Drop to lower elevation: walk forward; gravity lands you
 		if M.isElevationDrop(from, to) then
 			lastClearProbeSamples = {
 				{
@@ -742,80 +766,117 @@ return function(S)
 			}
 			return true
 		end
+
 		local dir = flat.Unit
-		local boxSize = M.playerHitboxSize()
-		local step = cfg("NAV_CLEAR_STEP", 2.5)
-		if step < 1.0 then
-			step = 1.0 -- never denser than 1 stud (old 0.5 thrashed)
+		local right = Vector3.new(-dir.Z, 0, dir.X)
+		local params = wallRayParams()
+		local halfW = math.max(0.55, (cfg("NAV_AGENT_RADIUS", 2) or 2) * 0.5)
+		local heights = cfg("NAV_BODY_HEIGHTS", { 1.2, 2.4, 3.8 })
+		if type(heights) ~= "table" then
+			heights = { 1.2, 2.4, 3.8 }
 		end
-		local maxFall = cfg("NAV_MAX_DROP_Y", 40)
-		local floorEvery = math.max(1, math.floor((cfg("NAV_FLOOR_CHECK_EVERY", 5.0)) / step))
-		local overlap = clearanceOverlapParams()
-		local nSteps = math.max(1, math.ceil(dist / step))
+		local laterals = { 0, -halfW, halfW }
+		local boxSize = M.playerHitboxSize()
 		local samples: { any } = {}
-		local blocked = false
+		local blockedAt: Vector3? = nil
+		local blockedNote = ""
 
-		for s = 0, nSteps do
-			local t = math.min(dist, s * step)
-			local alpha = if dist > 1e-4 then t / dist else 0
-			local hintY = from.Y + (to.Y - from.Y) * alpha
-			local pos = Vector3.new(from.X + dir.X * t, hintY, from.Z + dir.Z * t)
-
-			local needFloor = (s == 0) or (s == nSteps) or (s % floorEvery == 0)
-			local standY = hintY
-			if needFloor then
-				local floor = M.sampleFloor(pos.X, pos.Z, hintY, { requireClear = false })
-				if floor and floor.pos then
-					if floor.pos.Y < hintY - maxFall then
-						-- void under mid hop only fails soft if both ends are void-ish
-						if s == 0 or s == nSteps then
-							table.insert(samples, {
-								pos = Vector3.new(pos.X, hintY, pos.Z),
-								size = boxSize,
-								dir = dir,
-								blocked = true,
-								note = "void",
-							})
-							lastClearProbeSamples = samples
-							return false
-						end
-					else
-						standY = floor.pos.Y + boxSize.Y * 0.5 + 0.05
-					end
-				end
-				-- Endpoints without floor: do NOT hard-fail (was rejecting every drop/ledge).
+		for _, hy in ipairs(heights) do
+			if type(hy) ~= "number" then
+				continue
 			end
-
-			local standPos = Vector3.new(pos.X, standY, pos.Z)
-			local cf = CFrame.lookAt(standPos, standPos + dir)
-			local hitBlock = false
-			local ok, res = pcall(function()
-				return workspace:GetPartBoundsInBox(cf, boxSize, overlap)
-			end)
-			if ok and type(res) == "table" then
-				for _, inst in ipairs(res) do
-					if inst:IsA("BasePart") and partBlocksHitbox(inst :: BasePart, standPos, boxSize) then
-						hitBlock = true
-						break
-					end
+			for _, lat in ipairs(laterals) do
+				local origin = from + Vector3.new(0, hy, 0) + right * lat
+				local start = origin + dir * 0.35
+				local remain = math.max(0.1, dist - 0.5)
+				local hit = workspace:Raycast(start, dir * remain, params)
+				if hit and rayBlocksWalk(hit) then
+					blockedAt = hit.Position
+					blockedNote = "ray"
+					break
 				end
 			end
-			table.insert(samples, {
-				pos = standPos,
-				size = boxSize,
-				dir = dir,
-				blocked = hitBlock,
-			})
-			if hitBlock then
-				blocked = true
+			if blockedAt then
 				break
 			end
 		end
+
+		-- Sparse hitbox samples (secondary) — catches fat mesh walls rays skim past
+		if not blockedAt then
+			local step = math.max(1.5, cfg("NAV_CLEAR_STEP", 2.0))
+			local overlap = clearanceOverlapParams()
+			local nSteps = math.max(1, math.ceil(dist / step))
+			for s = 1, nSteps do
+				local t = math.min(dist, s * step)
+				local alpha = t / dist
+				local hintY = from.Y + (to.Y - from.Y) * alpha + boxSize.Y * 0.15
+				local standPos = Vector3.new(from.X + dir.X * t, hintY, from.Z + dir.Z * t)
+				local cf = CFrame.lookAt(standPos, standPos + dir)
+				local ok, res = pcall(function()
+					return workspace:GetPartBoundsInBox(cf, boxSize, overlap)
+				end)
+				local hitBlock = false
+				if ok and type(res) == "table" then
+					for _, inst in ipairs(res) do
+						if not inst:IsA("BasePart") then
+							continue
+						end
+						local bp = inst :: BasePart
+						if not bp.CanCollide then
+							continue
+						end
+						if isBarrierInstance(bp) or isNamedObstacle(bp) or isCollideProp(bp) then
+							hitBlock = true
+							break
+						end
+						-- Vertical-ish bulk (not floor slab)
+						if not isWalkFloorPart(bp) then
+							local footY = standPos.Y - boxSize.Y * 0.5
+							local topY = bp.Position.Y + bp.Size.Y * 0.5
+							if topY > footY + 1.2 then
+								hitBlock = true
+								break
+							end
+						end
+					end
+				end
+				table.insert(samples, {
+					pos = standPos,
+					size = boxSize,
+					dir = dir,
+					blocked = hitBlock,
+				})
+				if hitBlock then
+					blockedAt = standPos
+					blockedNote = "box"
+					break
+				end
+			end
+		else
+			table.insert(samples, {
+				pos = blockedAt,
+				size = boxSize,
+				dir = dir,
+				blocked = true,
+				note = blockedNote,
+			})
+		end
+
+		if not blockedAt then
+			-- endpoint sample for viz
+			table.insert(samples, {
+				pos = Vector3.new(to.X, to.Y + boxSize.Y * 0.15, to.Z),
+				size = boxSize,
+				dir = dir,
+				blocked = false,
+			})
+		end
+
 		lastClearProbeSamples = samples
 		if S.hitboxVizEnabled then
 			M.refreshHitboxViz()
 		end
-		return not blocked
+		return blockedAt == nil
 	end
 
 	-- If next waypoint is through a collide mesh, skip ahead while clear; nil if need repath.
@@ -1003,19 +1064,15 @@ return function(S)
 		return inf
 	end
 
-	-- Prefer PFS / grid with soft first-hop check. Full pathSegmentsClear is advisory
-	-- only (hard reject of every hop caused permanent blocked→repath loops).
+	-- Accept only routes with clear hops (ray wall LOS). Prefix OK if full path fails.
+	-- Never accept first-hop-only while later hops clip walls (walked through stalls).
 	local function tryRoute(from: Vector3, goal: Vector3): ({ Vector3 }?, string, { boolean }?)
 		local native, _nWhy, jumps = M.computeNativePath(from, goal)
 		if native and #native >= 2 then
-			-- Soft accept PFS if first hop is ok (full-path reject was permanent blocked loop)
-			if M.hasClearWalk(native[1], native[2]) then
-				return native, "pfs", jumps or {}
-			end
 			if M.pathSegmentsClear(native) then
 				return native, "pfs", jumps or {}
 			end
-			-- Longest clear prefix as fallback
+			-- Longest clear prefix (≥1 full hop)
 			if #native >= 3 then
 				local prefix = { native[1] }
 				for i = 2, #native do
@@ -1029,7 +1086,9 @@ return function(S)
 				end
 			end
 		elseif native and #native == 1 then
-			return { from, native[1] }, "pfs", { false, false }
+			if M.hasClearWalk(from, native[1]) then
+				return { from, native[1] }, "pfs", { false, false }
+			end
 		end
 
 		local dist = Vector3.new(goal.X - from.X, 0, goal.Z - from.Z).Magnitude
@@ -1038,27 +1097,36 @@ return function(S)
 		local custom = M.findPath(from, goal, { maxCells = maxCells, cell = cell })
 		if custom and #custom >= 1 then
 			local pts = if #custom == 1 then { from, custom[1] } else custom
-			-- Soft: accept grid if first hop clear (do not require every hop)
-			if #pts < 2 or M.hasClearWalk(pts[1], pts[2]) or M.pathSegmentsClear(pts) then
+			if M.pathSegmentsClear(pts) then
 				return pts, "grid", jumpsFromPts(pts)
+			end
+			-- Clear prefix of grid path
+			if #pts >= 3 then
+				local prefix = { pts[1] }
+				for i = 2, #pts do
+					if not M.hasClearWalk(prefix[#prefix], pts[i]) then
+						break
+					end
+					table.insert(prefix, pts[i])
+				end
+				if #prefix >= 2 then
+					return prefix, "grid:prefix", jumpsFromPts(prefix)
+				end
 			end
 		end
 		return nil, "none", nil
 	end
 
 	-- Prefer native PathfindingService; fall back to floor A*; small ring of alts.
-	-- NEVER return a straight line through a wall (log 00-32-43: path line thrash).
-	-- Keep goal count low — log 02-56-20 froze ~30s on 8 angles × 33 ring goals.
-	-- Third return: jump flags aligned with points (true = Space at that node).
+	-- NEVER return a straight line through a wall (line:soft was walking into walls).
 	function M.computePath(from: Vector3, to: Vector3, opts: any?): ({ Vector3 }, string, { boolean })
 		opts = opts or {}
 		local primary = snapGoal(to)
 
-		-- Candidate goals: primary first, then a few ring offsets (not 4×8=32)
 		local goals: { Vector3 } = { primary }
 		local maxGoals = math.clamp(tonumber(opts.maxGoals) or cfg("NAV_PATH_MAX_GOALS", 6), 1, 16)
-		local ringR = opts.ringR or { 14, 26 }
-		local ringN = opts.ringN or 4
+		local ringR = opts.ringR or { 10, 18, 28 }
+		local ringN = opts.ringN or 6
 		for _, r in ipairs(ringR) do
 			if #goals >= maxGoals then
 				break
@@ -1080,7 +1148,7 @@ return function(S)
 		local lastWhy = "fail"
 		for gi, goal in ipairs(goals) do
 			local pts, kind, jumps = tryRoute(from, goal)
-			if pts and #pts > 0 and kind ~= "none" then
+			if pts and #pts >= 2 and kind ~= "none" then
 				local tag = kind
 				if gi > 1 then
 					tag = kind .. ":ring"
@@ -1091,20 +1159,25 @@ return function(S)
 				return pts, tag, jumps or jumpsFromPts(pts)
 			end
 			lastWhy = kind or lastWhy
-			-- Yield so Kill Aura walk loop is not frozen during multi-goal search
 			if gi < #goals then
 				task.wait()
 			end
 		end
 
-		-- Last resort: always give a line path (never empty blocked — that froze movement).
-		-- Soft clear preferred for kind tag only.
-		local line = { from, primary }
-		local lineKind = if M.hasClearWalk(from, primary) then "line" else "line:soft"
-		if S.pathVizEnabled then
-			M.showPathViz(line, lineKind)
+		-- Clear straight line only — never line:soft (log: stuck W into wall @54st)
+		if M.hasClearWalk(from, primary) then
+			local line = { from, primary }
+			if S.pathVizEnabled then
+				M.showPathViz(line, "line")
+			end
+			return line, "line", { false, (primary.Y - from.Y) >= 3.5 }
 		end
-		return line, lineKind, { false, (primary.Y - from.Y) >= 3.5 }
+
+		-- No walkable route. Single point → pathing repaths / picks another angle.
+		if S.pathVizEnabled then
+			M.showPathViz({ from }, "blocked:" .. tostring(lastWhy))
+		end
+		return { from }, "blocked", { false }
 	end
 
 	function M.setPathVizEnabled(on: boolean)

@@ -133,14 +133,14 @@ return {
 	NAV_WALL_CLEARANCE = 1.6, -- sampleFloor pinch reject (was 2.75 — over-rejected stand goals)
 	NAV_WALL_PROBE = 8,
 	NAV_WALL_DIRS = 8,
-	NAV_BODY_HEIGHTS = { 0.9, 1.6, 2.4, 3.4, 4.5 }, -- legacy; clearance uses player hitbox
-	-- Clearance was 0.5-stud full HRP sweeps → almost every path "blocked" → repath loop.
-	-- Sparse soft probes: only hard blockers (barriers/named obstacles/tall walls).
-	NAV_CLEAR_STEP = 2.5, -- hitbox probe spacing along path (studs)
-	NAV_FLOOR_CHECK_EVERY = 5.0, -- void/floor sample spacing along hop
-	NAV_HITBOX_PAD = 0.05, -- slight expand of HRP size
-	NAV_HITBOX_SCALE = 0.8, -- shrink clearance box vs true HRP (less false walls)
-	NAV_CLEAR_STRICT = false, -- true = reject all non-floor collide; false = barriers+obstacles+tall only
+	-- Ray heights for wall LOS (primary clearance). Sparse — not dense thrash.
+	NAV_BODY_HEIGHTS = { 1.2, 2.4, 3.8 },
+	-- Hitbox secondary / viz (not the only wall check)
+	NAV_CLEAR_STEP = 2.0,
+	NAV_FLOOR_CHECK_EVERY = 4.0,
+	NAV_HITBOX_PAD = 0.05,
+	NAV_HITBOX_SCALE = 0.85,
+	NAV_CLEAR_STRICT = false,
 	-- World props that must NEVER be treated as walk floors (mesh dump 2026-08-16):
 	-- Buildings.Stalls, Buildings.Tents, Modular_Standalone_Roof_*, Mech_Sail_ClothMesh
 	NAV_OBSTACLE_PATH_KEYWORDS = {
