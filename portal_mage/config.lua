@@ -116,8 +116,8 @@ return {
 	NAV_PATH_MAX_GOALS = 6, -- computePath ring budget (was 33 — froze walk 30s+)
 	KILL_AURA_LOG = true, -- dumps/killaura_*.log
 	PATH_VIZ_REFRESH = 0.55, -- redraw Path Viz polyline only (not movement thrash)
-	PATH_REBUILD = 8.0, -- Kill Aura path recompute ceiling (avoid face reset thrash)
-	PATH_REPATH_COOLDOWN = 1.8, -- min seconds between PFS rebuilds when segment blocked
+	PATH_REBUILD = 10.0, -- Kill Aura path recompute ceiling
+	PATH_REPATH_COOLDOWN = 2.0, -- min seconds between full rebuilds
 	-- Dump A* path: mesh parts within this studs of the polyline (corridor)
 	PATH_DUMP_MESH_RADIUS = 48,
 	PATH_DUMP_MESH_MAX_PARTS = 2500,

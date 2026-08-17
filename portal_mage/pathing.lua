@@ -565,13 +565,14 @@ return function(S)
 	local lastRepathAt = 0
 	local lastVizKind = ""
 	local lastSegLabel = "-"
-	local segBlocked = false -- current hop hasClearWalk failed; strafe instead of repath thrash
-	local standAngleIdx = 0 -- rotate stand ring when line/blocked thrash
-	local blockedRouteFails = 0 -- consecutive unusable routes → drop hold
+	local segBlocked = false
+	local standAngleIdx = 0 -- rotate stand goal on stuck / short path
+	local ringPhase = 0 -- rotate computePath ring so repaths differ
+	local blockedRouteFails = 0
+	local lastPathSig = "" -- detect identical repaths (logical loop)
 
 	-- Stand on the player-side of the enemy only (small ±yaw). Never opposite-side
 	-- goals — those force long arc paths and look like walking in circles.
-	-- Soft floor snap only — do not requireClear / hasClearWalk (that looped repaths).
 	local function standGoalNear(playerPos: Vector3, epos: Vector3, range: number, angleOffsetRad: number?): Vector3
 		local nav = Nav()
 		local base = Vector3.new(playerPos.X - epos.X, 0, playerPos.Z - epos.Z)
@@ -580,8 +581,8 @@ return function(S)
 		else
 			base = base.Unit
 		end
-		local off0 = math.clamp(angleOffsetRad or 0, -0.6, 0.6)
-		local offsets = { off0, off0 + 0.35, off0 - 0.35, 0 }
+		local off0 = math.clamp(angleOffsetRad or 0, -0.9, 0.9)
+		local offsets = { off0, off0 + 0.4, off0 - 0.4, off0 + 0.75, off0 - 0.75, 0 }
 		for _, off in ipairs(offsets) do
 			local flat = base
 			if math.abs(off) > 1e-4 then
@@ -603,6 +604,29 @@ return function(S)
 		end
 		local dest = epos + base * range
 		return Vector3.new(dest.X, playerPos.Y, dest.Z)
+	end
+
+	local function bumpPathVariety(reason: string)
+		standAngleIdx += 1
+		ringPhase = (ringPhase + 0.85) % (math.pi * 2)
+		log(string.format("PATH_VARIETY %s angle=%d phase=%.2f", reason, standAngleIdx, ringPhase))
+	end
+
+	local function pathSignature(pts: { Vector3 }, kind: string): string
+		if not pts or #pts == 0 then
+			return kind .. "|empty"
+		end
+		local last = pts[#pts]
+		local mid = pts[math.clamp(math.ceil(#pts / 2), 1, #pts)]
+		return string.format(
+			"%s|n=%d|m=%.0f,%.0f|e=%.0f,%.0f",
+			kind,
+			#pts,
+			mid.X,
+			mid.Z,
+			last.X,
+			last.Z
+		)
 	end
 
 	local function pathFlatLength(pts: { Vector3 }): number
@@ -634,9 +658,11 @@ return function(S)
 	end
 
 	-- Build a clear polyline to player-side stand. Never walk a line through a wall.
+	-- ringPhase / standAngleIdx change on stuck so we do not rebuild the same dead path.
 	local function rebuildPath(playerPos: Vector3, epos: Vector3, enemy: Model, range: number)
 		local nav = Nav()
-		local goal = standGoalNear(playerPos, epos, range, 0)
+		local angOff = ((standAngleIdx % 7) - 3) * 0.35
+		local goal = standGoalNear(playerPos, epos, range, angOff)
 		local pts: { Vector3 } = {}
 		local kind = "none"
 		local maxGoals = C.NAV_PATH_MAX_GOALS or 6
@@ -646,6 +672,7 @@ return function(S)
 				maxGoals = maxGoals,
 				ringN = 6,
 				ringR = { 10, 18, 28 },
+				ringPhase = ringPhase,
 			})
 			local blocked = (not tryPts)
 				or #tryPts < 2
@@ -653,12 +680,11 @@ return function(S)
 				or (type(tryKind) == "string" and string.sub(tryKind, 1, 7) == "blocked")
 				or tryKind == "line:soft"
 			if not blocked and tryPts then
-				-- First hop must be clear (belt-and-suspenders)
 				local hopTo = tryPts[math.min(2, #tryPts)]
 				if not nav.hasClearWalk or nav.hasClearWalk(playerPos, hopTo) then
 					local straight = flatDist(playerPos, tryPts[#tryPts])
 					local plen = pathFlatLength(tryPts)
-					local maxDet = C.KILL_AURA_MAX_PATH_DETOR or 2.4
+					local maxDet = C.KILL_AURA_MAX_PATH_DETOR or 2.8
 					if straight < 4 or plen <= straight * maxDet then
 						pts = tryPts
 						kind = tryKind
@@ -667,7 +693,6 @@ return function(S)
 			end
 		end
 
-		-- Clear straight line only as last local fallback
 		if #pts < 2 then
 			if nav and nav.hasClearWalk and nav.hasClearWalk(playerPos, goal) then
 				pts = { playerPos, goal }
@@ -676,15 +701,14 @@ return function(S)
 				pts = { playerPos, goal }
 				kind = "line:nocheck"
 			else
-				-- Try a few clear lateral stand points around the enemy
 				local base = Vector3.new(playerPos.X - epos.X, 0, playerPos.Z - epos.Z)
 				if base.Magnitude < 0.2 then
 					base = Vector3.new(0, 0, 1)
 				else
 					base = base.Unit
 				end
-				for _, ang in ipairs({ 0.5, -0.5, 1.0, -1.0, 1.4, -1.4 }) do
-					local c, s = math.cos(ang), math.sin(ang)
+				for _, ang in ipairs({ 0.5, -0.5, 1.0, -1.0, 1.4, -1.4, 2.0, -2.0 }) do
+					local c, s = math.cos(ang + ringPhase * 0.25), math.sin(ang + ringPhase * 0.25)
 					local flat = Vector3.new(base.X * c - base.Z * s, 0, base.X * s + base.Z * c)
 					local cand = epos + flat.Unit * range
 					if nav.hasClearWalk(playerPos, cand) then
@@ -698,12 +722,12 @@ return function(S)
 		end
 
 		if #pts < 2 then
-			-- Still nothing clear — stay put (do not W into wall)
 			pts = { playerPos }
 			kind = "blocked"
 			blockedRouteFails += 1
+			bumpPathVariety("blocked")
 			log(string.format("path BLOCKED n=%d → %s", blockedRouteFails, enemy.Name))
-			if blockedRouteFails >= 4 then
+			if blockedRouteFails >= 3 then
 				local Targets = T()
 				if Targets and Targets.clearHold then
 					Targets.clearHold("path_blocked")
@@ -712,6 +736,12 @@ return function(S)
 			end
 		else
 			blockedRouteFails = 0
+			-- Identical path as last stuck rebuild → force variety next time
+			local sig = pathSignature(pts, kind)
+			if sig == lastPathSig then
+				bumpPathVariety("same_path")
+			end
+			lastPathSig = sig
 		end
 
 		pathPts = pts
@@ -721,6 +751,9 @@ return function(S)
 		lastVizKind = kind
 		pathIdx = 1
 		segBlocked = kind == "blocked"
+		-- Reset progress so we don't immediately NO_PROGRESS on a fresh path
+		progressPos = playerPos
+		progressAt = pathBuiltAt
 		advancePathIndex(playerPos)
 		if pathIdx < #pathPts and flatDist(playerPos, pathPts[pathIdx]) < 1.0 then
 			pathIdx = math.min(pathIdx + 1, #pathPts)
@@ -763,14 +796,15 @@ return function(S)
 	end
 
 	local function ensurePath(playerPos: Vector3, epos: Vector3, enemy: Model, range: number, force: boolean?)
-		local interval = C.PATH_REBUILD or 8.0
-		local repathCd = C.PATH_REPATH_COOLDOWN or 1.8
+		local interval = C.PATH_REBUILD or 10.0
+		local repathCd = C.PATH_REPATH_COOLDOWN or 2.0
 		local now = os.clock()
+		local sticky = C.KILL_AURA_STICKY or 4
+		local arrive = C.KILL_AURA_SEG_ARRIVE or 3.5
 		local need = force == true
 			or pathEnemy ~= enemy
 			or #pathPts < 2
 			or (now - pathBuiltAt) >= interval
-		-- Note: Luau if-expressions do NOT take a trailing `end` (that ends the function!)
 		local why = "timer"
 		if force then
 			why = "force"
@@ -785,35 +819,22 @@ return function(S)
 				why = "drift"
 			end
 		end
-		-- Mid-run: if current hop hits a wall, repath (rate-limited).
-		if not need and #pathPts >= 2 and pathIdx <= #pathPts then
-			local nav = Nav()
-			local hop = pathPts[pathIdx]
-			if nav and nav.hasClearWalk and hop and not nav.hasClearWalk(playerPos, hop) then
-				-- Try skip to a later clear waypoint before full rebuild
-				if nav.nextClearWaypoint then
-					local j = nav.nextClearWaypoint(playerPos, pathPts, pathIdx)
-					if j and j > pathIdx then
-						pathIdx = j
-						segBlocked = false
-					else
-						need = true
-						why = "wall"
-						segBlocked = true
-					end
-				else
-					need = true
-					why = "wall"
-					segBlocked = true
-				end
-			else
-				segBlocked = false
+		-- Finished a short/prefix path but still outside stand band → new path, not W@enemy
+		if not need and #pathPts >= 1 and pathIdx >= #pathPts then
+			local last = pathPts[#pathPts]
+			if flatDist(playerPos, last) <= arrive * 1.25 and flatDist(playerPos, epos) > range + sticky then
+				need = true
+				why = "short_path"
+				bumpPathVariety("short_path")
 			end
 		end
+		-- Do NOT mid-run hasClearWalk repath (false clear/blocked thrash). Stuck → NO_PROGRESS.
+
 		if need then
 			local canRebuild = force
 				or pathEnemy ~= enemy
 				or #pathPts < 2
+				or why == "short_path"
 				or (now - lastRepathAt) >= repathCd
 			if canRebuild then
 				log(string.format("PATH_NEED %s", why))
@@ -880,9 +901,11 @@ return function(S)
 		progressAt = 0
 		noProgressRepaths = 0
 		standAngleIdx = 0
+		ringPhase = 0
 		blockedRouteFails = 0
 		segBlocked = false
 		lastSegLabel = "-"
+		lastPathSig = ""
 	end
 
 	local function clearPathVizIfOff()
@@ -994,11 +1017,21 @@ return function(S)
 		local faceDir = Vector3.new(target.X - playerPos.X, 0, target.Z - playerPos.Z)
 		if faceDir.Magnitude < 0.5 then
 			advancePathIndex(playerPos)
-			-- Past last node / on node: aim at enemy or next segment
+			-- On last node of a short/prefix path: repath with variety — do NOT W at enemy
+			-- through geometry (that + NO_PROGRESS same-path was the logical loop).
 			if pathIdx >= #pathPts and dist > range then
-				target = epos
-				segLabel = "enemy"
-				faceDir = Vector3.new(epos.X - playerPos.X, 0, epos.Z - playerPos.Z)
+				local nav = Nav()
+				local clearToEnemy = not nav or not nav.hasClearWalk or nav.hasClearWalk(playerPos, epos)
+				if clearToEnemy and dist <= range + (C.KILL_AURA_STICKY or 4) + 6 then
+					target = epos
+					segLabel = "enemy"
+					faceDir = Vector3.new(epos.X - playerPos.X, 0, epos.Z - playerPos.Z)
+				else
+					bumpPathVariety("end_of_path")
+					pathBuiltAt = 0
+					driveStop()
+					return "repath-end"
+				end
 			else
 				target, segLabel = segmentTarget(playerPos, epos, range)
 				faceDir = Vector3.new(target.X - playerPos.X, 0, target.Z - playerPos.Z)
@@ -1007,23 +1040,20 @@ return function(S)
 		end
 
 		if faceDir.Magnitude < 0.15 then
-			-- Degenerate aim (on top of target) — hardFace enemy, still try W
-			hardFace(epos)
-			driveForward(Vector3.new(epos.X - playerPos.X, 0, epos.Z - playerPos.Z), false)
-			lastFaceDot = 1
-			lastHrpDot = 1
-			lastCamDot = 1
-			return string.format("W pin d=%.0f", dist)
+			bumpPathVariety("pin")
+			pathBuiltAt = 0
+			driveStop()
+			return "repath-pin"
 		end
 		faceDir = faceDir.Unit
 
-		-- Only hard-snap when off-axis; constant CFrame writes kill velocity.
+		-- Soft face only when badly off; constant CFrame snaps kill walk velocity.
 		local d, yawErr, _m, hrpDot, camDot = facingQuality(target)
 		lastFaceDot = d
 		lastYawErr = yawErr
 		lastHrpDot = hrpDot
 		lastCamDot = camDot
-		if d < 0.92 then
+		if d < 0.78 then
 			hardFace(target)
 			d, yawErr, _m, hrpDot, camDot = facingQuality(target)
 			lastFaceDot = d
@@ -1032,58 +1062,39 @@ return function(S)
 			lastCamDot = camDot
 		end
 
-		-- Never drive W into a wall. Skip hop / repath instead (line:soft caused this).
-		local nav = Nav()
-		if nav and nav.hasClearWalk and not nav.hasClearWalk(playerPos, target) then
-			if nav.nextClearWaypoint and #pathPts >= 2 then
-				local j = nav.nextClearWaypoint(playerPos, pathPts, pathIdx)
-				if j and j ~= pathIdx then
-					pathIdx = j
-					target = pathPts[pathIdx]
-					segLabel = string.format("skip%d/%d", pathIdx, #pathPts)
-					lastSegLabel = segLabel
-					faceDir = Vector3.new(target.X - playerPos.X, 0, target.Z - playerPos.Z)
-					if faceDir.Magnitude > 0.2 and nav.hasClearWalk(playerPos, target) then
-						faceDir = faceDir.Unit
-						hardFace(target)
-						driveForward(faceDir, false)
-						return "W " .. segLabel
-					end
-				end
-			end
-			-- Force repath (rate-limited); do not hold W into geometry
-			local nowWall = os.clock()
-			if (nowWall - lastRepathAt) >= (C.PATH_REPATH_COOLDOWN or 1.5) then
-				pathBuiltAt = 0
-			end
-			segBlocked = true
-			driveStop()
-			return "wall-repath"
-		end
-
 		local jump = needJumpUp(playerPos, target, faceDir)
 		driveForward(faceDir, jump)
 
-		-- Progress watchdog: if XZ not moving, repath or drop hold
+		-- Progress watchdog: no XZ move → skip waypoint, then repath with variety
 		local now = os.clock()
 		if not progressPos or flatDist(playerPos, progressPos) > 1.0 then
 			progressPos = playerPos
 			progressAt = now
 			noProgressRepaths = 0
-		elseif (now - progressAt) >= (C.KILL_AURA_NO_PROGRESS or 2.5) then
+		elseif (now - progressAt) >= (C.KILL_AURA_NO_PROGRESS or 2.0) then
 			noProgressRepaths += 1
 			progressAt = now
+			log(string.format("NO_PROGRESS n=%d d=%.1f %s idx=%d/%d", noProgressRepaths, dist, segLabel, pathIdx, #pathPts))
+			-- 1) Skip current waypoint if any remain
+			if pathIdx < #pathPts then
+				pathIdx += 1
+				progressPos = playerPos
+				return string.format("skip-stuck %d/%d", pathIdx, #pathPts)
+			end
+			-- 2) Same path forever was the loop — change ring/angle and rebuild
+			bumpPathVariety("no_progress")
 			pathBuiltAt = 0
-			lastRepathAt = 0
-			log(string.format("NO_PROGRESS n=%d d=%.1f %s", noProgressRepaths, dist, segLabel))
-			if noProgressRepaths >= 3 then
+			if noProgressRepaths >= 4 then
 				local Targets = T()
 				if Targets and Targets.clearHold then
 					Targets.clearHold("no_progress")
 				end
 				noProgressRepaths = 0
+				lastPathSig = ""
 				return "drop-stuck"
 			end
+			driveStop()
+			return "repath-stuck"
 		end
 
 		return string.format("%s %s", if jump then "W+Space" else "W", segLabel)
@@ -1238,22 +1249,23 @@ return function(S)
 					or head == "wall"
 					or head == "stra"
 					or head == "no-p"
-					or head == "W dr"
+					or head == "skip"
+					or head == "repa"
+					or head == "drop"
 					or string.sub(tag, 1, 1) == "W"
 					or string.sub(tag, 1, 4) == "turn"
 				then
 					log(string.format(
-						"%s yaw=%+.3f turn=%s hrp=%.2f cam=%.2f enemy=%s dist=%.1f walkFace=%s force=%s blocked=%s",
+						"%s yaw=%+.3f hrp=%.2f cam=%.2f enemy=%s dist=%.1f idx=%d/%d kind=%s",
 						tag,
 						lastYawErr,
-						lastTurnName,
 						lastHrpDot,
 						lastCamDot,
 						model.Name,
 						dist,
-						tostring(walkingFacing),
-						tostring(os.clock() < forceWalkUntil),
-						tostring(segBlocked)
+						pathIdx,
+						#pathPts,
+						lastVizKind
 					))
 				end
 				task.wait(C.SMOOTH_WALK_POLL or 0.06)
