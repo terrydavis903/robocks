@@ -401,16 +401,40 @@ return function(S)
 		end
 
 		U.setStatus(string.format(
-			"Auto-respawn ready (regen=%s) — resuming Kill Aura…",
+			"Auto-respawn ready (regen=%s) — checking spawn egress…",
 			tostring(ready)
 		))
 
-		-- Clear busy flags so startWalk is allowed, then force start (not toggle —
-		-- toggleWalk used to no-op if flags/weapon checks failed after flag clear).
+		-- Clear busy flags so egress + startWalk are allowed.
 		S.zRegenBusy = false
 		S.respawnResumeWalk = false
 		S.resourceRecoverPhase = nil
 
+		-- After regen: walk closest recorded spawn path if its start is within
+		-- RESPAWN_PATH_MATCH_STUDS (default 3). If none, skip egress pathing
+		-- and resume Kill Aura with normal A* to targets.
+		if S.PathRecord and S.PathRecord.tryPlayClosestSpawnPath then
+			local matchStuds = C.RESPAWN_PATH_MATCH_STUDS or 3
+			local used = S.PathRecord.tryPlayClosestSpawnPath(matchStuds)
+			if not used then
+				U.setStatus(string.format(
+					"Auto-respawn: no spawn path ≤%.0fst — resume KA (no egress)",
+					matchStuds
+				))
+			else
+				U.setStatus("Auto-respawn: spawn egress finished — resuming Kill Aura…")
+			end
+			-- Best-effort re-stand / re-draw if egress left us seated or sheathed
+			if U.isSeated and U.isSeated() and U.ensureStanding then
+				U.ensureStanding(2.5)
+			end
+			if U.ensureWeaponDrawn then
+				U.ensureWeaponDrawn(C.WEAPON_EQUIP_WAIT or 1.5, true)
+			end
+		end
+
+		-- Force start (not toggle — toggleWalk used to no-op if flags/weapon
+		-- checks failed after flag clear).
 		local started = false
 		if S.Pathing and S.Pathing.startWalk then
 			started = S.Pathing.startWalk({ fromRespawn = true }) == true

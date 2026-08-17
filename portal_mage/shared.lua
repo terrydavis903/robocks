@@ -118,6 +118,7 @@ S.spawnPaths = {} :: { any } -- recorded respawn egress paths
 S.selectedSpawnPathId = nil :: string?
 S.spawnPathVizEnabled = false
 S.spawnPathVizFolder = nil :: any
+S.spawnEgressBusy = false -- true while walking a recorded spawn path after regen
 S.lastBotPath = nil :: any -- last auto-ore (or bot) A* attempt for recorder
 S.lastKillAuraPath = nil :: any -- last kill-aura route (for Dump A* path)
 

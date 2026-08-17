@@ -307,6 +307,175 @@ return function(S)
 		M.setSpawnPathVizEnabled(not S.spawnPathVizEnabled)
 	end
 
+	---------------------------------------------------------------------------
+	-- Post-respawn egress: closest recorded path within N studs of player
+	---------------------------------------------------------------------------
+
+	local function spawnStartVec(p: any): Vector3?
+		local st = p and p.start
+		if type(st) ~= "table" or type(st.x) ~= "number" or type(st.z) ~= "number" then
+			return nil
+		end
+		return Vector3.new(st.x, st.y or 0, st.z)
+	end
+
+	-- Flat XZ distance to path start. Returns entry + dist, or nil if none within maxStuds.
+	function M.findClosestSpawnPath(maxStuds: number?): (any?, number?)
+		local lim = maxStuds or C.RESPAWN_PATH_MATCH_STUDS or 3
+		local pos = U.getLivePlayerVector and U.getLivePlayerVector()
+		if not pos then
+			return nil, nil
+		end
+		local best: any? = nil
+		local bestD = math.huge
+		for _, p in ipairs(S.spawnPaths or {}) do
+			local st = spawnStartVec(p)
+			if st then
+				local d = Vector3.new(pos.X - st.X, 0, pos.Z - st.Z).Magnitude
+				if d <= lim and d < bestD then
+					best = p
+					bestD = d
+				end
+			end
+		end
+		if best then
+			return best, bestD
+		end
+		return nil, nil
+	end
+
+	local function samplesToWaypoints(samples: { any }, spacing: number): { Vector3 }
+		local out: { Vector3 } = {}
+		if type(samples) ~= "table" then
+			return out
+		end
+		local last: Vector3? = nil
+		for _, s in ipairs(samples) do
+			if type(s) == "table" and type(s.x) == "number" and type(s.z) == "number" then
+				local v = Vector3.new(s.x, s.y or 0, s.z)
+				if not last then
+					table.insert(out, v)
+					last = v
+				else
+					local flat = Vector3.new(v.X - last.X, 0, v.Z - last.Z).Magnitude
+					if flat >= spacing then
+						table.insert(out, v)
+						last = v
+					end
+				end
+			end
+		end
+		-- Always keep the final sample so we finish at the recorded end
+		local lastSamp = samples[#samples]
+		if type(lastSamp) == "table" and type(lastSamp.x) == "number" then
+			local endV = Vector3.new(lastSamp.x, lastSamp.y or 0, lastSamp.z)
+			local tip = out[#out]
+			if not tip or (endV - tip).Magnitude > 0.5 then
+				table.insert(out, endV)
+			end
+		end
+		return out
+	end
+
+	-- Walk a recorded spawn egress path (samples). Does not start Kill Aura.
+	-- Returns true if followed to end (or already at end); false on cancel/fail.
+	function M.playSpawnPath(entry: any, opts: any?): boolean
+		opts = opts or {}
+		if type(entry) ~= "table" then
+			return false
+		end
+		local samples = entry.samples
+		if type(samples) ~= "table" or #samples < 2 then
+			setStatus("Spawn egress skipped — path has no samples")
+			return false
+		end
+		local spacing = opts.spacing or C.RESPAWN_PATH_WP_SPACING or 3.5
+		local wps = samplesToWaypoints(samples, spacing)
+		if #wps < 1 then
+			return false
+		end
+
+		S.spawnEgressBusy = true
+		setStatus(string.format(
+			"Spawn egress: %s (%d wps from %d samples)",
+			tostring(entry.name or entry.id),
+			#wps,
+			#samples
+		))
+
+		local ok = false
+		local nav = S.Nav
+		if nav and nav.followPath then
+			ok = nav.followPath(wps, {
+				requireWalking = false,
+				snapOnTimeout = false,
+				arriveStuds = opts.arriveStuds or C.RESPAWN_PATH_ARRIVE or 2.8,
+				timeout = opts.timeout or C.RESPAWN_PATH_SEG_TIMEOUT or 4.0,
+				useMoveKeys = true,
+				softTurn = true,
+			}) == true
+		else
+			-- Fallback: sequential Util.walkTo
+			ok = true
+			for i, wp in ipairs(wps) do
+				local hum = U.getHumanoid and U.getHumanoid()
+				if not hum or hum.Health <= 0 then
+					ok = false
+					break
+				end
+				local arrived = U.walkTo(wp.X, wp.Y, wp.Z, {
+					silent = true,
+					snapOnTimeout = false,
+					arriveStuds = opts.arriveStuds or C.RESPAWN_PATH_ARRIVE or 2.8,
+					timeout = opts.timeout or C.RESPAWN_PATH_SEG_TIMEOUT or 4.0,
+					useMoveKeys = true,
+					softTurn = i == 1,
+				})
+				if not arrived then
+					ok = false
+					break
+				end
+			end
+		end
+
+		if U.releaseMoveKeys then
+			U.releaseMoveKeys()
+		end
+		S.spawnEgressBusy = false
+		if ok then
+			setStatus(string.format("Spawn egress done — %s", tostring(entry.name or entry.id)))
+		else
+			setStatus(string.format("Spawn egress incomplete — %s", tostring(entry.name or entry.id)))
+		end
+		return ok
+	end
+
+	-- After regen: if a spawn-path start is within match studs, play it.
+	-- Returns true if a path was found and playback ran (even if incomplete).
+	function M.tryPlayClosestSpawnPath(maxStuds: number?): boolean
+		if not S.spawnPaths or #S.spawnPaths == 0 then
+			if M.loadSpawnPaths then
+				M.loadSpawnPaths()
+			end
+		end
+		local lim = maxStuds or C.RESPAWN_PATH_MATCH_STUDS or 3
+		local entry, dist = M.findClosestSpawnPath(lim)
+		if not entry then
+			setStatus(string.format(
+				"Spawn egress: no path start within %.0fst — skipping pathing",
+				lim
+			))
+			return false
+		end
+		setStatus(string.format(
+			"Spawn egress: closest %s @ %.1fst",
+			tostring(entry.name or entry.id),
+			dist or -1
+		))
+		M.playSpawnPath(entry)
+		return true
+	end
+
 	local function keyName(k: Enum.KeyCode): string
 		return KEY_NAME[k] or tostring(k)
 	end

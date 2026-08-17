@@ -21,6 +21,10 @@ return {
 	WAYPOINT_DIR = "waypoints",
 	WAYPOINT_FILE = "waypoints/waypoints.json",
 	RESPAWN_PATH_FILE = "waypoints/respawn_paths.json", -- human egress paths after respawn
+	RESPAWN_PATH_MATCH_STUDS = 3, -- after regen: only use spawn path if start within this XZ
+	RESPAWN_PATH_WP_SPACING = 3.5, -- thin recorded samples while following egress
+	RESPAWN_PATH_ARRIVE = 2.8,
+	RESPAWN_PATH_SEG_TIMEOUT = 4.0,
 	-- World dump: non-combat workspace assets (ores, farms, NPCs, pickups, â€¦)
 	WORLD_DUMP_NEAR_STUDS = 100, -- Models/BaseParts near player
 	WORLD_DUMP_NEAR_MAX = 800,
