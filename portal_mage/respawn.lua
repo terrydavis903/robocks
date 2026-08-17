@@ -320,7 +320,8 @@ return function(S)
 		if S.zRegenBusy then
 			return
 		end
-		local shouldResumeWalk = S.respawnResumeWalk
+		-- Capture before any flag churn; keep set until startWalk succeeds
+		local shouldResumeWalk = S.respawnResumeWalk == true
 
 		local waitAfterClick = C.RESPAWN_POST_CLICK_WAIT or 2
 		U.setStatus(string.format(
@@ -348,6 +349,8 @@ return function(S)
 		S.resourceRecoverPhase = nil
 		S.holdTarget = nil
 		S.waitAllCds = false
+		S.combatBusy = false
+		S.buffBusy = false
 		if S.Abilities and S.Abilities.clearSyntheticCds then
 			S.Abilities.clearSyntheticCds()
 		else
@@ -361,27 +364,35 @@ return function(S)
 			return
 		end
 
-		S.respawnResumeWalk = false
 		if S.walking then
+			S.respawnResumeWalk = false
+			U.setStatus("Auto-respawn: Kill Aura already running")
 			return
 		end
 
-		-- Only resume when stance is actually fight-ready
-		if not ready or U.isSeated() or not U.isWeaponDrawn() then
-			U.setStatus(string.format(
-				"Auto-respawn: not fight-ready (sit=%s drawn=%s) — enable Kill Aura manually",
-				tostring(U.isSeated()),
-				tostring(U.isWeaponDrawn())
-			))
-			return
+		-- Best-effort stand + draw (do not abandon resume if soft weapon check fails —
+		-- startWalk forces Q unsheath. Old code cleared the flag and never retried.)
+		if U.isSeated and U.isSeated() then
+			U.setStatus("Auto-respawn: still sitting — Z stand")
+			if U.ensureStanding then
+				U.ensureStanding(3.5)
+			end
+		end
+		if U.markWeaponSheathed then
+			U.markWeaponSheathed()
+		end
+		if U.ensureWeaponDrawn then
+			U.ensureWeaponDrawn(C.WEAPON_EQUIP_WAIT or 1.5, true)
 		end
 
 		if S.proximityGuardEnabled and S.Proximity then
 			local threat, plr, dist = S.Proximity.isThreatNearby()
 			if threat then
+				-- Keep resume intent for prox clear; do not drop the post-respawn flag forever
 				S.proximityResumeWalk = true
+				S.respawnResumeWalk = false
 				U.setStatus(string.format(
-					"Auto-respawn ready — prox blocked (%s @ %.0f)",
+					"Auto-respawn ready — prox blocked (%s @ %.0f); will resume when clear",
 					plr and plr.Name or "?",
 					dist or -1
 				))
@@ -389,9 +400,63 @@ return function(S)
 			end
 		end
 
-		U.setStatus("Auto-respawn ready — resuming Kill Aura…")
-		if S.Pathing and S.Pathing.toggleWalk then
+		U.setStatus(string.format(
+			"Auto-respawn ready (regen=%s) — resuming Kill Aura…",
+			tostring(ready)
+		))
+
+		-- Clear busy flags so startWalk is allowed, then force start (not toggle —
+		-- toggleWalk used to no-op if flags/weapon checks failed after flag clear).
+		S.zRegenBusy = false
+		S.respawnResumeWalk = false
+		S.resourceRecoverPhase = nil
+
+		local started = false
+		if S.Pathing and S.Pathing.startWalk then
+			started = S.Pathing.startWalk({ fromRespawn = true }) == true
+		elseif S.Pathing and S.Pathing.toggleWalk then
 			S.Pathing.toggleWalk()
+			started = S.walking == true
+		end
+
+		-- Retry a few times if still sitting / not started (character settle lag)
+		if not started and not S.walking then
+			for attempt = 1, 6 do
+				if S.walking then
+					started = true
+					break
+				end
+				U.setStatus(string.format(
+					"Auto-respawn: resume retry %d/6 (sit=%s)…",
+					attempt,
+					tostring(U.isSeated and U.isSeated())
+				))
+				if U.isSeated and U.isSeated() and U.ensureStanding then
+					U.ensureStanding(2.5)
+				end
+				if U.ensureWeaponDrawn then
+					U.ensureWeaponDrawn(1.2, true)
+				end
+				task.wait(0.45)
+				S.zRegenBusy = false
+				S.respawnResumeWalk = false
+				if S.Pathing and S.Pathing.startWalk then
+					started = S.Pathing.startWalk({ fromRespawn = true }) == true
+				end
+			end
+		end
+
+		if S.walking then
+			S.respawnResumeWalk = false
+			U.setStatus("Auto-respawn: Kill Aura resumed")
+		else
+			-- Leave a sticky intent so user sees failure; allow manual toggle
+			S.respawnResumeWalk = false
+			U.setStatus(string.format(
+				"Auto-respawn: failed to resume Kill Aura (sit=%s drawn=%s) — toggle manually",
+				tostring(U.isSeated and U.isSeated()),
+				tostring(U.isWeaponDrawn and U.isWeaponDrawn())
+			))
 		end
 	end
 
@@ -410,20 +475,25 @@ return function(S)
 		end
 		lastRespawnClickAt = now
 
-		-- If Kill Aura was running, stop it until Z→Z→Q + equip completes.
+		-- If Kill Aura was running, pause until Z sit-regen + stand + unsheath completes.
 		-- Death resets ability CDs — do not waitAllCds after respawn.
 		if S.walking then
 			S.respawnResumeWalk = true
 			S.walking = false
 			S.combatBusy = false
+			S.buffBusy = false
 			S.waitAllCds = false
 			S.holdTarget = nil
+			S.resourceRecoverPhase = nil
 			if U.releaseMoveKeys then
 				U.releaseMoveKeys()
 			end
-			S.ui.setWalkLabel(false)
+			if S.ui and S.ui.setWalkLabel then
+				S.ui.setWalkLabel(false)
+			end
 			U.setStatus("Auto-respawn: Kill Aura paused — clicking Respawn")
 		else
+			-- Do not clear an in-flight resume from a previous death mid-sequence
 			S.waitAllCds = false
 			U.setStatus("Auto-respawn: clicking Respawn")
 		end

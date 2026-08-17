@@ -1420,6 +1420,88 @@ return function(S)
 		pathEnemy = nil
 	end
 
+	-- Shared start path for toggleWalk / post-respawn resume.
+	-- opts.fromRespawn: skip "finish respawn first" guard (caller owns that).
+	function M.startWalk(opts: any?): boolean
+		opts = opts or {}
+		if S.walking then
+			return true
+		end
+		if not opts.fromRespawn then
+			if S.zRegenBusy or S.respawnResumeWalk then
+				U.setStatus("Kill Aura blocked — finish respawn first")
+				return false
+			end
+		end
+
+		if S.proximityGuardEnabled and S.Proximity and not opts.ignoreProx then
+			local threat, plr, dist = S.Proximity.isThreatNearby()
+			if threat and plr and dist then
+				U.setStatus(string.format("Kill Aura blocked — %s @ %.0fst", plr.Name, dist))
+				return false
+			end
+		end
+
+		if not S.Targets or not S.Combat then
+			U.setStatus("Kill Aura failed: Targets/Combat missing — reload")
+			return false
+		end
+
+		if U.isSeated and U.isSeated() then
+			U.setStatus("Kill Aura: sitting — Z…")
+			if U.ensureStanding then
+				U.ensureStanding(3.0)
+			end
+			if U.isSeated() then
+				U.setStatus("Kill Aura blocked — still sitting")
+				return false
+			end
+		end
+
+		if U.detectWeaponDrawnHard and select(1, U.detectWeaponDrawnHard()) then
+			if U.markWeaponDrawn then
+				U.markWeaponDrawn()
+			end
+		else
+			U.setStatus("Kill Aura: force unsheath (Q)…")
+			if U.markWeaponSheathed then
+				U.markWeaponSheathed()
+			end
+			if U.ensureWeaponDrawn then
+				U.ensureWeaponDrawn(1.5, true)
+			end
+		end
+
+		if S.autoOreEnabled and S.AutoOre and S.AutoOre.stop then
+			S.AutoOre.stop()
+		end
+
+		S.holdTarget = nil
+		S.combatBusy = false
+		S.buffBusy = false
+		S.waitAllCds = false
+		S.resourceRecoverPhase = nil
+		S.zRegenBusy = false
+		S.respawnResumeWalk = false
+		S.combatPhase = "fight"
+		S.walking = true
+		S.ui.setWalkLabel(true)
+		lastSlide = nil
+		lastPos = nil
+		stuckSince = 0
+		clearPathState()
+
+		U.setStatus(string.format(
+			"Kill Aura ON — face segment→W/A/D(+Space)→stand@%d→R/cast%s",
+			T().fightRange(),
+			opts.fromRespawn and " (post-respawn)" or ""
+		))
+
+		S.walkThread = task.spawn(runWalker)
+		S.combatThread = task.spawn(S.Combat.runCombat)
+		return true
+	end
+
 	function M.toggleWalk(_opts: any?)
 		if S.walking then
 			S.walking = false
@@ -1441,73 +1523,7 @@ return function(S)
 		S.blacklistResumeKillAura = false
 		S.blacklistResumeAt = 0
 
-		if S.zRegenBusy or S.respawnResumeWalk then
-			U.setStatus("Kill Aura blocked — finish respawn first")
-			return
-		end
-
-		if S.proximityGuardEnabled and S.Proximity then
-			local threat, plr, dist = S.Proximity.isThreatNearby()
-			if threat and plr and dist then
-				U.setStatus(string.format("Kill Aura blocked — %s @ %.0fst", plr.Name, dist))
-				return
-			end
-		end
-
-		if not S.Targets or not S.Combat then
-			U.setStatus("Kill Aura failed: Targets/Combat missing — reload")
-			return
-		end
-
-		if U.isSeated and U.isSeated() then
-			U.setStatus("Kill Aura: sitting — Z…")
-			if U.ensureStanding then
-				U.ensureStanding(3.0)
-			end
-			if U.isSeated() then
-				U.setStatus("Kill Aura blocked — still sitting")
-				return
-			end
-		end
-
-		if U.detectWeaponDrawnHard and select(1, U.detectWeaponDrawnHard()) then
-			if U.markWeaponDrawn then
-				U.markWeaponDrawn()
-			end
-		else
-			U.setStatus("Kill Aura: force unsheath (Q)…")
-			if U.markWeaponSheathed then
-				U.markWeaponSheathed()
-			end
-			if U.ensureWeaponDrawn then
-				U.ensureWeaponDrawn(1.5, true)
-			end
-		end
-
-		-- Auto Ore owns movement when on — release it for Kill Aura
-		if S.autoOreEnabled and S.AutoOre and S.AutoOre.stop then
-			S.AutoOre.stop()
-		end
-
-		S.holdTarget = nil
-		S.combatBusy = false
-		S.waitAllCds = false
-		S.resourceRecoverPhase = nil
-		S.combatPhase = "fight"
-		S.walking = true
-		S.ui.setWalkLabel(true)
-		lastSlide = nil
-		lastPos = nil
-		stuckSince = 0
-		clearPathState()
-
-		U.setStatus(string.format(
-			"Kill Aura ON — face segment→W/A/D(+Space)→stand@%d→R/cast",
-			T().fightRange()
-		))
-
-		S.walkThread = task.spawn(runWalker)
-		S.combatThread = task.spawn(S.Combat.runCombat)
+		M.startWalk(nil)
 	end
 
 	return M
