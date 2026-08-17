@@ -123,7 +123,10 @@ return {
 	NAV_RAY_UP = 50,
 	NAV_RAY_DOWN = 140,
 	NAV_MIN_NORMAL_Y = 0.45,
-	NAV_MAX_STEP_Y = 7,
+	NAV_MAX_STEP_Y = 7, -- max climb between A* cells
+	-- Walk-off drops: next node lower by this much = just hold W (gravity). Not a wall.
+	NAV_DROP_ALLOW_DY = 2.0,
+	NAV_MAX_DROP_Y = 40, -- A* may step down this far (ascent still NAV_MAX_STEP_Y)
 	NAV_MAX_SNAP_Y = 10,
 	NAV_ARRIVE_STUDS = 2.5,
 	NAV_WALL_CLEARANCE = 2.75,

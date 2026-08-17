@@ -514,9 +514,14 @@ return function(S)
 				if not ns then
 					continue
 				end
-				-- Height continuity
-				if math.abs(ns.pos.Y - curSample.pos.Y) > maxStepY then
-					continue
+				-- Height continuity: tight on climbs, generous on drops (walk off ledge)
+				local dY = ns.pos.Y - curSample.pos.Y
+				local maxDrop = cfg("NAV_MAX_DROP_Y", 40)
+				if dY > maxStepY then
+					continue -- climb too high
+				end
+				if dY < -maxDrop then
+					continue -- absurd void
 				end
 				-- Block edge if a wall sits between cells (horizontal LOS)
 				do
@@ -598,12 +603,24 @@ return function(S)
 		return true
 	end
 
+	-- Next node is a walk-off drop (hold W; gravity lands you). Not a wall.
+	-- A* dump 02-55-10: y76→y62 dy=-13.5 was hopClear=false → strafe thrash on ledge.
+	function M.isElevationDrop(from: Vector3, to: Vector3): boolean
+		local allow = cfg("NAV_DROP_ALLOW_DY", 2.0)
+		return (to.Y - from.Y) <= -allow
+	end
+
 	-- True if horizontal walk from→to is not blocked by a wall-like / collide mesh.
 	-- Body-width: center + left/right offsets so thin wall gaps don't look clear.
+	-- Downward path hops: clear (walk off ledge) — cliff faces false-positive as walls.
 	function M.hasClearWalk(from: Vector3, to: Vector3): boolean
 		local flat = Vector3.new(to.X - from.X, 0, to.Z - from.Z)
 		local dist = flat.Magnitude
 		if dist < 0.5 then
+			return true
+		end
+		-- Drop to lower elevation: walk forward only; do not treat cliff edge as blocked
+		if M.isElevationDrop(from, to) then
 			return true
 		end
 		local dir = flat.Unit

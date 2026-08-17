@@ -115,6 +115,15 @@ return function(S)
 		return params
 	end
 
+	-- Next path node is lower → walk off ledge (W only; gravity drops). Not blocked.
+	local function isElevationDrop(from: Vector3, to: Vector3): boolean
+		local nav = Nav()
+		if nav and nav.isElevationDrop then
+			return nav.isElevationDrop(from, to)
+		end
+		return (to.Y - from.Y) <= -(C.NAV_DROP_ALLOW_DY or 2.0)
+	end
+
 	-- Horizontal wall ahead of current look (or toward point)
 	local function wallAhead(from: Vector3, dir: Vector3, probe: number): boolean
 		if dir.Magnitude < 1e-4 then
@@ -791,18 +800,27 @@ return function(S)
 			end
 		end
 		-- Blocked hop: skip ahead if possible; NEVER repath every tick (log 19-27-02 thrash)
+		-- Elevation drops are NOT blocked — walk W and fall (astar dump 02-55-10).
 		segBlocked = false
 		if #pathPts >= 2 and pathIdx <= #pathPts then
 			local nav = Nav()
-			if nav and nav.hasClearWalk then
-				if not nav.hasClearWalk(playerPos, pathPts[pathIdx]) then
+			local wp = pathPts[pathIdx]
+			if isElevationDrop(playerPos, wp) then
+				segBlocked = false
+			elseif nav and nav.hasClearWalk then
+				if not nav.hasClearWalk(playerPos, wp) then
 					segBlocked = true
 					if nav.nextClearWaypoint then
 						local j = nav.nextClearWaypoint(playerPos, pathPts, pathIdx + 1)
 						if j and j ~= pathIdx then
 							log(string.format("SEG_SKIP %d→%d (blocked hop)", pathIdx, j))
 							pathIdx = j
-							segBlocked = not nav.hasClearWalk(playerPos, pathPts[pathIdx])
+							local nwp = pathPts[pathIdx]
+							if isElevationDrop(playerPos, nwp) then
+								segBlocked = false
+							else
+								segBlocked = not nav.hasClearWalk(playerPos, nwp)
+							end
 						end
 					end
 					-- Only repath if still blocked AND cooldown elapsed (not every poll)
@@ -1085,15 +1103,26 @@ return function(S)
 		end
 		lastPos = playerPos
 
-		local jump = needJumpUp(playerPos, target, faceDir)
+		-- Jump only for climb-ups — never for drops (walk off ledge)
+		local dropping = isElevationDrop(playerPos, target)
+		local jump = (not dropping) and needJumpUp(playerPos, target, faceDir)
 		if U.holdJump then
 			U.holdJump(jump)
 		end
 
-		local blocked = stuck or segBlocked or wallAhead(playerPos, faceDir, probe)
+		-- Dropping: hold W only; cliff edge is not a wall (do not strafe on ledge)
+		local blocked = false
+		if dropping then
+			blocked = false
+		else
+			blocked = stuck or segBlocked or wallAhead(playerPos, faceDir, probe)
+		end
 		if not blocked then
 			lastSlide = nil
 			setMoveKey("W")
+			if dropping then
+				return string.format("W drop %s dy=%+.0f", segLabel, target.Y - playerPos.Y)
+			end
 			return string.format("%s %s", if jump then "W+Space" else "W", segLabel)
 		end
 
@@ -1277,6 +1306,7 @@ return function(S)
 					or head == "refa"
 					or head == "stra"
 					or head == "no-p"
+					or head == "W dr"
 					or string.sub(tag, 1, 1) == "W"
 					or string.sub(tag, 1, 4) == "turn"
 				then
