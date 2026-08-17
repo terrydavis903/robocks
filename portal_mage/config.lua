@@ -134,16 +134,21 @@ return {
 	NAV_MAX_DROP_Y = 40, -- A* may step down this far (ascent still NAV_MAX_STEP_Y)
 	NAV_MAX_SNAP_Y = 10,
 	NAV_ARRIVE_STUDS = 2.5,
-	NAV_WALL_CLEARANCE = 1.6, -- sampleFloor pinch reject (was 2.75 â€” over-rejected stand goals)
+	NAV_WALL_CLEARANCE = 1.6, -- unused when stone-path-only (no pinch checks)
 	NAV_WALL_PROBE = 8,
 	NAV_WALL_DIRS = 8,
-	NAV_BODY_HEIGHTS = { 1.2, 2.4, 3.8 }, -- legacy (unused by clearance)
-	-- Clearance: pseudo player hitboxes along path at character height above floor
-	-- (not at floor nodes â€” floor always "collides"). Step = spacing along hop.
-	NAV_CLEAR_STEP = 2.0,
+	NAV_BODY_HEIGHTS = { 1.2, 2.4, 3.8 }, -- legacy
+	-- Stone roads only (mesh dumps: Cobblestone = path, Sandstone = sand/dirt).
+	-- Paths are player-safe → no obstacle collision probes along hops.
+	NAV_STONE_PATH_ONLY = true,
+	NAV_STONE_PATH_MATERIALS = {
+		"Cobblestone", -- stone path (dump feet material)
+		"Asphalt", -- occasional paved connector
+	},
+	NAV_STONE_PATH_SNAP_R = 24, -- studs: snap start/goal to nearest stone if off-path
+	NAV_CLEAR_STEP = 2.5, -- stone continuity samples along hop
 	NAV_HITBOX_PAD = 0.05,
 	NAV_HITBOX_SCALE = 0.9,
-	-- Lift box slightly so the bottom clears the floor slab (studs)
 	NAV_HITBOX_FLOOR_LIFT = 0.15,
 	-- World props that must NEVER be treated as walk floors (mesh dump 2026-08-16):
 	-- Buildings.Stalls, Buildings.Tents, Modular_Standalone_Roof_*, Mech_Sail_ClothMesh

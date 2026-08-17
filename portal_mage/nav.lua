@@ -245,13 +245,41 @@ return function(S)
 		return M.wallClearance(pos) + 1e-3 >= need
 	end
 
+	-- Stone path materials (mesh dump: Cobblestone under stone roads; Sandstone = sand).
+	function M.isStonePathMaterial(mat: any): boolean
+		if mat == nil then
+			return false
+		end
+		local s = tostring(mat)
+		local list = C.NAV_STONE_PATH_MATERIALS
+		if type(list) ~= "table" or #list == 0 then
+			list = { "Cobblestone", "Asphalt" }
+		end
+		for _, name in ipairs(list) do
+			if type(name) == "string" and name ~= "" and string.find(s, name, 1, true) then
+				return true
+			end
+		end
+		return false
+	end
+
+	function M.stonePathOnly(): boolean
+		return cfg("NAV_STONE_PATH_ONLY", true) == true
+	end
+
 	-- Sample walkable floor under world XZ.
-	-- Returns nil if void / too steep / barrier / pinched against walls (when requireClear).
+	-- Stone-path mode: only Terrain materials in NAV_STONE_PATH_MATERIALS; no wall-pinch.
 	function M.sampleFloor(x: number, z: number, yHint: number?, opts: any?): any?
 		opts = opts or {}
+		local allowAny = opts.allowAnyFloor == true
+		local stoneOnly = M.stonePathOnly() and not allowAny
 		local requireClear = opts.requireClear
 		if requireClear == nil then
-			requireClear = true -- default: reject wall-pinched points
+			-- Stone roads: no pinch / collision gating
+			requireClear = not stoneOnly
+		end
+		if stoneOnly then
+			requireClear = false
 		end
 		local rayUp = cfg("NAV_RAY_UP", 50)
 		local rayDown = cfg("NAV_RAY_DOWN", 140)
@@ -273,19 +301,23 @@ return function(S)
 		if isBarrierInstance(inst) then
 			return nil
 		end
-		-- Do not stand on horses / props (upward normals still collide)
 		if isCollideProp(inst) then
 			return nil
 		end
+
+		local matName = hit.Material and tostring(hit.Material) or nil
+		local isTerrain = inst:IsA("Terrain")
 		local okSurface = false
-		if inst:IsA("Terrain") then
+		if stoneOnly then
+			-- Only walk on terrain stone roads (not Sandstone dirt, not mesh slabs)
+			okSurface = isTerrain and M.isStonePathMaterial(matName)
+		elseif isTerrain then
 			okSurface = true
 		elseif inst:IsA("BasePart") then
 			local bp = inst :: BasePart
 			if bp.CanCollide and isWalkFloorPart(bp) then
 				okSurface = true
 			elseif bp.CanCollide and not isCollideProp(bp) then
-				-- Generic large floors not caught by slab heuristic
 				local s = bp.Size
 				local horiz = math.sqrt(s.X * s.X + s.Z * s.Z)
 				if horiz >= 10 and math.min(s.X, s.Y, s.Z) <= 6 then
@@ -297,18 +329,22 @@ return function(S)
 			return nil
 		end
 		local pos = hit.Position + hit.Normal.Unit * 0.15
-		local clear = M.wallClearance(pos)
-		local need = cfg("NAV_WALL_CLEARANCE", 2.75)
-		if requireClear and clear + 1e-3 < need then
-			return nil -- would stand against a wall / in a corner
+		local clear = 99
+		if requireClear then
+			clear = M.wallClearance(pos)
+			local need = cfg("NAV_WALL_CLEARANCE", 2.75)
+			if clear + 1e-3 < need then
+				return nil
+			end
 		end
 		return {
 			pos = pos,
 			normal = hit.Normal,
-			material = hit.Material and tostring(hit.Material) or nil,
+			material = matName,
 			instance = inst,
 			path = inst:GetFullName(),
-			isTerrain = inst:IsA("Terrain"),
+			isTerrain = isTerrain,
+			isStonePath = isTerrain and M.isStonePathMaterial(matName),
 			distance = hit.Distance,
 			wallClearance = clear,
 		}
@@ -316,6 +352,41 @@ return function(S)
 
 	function M.sampleFloorAt(world: Vector3, opts: any?): any?
 		return M.sampleFloor(world.X, world.Z, world.Y, opts)
+	end
+
+	-- Nearest stone-path floor near a point (spiral). Used when player/goal is off the road.
+	function M.snapToStonePath(world: Vector3, maxR: number?): any?
+		local rMax = maxR or cfg("NAV_STONE_PATH_SNAP_R", 24)
+		local cell = cfg("NAV_CELL", 4)
+		local best: any? = nil
+		local bestD = math.huge
+		-- Center first
+		local c0 = M.sampleFloor(world.X, world.Z, world.Y, { requireClear = false })
+		if c0 and c0.isStonePath then
+			return c0
+		end
+		local steps = math.max(1, math.ceil(rMax / cell))
+		for ring = 1, steps do
+			local r = ring * cell
+			local n = math.max(8, ring * 8)
+			for i = 0, n - 1 do
+				local ang = (i / n) * math.pi * 2
+				local x = world.X + math.cos(ang) * r
+				local z = world.Z + math.sin(ang) * r
+				local s = M.sampleFloor(x, z, world.Y, { requireClear = false })
+				if s and s.isStonePath then
+					local d = Vector3.new(s.pos.X - world.X, 0, s.pos.Z - world.Z).Magnitude
+					if d < bestD then
+						bestD = d
+						best = s
+					end
+				end
+			end
+			if best and bestD <= r * 1.1 then
+				break
+			end
+		end
+		return best
 	end
 
 	function M.isWalkablePos(world: Vector3): boolean
@@ -352,12 +423,12 @@ return function(S)
 		local maxStepY = opts.maxStepY or cfg("NAV_MAX_STEP_Y", 7)
 		local yHint = math.max(from.Y, to.Y)
 
-		local goalSample = M.sampleFloor(to.X, to.Z, to.Y)
+		local goalSample = M.sampleFloor(to.X, to.Z, to.Y, { requireClear = false })
+		if not goalSample and M.stonePathOnly() then
+			goalSample = M.snapToStonePath(to)
+		end
 		if not goalSample then
-			-- Try a few jittered samples around goal (still require wall clearance)
-			local found = nil
 			for _, j in ipairs({
-				{ 0, 0 },
 				{ cell, 0 },
 				{ -cell, 0 },
 				{ 0, cell },
@@ -369,19 +440,23 @@ return function(S)
 				{ 0, cell * 2 },
 				{ 0, -cell * 2 },
 			}) do
-				found = M.sampleFloor(to.X + j[1], to.Z + j[2], to.Y)
-				if found then
+				goalSample = M.sampleFloor(to.X + j[1], to.Z + j[2], to.Y, { requireClear = false })
+				if goalSample then
 					break
 				end
 			end
-			goalSample = found
 		end
 		if not goalSample then
 			return nil
 		end
-		-- Start may be wall-pinched (we're stuck) — allow sampling without clear to leave
+		-- Start: snap onto stone road if standing on sand/dirt
 		local startSample = M.sampleFloor(from.X, from.Z, from.Y, { requireClear = false })
-			or { pos = from, normal = Vector3.yAxis, wallClearance = 0 }
+		if M.stonePathOnly() and (not startSample or not startSample.isStonePath) then
+			startSample = M.snapToStonePath(from) or startSample
+		end
+		if not startSample then
+			startSample = { pos = from, normal = Vector3.yAxis, wallClearance = 99, isStonePath = false }
+		end
 
 		-- Short path: if close and clear-ish, go direct
 		local directDist = (Vector3.new(startSample.pos.X, 0, startSample.pos.Z)
@@ -417,8 +492,8 @@ return function(S)
 				return nil
 			end
 			local wx, wz = cellToWorld(ix, iz)
-			-- Path nodes must not sit against walls
-			local s = M.sampleFloor(wx, wz, yHint, { requireClear = true })
+			-- Stone-path mode: only stone terrain cells (no wall-pinch)
+			local s = M.sampleFloor(wx, wz, yHint, { requireClear = not M.stonePathOnly() })
 			if s then
 				sampleCache[k] = s
 				return s
@@ -523,26 +598,25 @@ return function(S)
 				if dY < -maxDrop then
 					continue -- absurd void
 				end
-				-- Block edge if a wall sits between cells (horizontal LOS)
-				do
+				-- Stone roads: no mid-edge collision LOS (paths are guaranteed clear).
+				if not M.stonePathOnly() then
 					local mid = (curSample.pos + ns.pos) * 0.5
 					local midH = mid + Vector3.new(0, 2.5, 0)
 					local delta = ns.pos - curSample.pos
 					local flat = Vector3.new(delta.X, 0, delta.Z)
 					if flat.Magnitude > 0.5 then
-						local losHit = workspace:Raycast(midH - flat.Unit * 0.2, flat.Unit * (flat.Magnitude + 0.4), M.rayParams())
+						local losHit = workspace:Raycast(
+							midH - flat.Unit * 0.2,
+							flat.Unit * (flat.Magnitude + 0.4),
+							M.rayParams()
+						)
 						if losHit and losHit.Normal.Y < cfg("NAV_MIN_NORMAL_Y", 0.45) then
 							continue
 						end
 					end
 				end
 				local stepCost = heuristic(cur.ix, cur.iz, nix, niz) * cell
-				-- Prefer open space slightly (higher wall clearance = lower cost)
-				local openBonus = 0
-				if ns.wallClearance then
-					openBonus = math.max(0, 3 - (ns.wallClearance or 0)) * 0.35
-				end
-				local tent = curG + stepCost + openBonus
+				local tent = curG + stepCost
 				if tent < (gScore[nk] or math.huge) then
 					gScore[nk] = tent
 					cameFrom[nk] = ck
@@ -648,6 +722,7 @@ return function(S)
 		if hrp and hrp:IsA("BasePart") then
 			local floor = M.sampleFloor(hrp.Position.X, hrp.Position.Z, hrp.Position.Y, {
 				requireClear = false,
+				allowAnyFloor = true, -- height measure even on sand
 			})
 			if floor and floor.pos then
 				local dy = hrp.Position.Y - floor.pos.Y
@@ -734,8 +809,8 @@ return function(S)
 		return true
 	end
 
-	-- Sample player-sized hitboxes along one hop at body height above floor.
-	-- Returns clear?, samples (all probes — even after a block for full-path viz).
+	-- Probe one hop. Stone-path mode: only stone continuity (no mesh collision).
+	-- Returns clear?, samples (for Clear Hitbox viz).
 	local function sampleHopProbes(from: Vector3, to: Vector3): (boolean, { any })
 		local flat = Vector3.new(to.X - from.X, 0, to.Z - from.Z)
 		local dist = flat.Magnitude
@@ -745,36 +820,66 @@ return function(S)
 		end
 		local boxSize = M.playerHitboxSize()
 		local centerH = M.playerHitboxCenterHeight()
+		local dir = flat.Unit
+		local step = cfg("NAV_CLEAR_STEP", 2.5)
+		if step < 1.0 then
+			step = 1.0
+		end
+		local nSteps = math.max(1, math.ceil(dist / step))
+		local hopClear = true
+		local stoneOnly = M.stonePathOnly()
+
+		-- Stone roads are player-safe: no GetPartBoundsInBox / obstacle probes.
+		if stoneOnly then
+			for s = 0, nSteps do
+				local t = math.min(dist, s * step)
+				local alpha = if dist > 1e-4 then t / dist else 0
+				local hintY = from.Y + (to.Y - from.Y) * alpha
+				local x = from.X + dir.X * t
+				local z = from.Z + dir.Z * t
+				local floor = M.sampleFloor(x, z, hintY, { requireClear = false })
+				local onStone = floor and floor.isStonePath == true
+				local centerPos = if floor and floor.pos
+					then Vector3.new(x, floor.pos.Y + centerH, z)
+					else Vector3.new(x, hintY + centerH, z)
+				if not onStone then
+					hopClear = false
+				end
+				table.insert(samples, {
+					pos = centerPos,
+					size = boxSize,
+					dir = dir,
+					blocked = not onStone,
+					note = if onStone then "stone" else "off_stone",
+					material = floor and floor.material or nil,
+					floorY = floor and floor.pos.Y or hintY,
+					centerH = centerH,
+				})
+			end
+			return hopClear, samples
+		end
+
+		-- Legacy: body hitbox collision probes
 		if M.isElevationDrop(from, to) then
 			table.insert(samples, {
 				pos = Vector3.new(from.X, from.Y - boxSize.Y * 0.5 + centerH, from.Z),
 				size = boxSize,
-				dir = flat.Unit,
+				dir = dir,
 				blocked = false,
 				note = "drop",
 			})
 			return true, samples
 		end
-
-		local dir = flat.Unit
-		local step = cfg("NAV_CLEAR_STEP", 2.0)
-		if step < 1.0 then
-			step = 1.0
-		end
 		local maxFall = cfg("NAV_MAX_DROP_Y", 40)
 		local overlap = clearanceOverlapParams()
-		local nSteps = math.max(1, math.ceil(dist / step))
-		local hopClear = true
-
 		for s = 0, nSteps do
 			local t = math.min(dist, s * step)
 			local alpha = if dist > 1e-4 then t / dist else 0
 			local hintY = from.Y + (to.Y - from.Y) * alpha
 			local x = from.X + dir.X * t
 			local z = from.Z + dir.Z * t
-
 			local floorY = hintY
-			local floor = M.sampleFloor(x, z, hintY, { requireClear = false })
+			local floor = M.sampleFloor(x, z, hintY, { requireClear = false, allowAnyFloor = true })
 			if floor and floor.pos then
 				if floor.pos.Y < hintY - maxFall then
 					table.insert(samples, {
@@ -785,12 +890,10 @@ return function(S)
 						note = "void",
 					})
 					hopClear = false
-					-- keep sampling remaining points for full-path viz
 					continue
 				end
 				floorY = floor.pos.Y
 			end
-
 			local centerPos = Vector3.new(x, floorY + centerH, z)
 			local cf = CFrame.lookAt(centerPos, centerPos + dir)
 			local hitBlock = false
@@ -1025,6 +1128,9 @@ return function(S)
 
 	local function snapGoal(to: Vector3): Vector3
 		local s = M.sampleFloor(to.X, to.Z, to.Y, { requireClear = false })
+		if (not s or (M.stonePathOnly() and not s.isStonePath)) and M.stonePathOnly() then
+			s = M.snapToStonePath(to)
+		end
 		if s and s.pos then
 			return s.pos
 		end
@@ -1043,15 +1149,61 @@ return function(S)
 		return inf
 	end
 
-	-- Accept only routes with clear hops (ray wall LOS). Prefix OK if full path fails.
-	-- Never accept first-hop-only while later hops clip walls (walked through stalls).
+	-- Stone-path mode: prefer grid A* on Cobblestone (PFS often cuts across sand).
+	-- Validation = stone continuity only (no obstacle collision).
 	local function tryRoute(from: Vector3, goal: Vector3): ({ Vector3 }?, string, { boolean }?)
+		local stoneOnly = M.stonePathOnly()
+		-- Snap endpoints onto stone road
+		local fromSnap = from
+		local goalSnap = goal
+		if stoneOnly then
+			local fs = M.snapToStonePath(from)
+			local gs = M.snapToStonePath(goal)
+			if fs and fs.pos then
+				fromSnap = fs.pos
+			end
+			if gs and gs.pos then
+				goalSnap = gs.pos
+			end
+		end
+
+		-- Grid first when stone-only (road network, not free space)
+		local dist = Vector3.new(goalSnap.X - fromSnap.X, 0, goalSnap.Z - fromSnap.Z).Magnitude
+		local cell = cfg("NAV_CELL", 4)
+		local maxCells = math.max(cfg("NAV_MAX_CELLS", 40), math.ceil(dist / cell) + 8)
+		local custom = M.findPath(fromSnap, goalSnap, { maxCells = maxCells, cell = cell })
+		if custom and #custom >= 1 then
+			local pts = if #custom == 1 then { fromSnap, custom[1] } else custom
+			if not stoneOnly or M.pathSegmentsClear(pts) then
+				return pts, "grid", jumpsFromPts(pts)
+			end
+			if #pts >= 3 then
+				local prefix = { pts[1] }
+				for i = 2, #pts do
+					if not M.hasClearWalk(prefix[#prefix], pts[i]) then
+						break
+					end
+					table.insert(prefix, pts[i])
+				end
+				if #prefix >= 2 then
+					return prefix, "grid:prefix", jumpsFromPts(prefix)
+				end
+			end
+		end
+
+		if stoneOnly then
+			-- Direct line on stone only
+			if M.hasClearWalk(fromSnap, goalSnap) then
+				return { fromSnap, goalSnap }, "line:stone", { false, false }
+			end
+			return nil, "none", nil
+		end
+
 		local native, _nWhy, jumps = M.computeNativePath(from, goal)
 		if native and #native >= 2 then
 			if M.pathSegmentsClear(native) then
 				return native, "pfs", jumps or {}
 			end
-			-- Longest clear prefix (≥1 full hop)
 			if #native >= 3 then
 				local prefix = { native[1] }
 				for i = 2, #native do
@@ -1067,30 +1219,6 @@ return function(S)
 		elseif native and #native == 1 then
 			if M.hasClearWalk(from, native[1]) then
 				return { from, native[1] }, "pfs", { false, false }
-			end
-		end
-
-		local dist = Vector3.new(goal.X - from.X, 0, goal.Z - from.Z).Magnitude
-		local cell = cfg("NAV_CELL", 4)
-		local maxCells = math.max(cfg("NAV_MAX_CELLS", 40), math.ceil(dist / cell) + 8)
-		local custom = M.findPath(from, goal, { maxCells = maxCells, cell = cell })
-		if custom and #custom >= 1 then
-			local pts = if #custom == 1 then { from, custom[1] } else custom
-			if M.pathSegmentsClear(pts) then
-				return pts, "grid", jumpsFromPts(pts)
-			end
-			-- Clear prefix of grid path
-			if #pts >= 3 then
-				local prefix = { pts[1] }
-				for i = 2, #pts do
-					if not M.hasClearWalk(prefix[#prefix], pts[i]) then
-						break
-					end
-					table.insert(prefix, pts[i])
-				end
-				if #prefix >= 2 then
-					return prefix, "grid:prefix", jumpsFromPts(prefix)
-				end
 			end
 		end
 		return nil, "none", nil

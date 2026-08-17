@@ -634,8 +634,13 @@ return function(S)
 				or (type(tryKind) == "string" and string.sub(tryKind, 1, 7) == "blocked")
 				or tryKind == "line:soft"
 			if not blocked and tryPts then
+				-- Stone-path mode: hops already stone-validated (no obstacle collision)
 				local hopTo = tryPts[math.min(2, #tryPts)]
-				if not nav.hasClearWalk or nav.hasClearWalk(playerPos, hopTo) then
+				local hopOk = true
+				if nav.hasClearWalk then
+					hopOk = nav.hasClearWalk(playerPos, hopTo)
+				end
+				if hopOk then
 					local straight = flatDist(playerPos, tryPts[#tryPts])
 					local plen = pathFlatLength(tryPts)
 					local maxDet = C.KILL_AURA_MAX_PATH_DETOR or 2.8
@@ -648,9 +653,22 @@ return function(S)
 		end
 
 		if #pts < 2 then
-			if nav and nav.hasClearWalk and nav.hasClearWalk(playerPos, goal) then
-				pts = { playerPos, goal }
-				kind = "line"
+			-- Prefer snap to stone path then straight line on stone
+			local fromP, goalP = playerPos, goal
+			if nav and nav.snapToStonePath then
+				local fs = nav.snapToStonePath(playerPos)
+				local gs = nav.snapToStonePath(goal)
+				if fs and fs.pos then
+					fromP = fs.pos
+				end
+				if gs and gs.pos then
+					goalP = gs.pos
+				end
+			end
+			if nav and nav.hasClearWalk and nav.hasClearWalk(fromP, goalP) then
+				pts = { fromP, goalP }
+				kind = "line:stone"
+				goal = goalP
 			elseif not nav or not nav.hasClearWalk then
 				pts = { playerPos, goal }
 				kind = "line:nocheck"
@@ -665,8 +683,14 @@ return function(S)
 					local c, s = math.cos(ang + ringPhase * 0.25), math.sin(ang + ringPhase * 0.25)
 					local flat = Vector3.new(base.X * c - base.Z * s, 0, base.X * s + base.Z * c)
 					local cand = epos + flat.Unit * range
-					if nav.hasClearWalk(playerPos, cand) then
-						pts = { playerPos, cand }
+					if nav.snapToStonePath then
+						local gs = nav.snapToStonePath(cand)
+						if gs and gs.pos then
+							cand = gs.pos
+						end
+					end
+					if nav.hasClearWalk(fromP, cand) then
+						pts = { fromP, cand }
 						kind = "line:side"
 						goal = cand
 						break
