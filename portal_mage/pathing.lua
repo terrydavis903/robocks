@@ -340,9 +340,9 @@ return function(S)
 	-- only STOP W when look is badly wrong (faceStop). Micro-turn while walking.
 	---------------------------------------------------------------------------
 
-	local faceAlign = C.KILL_AURA_FACE_ALIGN or 0.90 -- must be this good to START W
-	local faceStop = C.KILL_AURA_FACE_STOP or 0.35 -- stop W if look this bad
-	local faceSettle = C.KILL_AURA_FACE_SETTLE or 0.05
+	local faceAlign = C.KILL_AURA_FACE_ALIGN or 0.72 -- start W when roughly aimed
+	local faceStop = C.KILL_AURA_FACE_STOP or 0.15 -- stop W only if nearly backwards
+	local faceSettle = C.KILL_AURA_FACE_SETTLE or 0.02
 	-- Last face decision (for status)
 	local lastFaceDot = 0
 	local lastYawErr = 0
