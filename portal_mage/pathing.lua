@@ -730,6 +730,24 @@ return function(S)
 		if pathIdx < #pathPts and flatDist(playerPos, pathPts[pathIdx]) < 1.0 and pathIdx < #pathPts then
 			pathIdx = math.min(pathIdx + 1, #pathPts)
 		end
+		-- Keep last route for Dump A* path (even after stop)
+		local recPts = {}
+		for _, p in ipairs(pathPts) do
+			table.insert(recPts, { x = p.X, y = p.Y, z = p.Z })
+		end
+		S.lastKillAuraPath = {
+			source = "kill_aura",
+			kind = lastVizKind,
+			points = recPts,
+			waypointCount = #pathPts,
+			idx = pathIdx,
+			goal = { x = goal.X, y = goal.Y, z = goal.Z },
+			from = { x = playerPos.X, y = playerPos.Y, z = playerPos.Z },
+			enemy = enemy and enemy.Name or nil,
+			segBlocked = segBlocked,
+			at = os.clock(),
+		}
+		S.lastBotPath = S.lastKillAuraPath
 		local parts = {}
 		for i, p in ipairs(pathPts) do
 			table.insert(parts, string.format("%d:%.0f,%.0f,%.0f", i, p.X, p.Y, p.Z))
@@ -1306,6 +1324,52 @@ return function(S)
 		S.walking = false
 		S.combatBusy = false
 		S.ui.setWalkLabel(false)
+	end
+
+	-- Live + last kill-aura route for Dump A* path.
+	function M.getPathSnapshot(): any
+		local pts = {}
+		for i, p in ipairs(pathPts) do
+			table.insert(pts, { i = i, x = p.X, y = p.Y, z = p.Z })
+		end
+		local playerPos = U.getLivePlayerVector and U.getLivePlayerVector()
+		local hopClear = {}
+		local nav = Nav()
+		if nav and nav.hasClearWalk and #pathPts >= 2 then
+			for i = 1, #pathPts - 1 do
+				local ok = nav.hasClearWalk(pathPts[i], pathPts[i + 1])
+				table.insert(hopClear, {
+					from = i,
+					to = i + 1,
+					clear = ok == true,
+				})
+			end
+			if playerPos and pathIdx >= 1 and pathIdx <= #pathPts then
+				table.insert(hopClear, 1, {
+					from = "player",
+					to = pathIdx,
+					clear = nav.hasClearWalk(playerPos, pathPts[pathIdx]) == true,
+				})
+			end
+		end
+		return {
+			source = "kill_aura",
+			live = true,
+			walking = S.walking == true,
+			kind = lastVizKind,
+			pathIdx = pathIdx,
+			waypointCount = #pathPts,
+			points = pts,
+			segBlocked = segBlocked,
+			standAngleIdx = standAngleIdx,
+			blockedRouteFails = blockedRouteFails,
+			enemy = pathEnemy and pathEnemy.Name or nil,
+			player = playerPos and { x = playerPos.X, y = playerPos.Y, z = playerPos.Z } or nil,
+			hopClear = hopClear,
+			pathBuiltAt = pathBuiltAt,
+			lastRepathAt = lastRepathAt,
+			at = os.clock(),
+		}
 	end
 
 	function M.togglePathViz()

@@ -1497,6 +1497,235 @@ return function(S)
 		return isBarrierPart(bp)
 	end
 
+	---------------------------------------------------------------------------
+	-- Dump A* path + corridor mesh (for reviewing suspicious routes offline)
+	-- Writes dumps/astar_YYYY-MM-DD_HH-MM-SS.json
+	---------------------------------------------------------------------------
+
+	local function vec3FromAny(p: any): Vector3?
+		if typeof(p) == "Vector3" then
+			return p
+		end
+		if type(p) == "table" and type(p.x) == "number" then
+			return Vector3.new(p.x, p.y or 0, p.z or 0)
+		end
+		return nil
+	end
+
+	local function extractWaypoints(pathObj: any): { Vector3 }
+		local out: { Vector3 } = {}
+		if not pathObj then
+			return out
+		end
+		local pts = pathObj.points or pathObj.waypoints or pathObj
+		if type(pts) ~= "table" then
+			return out
+		end
+		for _, p in ipairs(pts) do
+			local v = vec3FromAny(p)
+			if v then
+				table.insert(out, v)
+			end
+		end
+		return out
+	end
+
+	local function distPointToSegmentXZ(p: Vector3, a: Vector3, b: Vector3): number
+		local ab = Vector3.new(b.X - a.X, 0, b.Z - a.Z)
+		local ap = Vector3.new(p.X - a.X, 0, p.Z - a.Z)
+		local ab2 = ab:Dot(ab)
+		if ab2 < 1e-6 then
+			return ap.Magnitude
+		end
+		local t = math.clamp(ap:Dot(ab) / ab2, 0, 1)
+		local proj = a + ab * t
+		return Vector3.new(p.X - proj.X, 0, p.Z - proj.Z).Magnitude
+	end
+
+	local function nearPathCorridor(pos: Vector3, wps: { Vector3 }, radius: number): boolean
+		if #wps == 0 then
+			return false
+		end
+		if #wps == 1 then
+			return Vector3.new(pos.X - wps[1].X, 0, pos.Z - wps[1].Z).Magnitude <= radius
+		end
+		for i = 1, #wps - 1 do
+			if distPointToSegmentXZ(pos, wps[i], wps[i + 1]) <= radius then
+				return true
+			end
+		end
+		return false
+	end
+
+	local function capturePathVizNodes(): { any }
+		local folder = workspace:FindFirstChild("PortalMage_PathViz") or S.pathVizFolder
+		if not folder then
+			return {}
+		end
+		local nodes = {}
+		for _, ch in ipairs(folder:GetChildren()) do
+			if ch:IsA("BasePart") and string.sub(ch.Name, 1, 1) == "N" then
+				table.insert(nodes, {
+					name = ch.Name,
+					x = ch.Position.X,
+					y = ch.Position.Y,
+					z = ch.Position.Z,
+				})
+			end
+		end
+		table.sort(nodes, function(a, b)
+			return tostring(a.name) < tostring(b.name)
+		end)
+		return nodes
+	end
+
+	function M.dumpAstarPath()
+		setStatus("Dumping A* path + corridor mesh…")
+		local stamp = os.date("%Y-%m-%d_%H-%M-%S")
+		local playerName, playerPos = U.getPlayerPosition()
+
+		local killAura = nil
+		if S.Pathing and S.Pathing.getPathSnapshot then
+			local ok, snap = pcall(S.Pathing.getPathSnapshot)
+			if ok then
+				killAura = snap
+			end
+		end
+		local autoOre = nil
+		if S.AutoOre and S.AutoOre.getLastPath then
+			autoOre = S.AutoOre.getLastPath()
+		end
+		local lastKa = S.lastKillAuraPath
+		local lastBot = S.lastBotPath
+
+		-- Prefer live kill-aura path, else last KA, else last bot/auto-ore
+		local primary = killAura
+		if not primary or not primary.points or #(primary.points) == 0 then
+			primary = lastKa or lastBot or autoOre
+		end
+
+		local wps = extractWaypoints(primary)
+		-- If still empty, try Path Viz nodes
+		if #wps == 0 then
+			local viz = capturePathVizNodes()
+			for _, n in ipairs(viz) do
+				table.insert(wps, Vector3.new(n.x, n.y, n.z))
+			end
+		end
+
+		local radius = C.PATH_DUMP_MESH_RADIUS or 48
+		local maxParts = C.PATH_DUMP_MESH_MAX_PARTS or 2500
+		local meshParts = {}
+		local kindCounts = { collide = 0, floor = 0, barrier = 0, visual = 0 }
+		local scanned = 0
+		local included = 0
+
+		if #wps > 0 then
+			for _, d in ipairs(workspace:GetDescendants()) do
+				if not d:IsA("BasePart") then
+					continue
+				end
+				scanned += 1
+				if scanned % 400 == 0 then
+					task.wait()
+				end
+				local bp = d :: BasePart
+				local kind = M.classifyMeshExportPart(bp)
+				if not kind then
+					continue
+				end
+				if not nearPathCorridor(bp.Position, wps, radius) then
+					continue
+				end
+				included += 1
+				if included > maxParts then
+					break
+				end
+				kindCounts[kind] = (kindCounts[kind] or 0) + 1
+				local entry = snapMeshPart(bp)
+				entry.kind = kind
+				-- Named obstacle flag if nav is loaded
+				if S.Nav and S.Nav.isNamedObstacle then
+					local okN, isObs = pcall(S.Nav.isNamedObstacle, bp)
+					if okN then
+						entry.namedObstacle = isObs == true
+					end
+				end
+				table.insert(meshParts, entry)
+			end
+		end
+
+		-- Hop clear diagnostics from live path or recompute
+		local hopClear = (killAura and killAura.hopClear) or {}
+		if (#hopClear == 0) and S.Nav and S.Nav.hasClearWalk and #wps >= 2 then
+			for i = 1, #wps - 1 do
+				local ok = S.Nav.hasClearWalk(wps[i], wps[i + 1])
+				table.insert(hopClear, { from = i, to = i + 1, clear = ok == true })
+			end
+		end
+
+		local wpOut = {}
+		for i, p in ipairs(wps) do
+			table.insert(wpOut, { i = i, x = p.X, y = p.Y, z = p.Z })
+		end
+
+		local payload = {
+			type = "astar_path_dump",
+			version = 1,
+			timestamp = stamp,
+			notes = "Kill Aura / auto-ore A* route + mesh corridor for offline review",
+			player = { name = playerName, position = playerPos },
+			meshRadius = radius,
+			path = {
+				primary = primary,
+				waypoints = wpOut,
+				waypointCount = #wpOut,
+				hopClear = hopClear,
+				pathViz = capturePathVizNodes(),
+			},
+			sources = {
+				killAuraLive = killAura,
+				lastKillAura = lastKa,
+				lastBotPath = lastBot,
+				autoOre = autoOre,
+			},
+			mesh = {
+				scanned = scanned,
+				included = included,
+				truncated = included >= maxParts,
+				kindCounts = kindCounts,
+				parts = meshParts,
+			},
+			flags = {
+				walking = S.walking == true,
+				autoOre = S.autoOreEnabled == true,
+				pathViz = S.pathVizEnabled == true,
+				segBlocked = killAura and killAura.segBlocked or nil,
+			},
+		}
+
+		local outPath = string.format("%s/astar_%s.json", C.DUMP_DIR or "dumps", stamp)
+		local ok, err = pcall(function()
+			U.ensureDir(C.DUMP_DIR or "dumps")
+			writefile(outPath, HttpService:JSONEncode(payload))
+		end)
+		if ok then
+			setStatus(string.format(
+				"A* dump OK: %s | wps=%d mesh=%d (r=%.0f) kinds c/f/b/v=%d/%d/%d/%d",
+				outPath,
+				#wpOut,
+				included,
+				radius,
+				kindCounts.collide or 0,
+				kindCounts.floor or 0,
+				kindCounts.barrier or 0,
+				kindCounts.visual or 0
+			))
+		else
+			setStatus("A* dump failed: " .. tostring(err))
+		end
+	end
+
 	local function newAabb()
 		return {
 			minX = math.huge,

@@ -107,6 +107,7 @@ S.pathRecEnabled = false
 S.pathRecThread = nil
 S.PathRecord = nil :: any
 S.lastBotPath = nil :: any -- last auto-ore (or bot) A* attempt for recorder
+S.lastKillAuraPath = nil :: any -- last kill-aura route (for Dump A* path)
 
 -- Player proximity guard (pause bot if other player too close)
 S.proximityGuardEnabled = true -- default ON (critical safety)

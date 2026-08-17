@@ -463,6 +463,8 @@ return function(S)
 		by += 34
 		local pathRecBtn = mkButton(bot, "A* Rec: OFF", by, Color3.fromRGB(70, 70, 80))
 		by += 34
+		local dumpAstarBtn = mkButton(bot, "Dump A* path", by, Color3.fromRGB(35, 100, 140))
+		by += 34
 		local dumpGuiBtn = mkButton(bot, "Dump GUI", by, Color3.fromRGB(40, 130, 90))
 		by += 34
 		local stopBtn = mkButton(bot, "Stop All", by, Color3.fromRGB(140, 50, 50))
@@ -558,6 +560,13 @@ return function(S)
 				S.PathRecord.toggle()
 			else
 				S.Util.setStatus("Path recorder not loaded — reload script")
+			end
+		end)
+		dumpAstarBtn.MouseButton1Click:Connect(function()
+			if S.Dump and S.Dump.dumpAstarPath then
+				task.spawn(S.Dump.dumpAstarPath)
+			else
+				S.Util.setStatus("Dump A* path not available — reload script")
 			end
 		end)
 		dumpGuiBtn.MouseButton1Click:Connect(function()

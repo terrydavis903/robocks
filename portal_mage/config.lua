@@ -117,6 +117,9 @@ return {
 	PATH_VIZ_REFRESH = 0.55, -- redraw Path Viz polyline only (not movement thrash)
 	PATH_REBUILD = 8.0, -- Kill Aura path recompute ceiling (avoid face reset thrash)
 	PATH_REPATH_COOLDOWN = 1.8, -- min seconds between PFS rebuilds when segment blocked
+	-- Dump A* path: mesh parts within this studs of the polyline (corridor)
+	PATH_DUMP_MESH_RADIUS = 48,
+	PATH_DUMP_MESH_MAX_PARTS = 2500,
 	NAV_RAY_UP = 50,
 	NAV_RAY_DOWN = 140,
 	NAV_MIN_NORMAL_Y = 0.45,
