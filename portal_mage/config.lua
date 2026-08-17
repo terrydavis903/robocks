@@ -325,6 +325,27 @@ return {
 	PLAYER_PROXIMITY_PAUSE_STUDS = 150,
 	PLAYER_PROXIMITY_CHECK_INTERVAL = 0.15,
 
+	-- Hard blacklist: on join → Stop All; wait this long before auto re-enabling Kill Aura
+	-- (Anti-AFK jump stays on). Manual KA enable cancels the scheduled resume.
+	PLAYER_BLACKLIST_NAMES = {
+		"Swaroff",
+		"Ekiezu",
+		"URIZEN",
+		"Musmeed",
+		"toyy",
+		"batagorsomay",
+	},
+	PLAYER_BLACKLIST_LOCK_SECONDS = 30 * 60, -- 30 minutes
+
+	-- Between fights: maintain bless buff via QS3 hold (dump: BuffIcon_BUFF_BLESS)
+	-- Path: HUD.HealthManaContainer.StatusContainer.BuffIcon_BUFF_BLESS
+	COMBAT_BUFF_ENABLED = true,
+	COMBAT_BUFF_SLOT = 3,
+	COMBAT_BUFF_HOLD = 10, -- hold E seconds after arming QS3
+	COMBAT_BUFF_ICON_NAME = "BuffIcon_BUFF_BLESS",
+	COMBAT_BUFF_ICON_PREFIX = "BuffIcon_", -- any visible BuffIcon_* also counts as "has buff"
+	COMBAT_BUFF_RETRY_CD = 12, -- don't spam re-cast if icon still missing
+
 	-- Named boss/mob tags (match substrings on model.Name). Combat uses slots only.
 	BARREL_CHAMPION_MATCH = "BarrelChampion",
 	BARREL_CHAMPION_TAGS = { "Barrel Champion", "BarrelChampion", "Barrel_Champion" },
@@ -335,14 +356,20 @@ return {
 	TIN_TORTOISE_TAGS = { "Tin Tortoise", "TinTortoise", "Tin_Tortoise" },
 	TIN_TORTOISE_ENGAGE_RANGE = 30,
 
-	-- Combat quickslots only. ALL are TOGGLES: press N to arm (diamond ON), then fire steps.
+	-- Combat / utility quickslots. ALL are TOGGLES: press N to arm (diamond ON), then fire steps.
 	-- Do NOT put One/Two/… in steps (re-pressing toggles OFF). Cast arms via handler.slot.
-	-- QS3 / enchant is intentionally absent — never used in kill-aura sequences.
+	-- QS1/QS4 = kill-aura damage. QS3 = bless buff only (between fights, not in cast sequences).
 	QUICKSLOT_USAGE = {
 		[1] = {
 			-- tap cast (no hold)
 			steps = { { key = Enum.KeyCode.E } },
 			minCd = 0.5,
+		},
+		[3] = {
+			-- bless buff: hold E 10s (applied between fights when BuffIcon missing)
+			steps = { { hold = Enum.KeyCode.E, duration = 10 } },
+			minCd = 1,
+			utility = true, -- not a combat damage slot
 		},
 		[4] = {
 			-- hold E for 5s, release; 2s CD; no lockout — may switch to QS1 immediately

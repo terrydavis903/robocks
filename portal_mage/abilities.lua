@@ -182,20 +182,26 @@ return function(S)
 		return M.isSlotReady(handler.slot)
 	end
 
-	-- Combat slots from QUICKSLOT_USAGE + DEFAULT (no creature map, no QS3).
+	-- Combat damage slots from QUICKSLOT_USAGE (skip utility=true e.g. QS3 buff).
 	function M.combatSlots(): { number }
 		local seen = {}
 		local out = {}
 		local function add(s: any)
 			local n = tonumber(s)
 			if type(n) == "number" and n >= 1 and n <= 9 and not seen[n] then
+				local usage = (C.QUICKSLOT_USAGE or {})[n]
+				if usage and usage.utility == true then
+					return -- buff / non-damage slots stay out of kill-aura casts
+				end
 				seen[n] = true
 				table.insert(out, n)
 			end
 		end
 		add(C.DEFAULT_COMBAT_SLOT or 4)
-		for slot, _ in pairs(C.QUICKSLOT_USAGE or {}) do
-			add(slot)
+		for slot, usage in pairs(C.QUICKSLOT_USAGE or {}) do
+			if not (type(usage) == "table" and usage.utility == true) then
+				add(slot)
+			end
 		end
 		table.sort(out)
 		return out
@@ -447,6 +453,121 @@ return function(S)
 			end
 		end
 		return isWalking()
+	end
+
+	---------------------------------------------------------------------------
+	-- Combat buff (QS3 hold): HUD.HealthManaContainer.StatusContainer.BuffIcon_*
+	-- Dump 2026-08-17: no buff → StatusContainer hidden; with bless → BuffIcon_BUFF_BLESS
+	---------------------------------------------------------------------------
+
+	function M.getStatusContainer(): Frame?
+		local pg = getPlayerGui()
+		if not pg then
+			return nil
+		end
+		local ui = pg:FindFirstChild("ThePortalUI")
+		local hud = ui and ui:FindFirstChild("HUD")
+		local hm = hud and hud:FindFirstChild("HealthManaContainer")
+		local sc = hm and hm:FindFirstChild("StatusContainer")
+		if sc and sc:IsA("Frame") then
+			return sc
+		end
+		return nil
+	end
+
+	-- True when the bless (or any BuffIcon_*) is visible under StatusContainer.
+	function M.hasCombatBuff(): boolean
+		local sc = M.getStatusContainer()
+		if not sc then
+			return false
+		end
+		local want = C.COMBAT_BUFF_ICON_NAME or "BuffIcon_BUFF_BLESS"
+		local exact = sc:FindFirstChild(want)
+		if exact and exact:IsA("GuiObject") and exact.Visible == true then
+			return true
+		end
+		local prefix = C.COMBAT_BUFF_ICON_PREFIX or "BuffIcon_"
+		for _, ch in ipairs(sc:GetChildren()) do
+			if ch:IsA("GuiObject")
+				and ch.Visible == true
+				and string.sub(ch.Name, 1, #prefix) == prefix
+				and ch.Name ~= "StatusTemplate"
+			then
+				return true
+			end
+		end
+		return false
+	end
+
+	M.hasBlessBuff = M.hasCombatBuff
+
+	-- Between fights: if buff icon missing, unsheath → arm QS3 → hold E 10s.
+	-- Returns true if this call spent time casting (caller should yield the tick).
+	function M.ensureCombatBuff(tag: string?): boolean
+		if C.COMBAT_BUFF_ENABLED == false then
+			return false
+		end
+		if S.buffBusy or S.combatBusy then
+			return true -- busy, treat as handled this tick
+		end
+		if not isWalking() then
+			return false
+		end
+		if M.hasCombatBuff() then
+			return false
+		end
+		local now = os.clock()
+		local retryCd = C.COMBAT_BUFF_RETRY_CD or 12
+		if S.lastBuffCastAt > 0 and (now - S.lastBuffCastAt) < retryCd then
+			return false
+		end
+
+		local slot = C.COMBAT_BUFF_SLOT or 3
+		local holdFor = C.COMBAT_BUFF_HOLD or 10
+		S.buffBusy = true
+		S.combatBusy = true
+		S.lastBuffCastAt = now
+		if U.releaseMoveKeys then
+			U.releaseMoveKeys()
+		end
+
+		local ok, err = pcall(function()
+			U.setStatus(string.format("[buff] missing — QS%d hold %.0fs [%s]", slot, holdFor, tag or "between"))
+			-- Ability requires weapon drawn
+			if U.ensureWeaponDrawn then
+				U.ensureWeaponDrawn(1.2, true)
+			end
+			if not isWalking() then
+				return
+			end
+			M.ensureSlotOn(slot)
+			task.wait(C.SLOT_FIRE_SETTLE or 0.12)
+			if U.releaseMoveKeys then
+				U.releaseMoveKeys()
+			end
+			U.setStatus(string.format("[buff] HOLD E %.0fs (s%d)", holdFor, slot))
+			U.holdKeyCharge(Enum.KeyCode.E, isWalking, holdFor)
+			-- Brief wait for icon to appear
+			local t0 = os.clock()
+			while isWalking() and (os.clock() - t0) < 2.5 do
+				if M.hasCombatBuff() then
+					break
+				end
+				task.wait(0.15)
+			end
+			if M.hasCombatBuff() then
+				U.setStatus("[buff] OK — BuffIcon active")
+			else
+				U.setStatus("[buff] cast done — icon not seen yet")
+			end
+			M.noteCastCooldown(slot, { minCd = 1 })
+		end)
+		if not ok then
+			U.setStatus("Buff error: " .. tostring(err))
+		end
+		S.buffBusy = false
+		S.combatBusy = false
+		return true
 	end
 
 	---------------------------------------------------------------------------

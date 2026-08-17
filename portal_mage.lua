@@ -458,6 +458,7 @@ S.Pathing = loadFactory("pathing")
 S.Waypoints = tryFactory("waypoints")
 S.Respawn = loadFactory("respawn")
 S.Proximity = loadFactory("proximity")
+S.PlayerBlacklist = tryFactory("player_blacklist")
 
 -- 3) optional / heavy (claw is large — isolate failures)
 S.Claw = tryFactory("claw")
@@ -479,6 +480,9 @@ local function start()
 	end
 	if S.Proximity and S.Proximity.start then
 		S.Proximity.start()
+	end
+	if S.PlayerBlacklist and S.PlayerBlacklist.start then
+		S.PlayerBlacklist.start()
 	end
 
 	if S.ui.setProxLabel then

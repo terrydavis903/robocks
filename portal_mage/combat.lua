@@ -27,6 +27,7 @@ return function(S)
 	function M.stopAll()
 		S.walking = false
 		S.combatBusy = false
+		S.buffBusy = false
 		S.waitAllCds = false
 		S.proximityResumeWalk = false
 		S.respawnResumeWalk = false
@@ -40,6 +41,23 @@ return function(S)
 		if S.ui and S.ui.setWalkLabel then
 			S.ui.setWalkLabel(false)
 		end
+	end
+
+	-- Same as UI "Stop All" (kill aura / combat / auto ore). Claw untouched.
+	-- Returns whether Kill Aura was running (for blacklist delayed resume).
+	function M.stopBot(reason: string?): boolean
+		local wasWalking = S.walking == true
+		S.proximityResumeWalk = false
+		S.respawnResumeWalk = false
+		if S.AutoOre and S.AutoOre.stop then
+			S.AutoOre.stop()
+		end
+		M.stopAll()
+		if S.ui and S.ui.setAutoOreLabel then
+			S.ui.setAutoOreLabel(false)
+		end
+		U.setStatus(reason or "Stopped kill aura/combat/auto-ore (claw unaffected)")
+		return wasWalking
 	end
 
 	function M.listActiveMobs()
@@ -183,12 +201,21 @@ return function(S)
 			S.waitAllCds = false
 		end
 
+		if S.buffBusy then
+			task.wait(0.1)
+			return
+		end
+
 		local range = T().fightRange()
 		local sticky = C.KILL_AURA_STICKY or 5
 		-- Nearest mob (pathing approaches); no creature schema filter
 		local hold, _pos, dist = T().ensureEnemy()
 
+		-- Between fights (no target / after kill): reapply bless if BuffIcon missing
 		if not hold then
+			if A().ensureCombatBuff and A().ensureCombatBuff("scan") then
+				return
+			end
 			U.setStatus(string.format("[fight] scan… | %s", A().formatCds()))
 			task.wait(0.15)
 			return
@@ -277,7 +304,10 @@ return function(S)
 
 		if not T().isAlive(hold) then
 			T().clearHold("killed")
-			-- No waitAllCds: QS4 has no lockout — path next / cast s1 immediately if ready
+			-- Between fights: refresh buff before pathing to next opponent
+			if A().ensureCombatBuff then
+				A().ensureCombatBuff("post_kill")
+			end
 			U.setStatus("[fight] target down — next")
 		end
 	end

@@ -565,17 +565,24 @@ return function(S)
 		end)
 		stopBtn.MouseButton1Click:Connect(function()
 			-- Bot-only stop (kill aura / combat / auto ore). Claw is separate — use Claw tab Cancel.
-			S.proximityResumeWalk = false
-			S.respawnResumeWalk = false
-			if S.AutoOre and S.AutoOre.stop then
-				S.AutoOre.stop()
+			-- Cancel any blacklist-scheduled KA resume (user intentional stop).
+			S.blacklistResumeKillAura = false
+			S.blacklistResumeAt = 0
+			if S.Combat and S.Combat.stopBot then
+				S.Combat.stopBot("Stopped kill aura/combat/auto-ore (claw unaffected)")
+			else
+				S.proximityResumeWalk = false
+				S.respawnResumeWalk = false
+				if S.AutoOre and S.AutoOre.stop then
+					S.AutoOre.stop()
+				end
+				S.Combat.stopAll()
+				S.ui.setWalkLabel(false)
+				if S.ui.setAutoOreLabel then
+					S.ui.setAutoOreLabel(false)
+				end
+				S.Util.setStatus("Stopped kill aura/combat/auto-ore (claw unaffected)")
 			end
-			S.Combat.stopAll()
-			S.ui.setWalkLabel(false)
-			if S.ui.setAutoOreLabel then
-				S.ui.setAutoOreLabel(false)
-			end
-			S.Util.setStatus("Stopped kill aura/combat/auto-ore (claw unaffected)")
 		end)
 		S.ui.registerWalkToggle(killAuraBtn, nil)
 		proxBtn.MouseButton1Click:Connect(function()

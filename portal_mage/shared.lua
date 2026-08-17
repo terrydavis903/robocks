@@ -114,6 +114,18 @@ S.proximityPaused = false
 S.proximityResumeWalk = false -- auto-resume Walk+Atk when clear
 S.proximityThread = nil
 
+-- Hard player blacklist (Stop All + delayed Kill Aura resume; Anti-AFK stays on)
+S.blacklistLockUntil = 0 -- os.clock() until which we refuse auto-resume
+S.blacklistResumeAt = 0 -- when to re-toggle Kill Aura if it was on
+S.blacklistResumeKillAura = false -- scheduled resume after lock
+S.blacklistLastHitName = nil :: string?
+S.blacklistThread = nil
+S.PlayerBlacklist = nil :: any
+
+-- Between-fight combat buff (QS3 hold → BuffIcon_BUFF_BLESS)
+S.buffBusy = false
+S.lastBuffCastAt = 0
+
 -- Claw module (separate map from combat; shares HUD only)
 S.clawBeamEnabled = false
 S.clawBeamThread = nil

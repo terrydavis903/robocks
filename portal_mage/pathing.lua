@@ -1360,14 +1360,22 @@ return function(S)
 		if S.walking then
 			S.walking = false
 			S.combatBusy = false
+			S.buffBusy = false
 			S.waitAllCds = false
 			S.proximityResumeWalk = false
 			S.respawnResumeWalk = false
+			-- Manual off cancels scheduled blacklist resume
+			S.blacklistResumeKillAura = false
+			S.blacklistResumeAt = 0
 			stopMove()
 			S.ui.setWalkLabel(false)
 			U.setStatus("Kill Aura stopping…")
 			return
 		end
+
+		-- Manual on cancels pending auto-resume (user already enabled)
+		S.blacklistResumeKillAura = false
+		S.blacklistResumeAt = 0
 
 		if S.zRegenBusy or S.respawnResumeWalk then
 			U.setStatus("Kill Aura blocked — finish respawn first")
