@@ -878,27 +878,25 @@ return function(S)
 	end
 
 	-- Next world point to face/walk toward.
-	-- Prefer path *direction* (look-ahead along polyline) over a single near waypoint
-	-- so bearing stays stable while walking the segment.
+	-- Path owns facing until true stand range. Do NOT face the enemy while mid-path
+	-- (log 03-12-21: seg…>en at d=37.7 walked W into wall while path went around).
 	local function segmentTarget(playerPos: Vector3, epos: Vector3, range: number): (Vector3, string)
 		local distEnemy = flatDist(playerPos, epos)
-		if distEnemy <= range + 1.5 then
+		-- Only aim at enemy when already in cast range (combat owns this band)
+		if distEnemy <= range then
 			return epos, "enemy"
 		end
 		if #pathPts >= 1 and pathIdx >= 1 and pathIdx <= #pathPts then
 			local wp = pathPts[pathIdx]
 			local label = string.format("seg%d/%d", pathIdx, #pathPts)
-			-- Look-ahead: aim further along path so face doesn't whip as we near each node
 			local look = wp
 			if pathIdx < #pathPts then
 				local nxt = pathPts[pathIdx + 1]
 				local toWp = Vector3.new(wp.X - playerPos.X, 0, wp.Z - playerPos.Z)
 				if toWp.Magnitude < (C.KILL_AURA_SEG_ARRIVE or 4) * 1.5 then
-					-- close to current node → face next segment direction
 					look = nxt
 					label = string.format("seg%d/%d+", pathIdx, #pathPts)
 				else
-					-- blend a bit of next for smoother bearing
 					look = Vector3.new(
 						wp.X * 0.65 + nxt.X * 0.35,
 						wp.Y,
@@ -909,6 +907,23 @@ return function(S)
 			return look, label
 		end
 		return standGoalNear(playerPos, epos, range), "stand"
+	end
+
+	-- Stop for combat only if close AND not aiming through a wall.
+	-- Sticky band with blocked LOS → keep following path around geometry.
+	local function canStandForCombat(playerPos: Vector3, epos: Vector3, range: number, sticky: number): boolean
+		local dist = flatDist(playerPos, epos)
+		if dist > range + sticky then
+			return false
+		end
+		if dist <= range then
+			return true
+		end
+		local nav = Nav()
+		if nav and nav.hasClearWalk then
+			return nav.hasClearWalk(playerPos, epos) == true
+		end
+		return true
 	end
 
 	local function clearPathState()
@@ -984,12 +999,8 @@ return function(S)
 		local now = os.clock()
 		local forceWalk = now < forceWalkUntil
 
-		-- Near fight range: face the enemy (not a behind-geometry stand WP)
+		-- Always face/walk path nodes until dist <= range (no >en override through walls)
 		local target, segLabel = segmentTarget(playerPos, epos, range)
-		if dist <= range + (C.KILL_AURA_STICKY or 4) + 6 then
-			target = epos
-			segLabel = segLabel .. ">en"
-		end
 		lastSegLabel = segLabel
 		local faceDot = facePoint(target)
 
@@ -998,7 +1009,8 @@ return function(S)
 			if U.holdJump then
 				U.holdJump(false)
 			end
-			-- Keep soft-facing enemy (combat may need turn keys); don't release here.
+			-- Face enemy only once inside cast range
+			facePoint(epos)
 			faceOkSince = 0
 			walkingFacing = false
 			forceWalkUntil = 0
@@ -1296,14 +1308,14 @@ return function(S)
 					return
 				end
 
-				-- Stand band: stop move, keep facing enemy (leave turn keys to facePoint)
-				if dist <= range + sticky then
+				-- Stand band only with clear walk to enemy (else keep pathing around wall).
+				-- Log stuck: d=37.7 with >en faced goblin through geometry while path went around.
+				if canStandForCombat(playerPos, epos, range, sticky) then
 					local fd = faceEnemy(epos)
 					setMoveKey(nil)
 					if U.holdJump then
 						U.holdJump(false)
 					end
-					-- Do NOT nil turn keys — combat face assist needs them; faceEnemy holds them
 					local pathInfo = string.format(" %s#%d", lastVizKind, #pathPts)
 					U.setStatus(string.format(
 						"[stand] d=%.1f face=%.2f h/c=%.2f/%.2f yaw=%+.2f turn=%s %s%s | %s",
@@ -1319,6 +1331,17 @@ return function(S)
 					))
 					task.wait(0.08)
 					return
+				end
+
+				-- Sticky range but LOS blocked: stay on path (status notes the conflict)
+				if dist <= range + sticky then
+					U.setStatus(string.format(
+						"[approach] around wall d=%.1f path→%s %s | %s",
+						dist,
+						lastSegLabel,
+						model.Name,
+						cds()
+					))
 				end
 
 				local tag = approachStep(playerPos, epos, range)
