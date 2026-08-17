@@ -113,6 +113,7 @@ return {
 	NAV_AGENT_HEIGHT = 5,
 	NAV_AGENT_CAN_JUMP = true,
 	NAV_WAYPOINT_SPACING = 6,
+	NAV_PATH_MAX_GOALS = 6, -- computePath ring budget (was 33 — froze walk 30s+)
 	KILL_AURA_LOG = true, -- dumps/killaura_*.log
 	PATH_VIZ_REFRESH = 0.55, -- redraw Path Viz polyline only (not movement thrash)
 	PATH_REBUILD = 8.0, -- Kill Aura path recompute ceiling (avoid face reset thrash)
@@ -171,6 +172,7 @@ return {
 	KILL_AURA_RANGE = 30,
 	KILL_AURA_APPROACH = 30, -- alias
 	KILL_AURA_STICKY = 4,
+	KILL_AURA_HOLD_STICKY = 8, -- studs closer to switch hold when in/near fight range
 	-- Optional name priority (first match wins). Empty = nearest schema mob only.
 	-- Example: { "ScarecrowGoblin", "PatchHound", "CritterGoblin" }
 	KILL_AURA_PRIORITY = {},

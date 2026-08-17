@@ -382,6 +382,8 @@ return function(S)
 	end
 
 	-- Keep hold if alive; switch if another pick is clearly closer (or higher priority).
+	-- Soften sticky when hold is far (no reticle until stand band) so we don't lock
+	-- an unreachable Critter while nearer mobs exist (astar 02-56-00: Goblin_1898).
 	function M.ensureEnemy(): (Model?, Vector3?, number?)
 		local origin = U.getLivePlayerVector()
 		local hold = M.getHold()
@@ -393,13 +395,22 @@ return function(S)
 			if pick and pick ~= hold and pdist and hd then
 				local hp = M.killAuraPriority(hold)
 				local pp = M.killAuraPriority(pick)
-				-- Better priority, or same tier but clearly closer
-				if pp < hp or (pp == hp and pdist < hd - 8) then
+				local sticky = C.KILL_AURA_HOLD_STICKY or 8
+				-- Far holds switch easier (4 studs); close holds keep 8-stud hysteresis
+				if hd > (C.KILL_AURA_RANGE or 30) + 20 then
+					sticky = 4
+				end
+				if pp < hp or (pp == hp and pdist < hd - sticky) then
 					M.setHold(pick, "better")
 					return pick, ppos, pdist
 				end
 			end
-			return hold, hpos, hd
+			-- Dead / missing position: drop
+			if not hpos and not hd then
+				M.clearHold("hold_no_pos")
+			else
+				return hold, hpos, hd
+			end
 		end
 
 		M.clearHold("ensure_pick")

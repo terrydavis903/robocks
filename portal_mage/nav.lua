@@ -918,19 +918,28 @@ return function(S)
 		return nil, "none", nil
 	end
 
-	-- Prefer native PathfindingService; fall back to floor A*; try ring goals.
+	-- Prefer native PathfindingService; fall back to floor A*; small ring of alts.
 	-- NEVER return a straight line through a wall (log 00-32-43: path line thrash).
+	-- Keep goal count low — log 02-56-20 froze ~30s on 8 angles × 33 ring goals.
 	-- Third return: jump flags aligned with points (true = Space at that node).
-	function M.computePath(from: Vector3, to: Vector3): ({ Vector3 }, string, { boolean })
+	function M.computePath(from: Vector3, to: Vector3, opts: any?): ({ Vector3 }, string, { boolean })
+		opts = opts or {}
 		local primary = snapGoal(to)
 
-		-- Candidate stand goals: primary + ring around primary (detour around walls)
+		-- Candidate goals: primary first, then a few ring offsets (not 4×8=32)
 		local goals: { Vector3 } = { primary }
-		local ringR = { 10, 18, 28, 38 }
-		local ringN = 8
+		local maxGoals = math.clamp(tonumber(opts.maxGoals) or cfg("NAV_PATH_MAX_GOALS", 6), 1, 16)
+		local ringR = opts.ringR or { 14, 26 }
+		local ringN = opts.ringN or 4
 		for _, r in ipairs(ringR) do
+			if #goals >= maxGoals then
+				break
+			end
 			for i = 0, ringN - 1 do
-				local ang = (i / ringN) * math.pi * 2
+				if #goals >= maxGoals then
+					break
+				end
+				local ang = (i / ringN) * math.pi * 2 + (opts.ringPhase or 0)
 				local cand = Vector3.new(
 					primary.X + math.cos(ang) * r,
 					primary.Y,
@@ -943,7 +952,7 @@ return function(S)
 		local lastWhy = "fail"
 		for gi, goal in ipairs(goals) do
 			local pts, kind, jumps = tryRoute(from, goal)
-			if pts and #pts > 0 then
+			if pts and #pts > 0 and kind ~= "none" then
 				local tag = kind
 				if gi > 1 then
 					tag = kind .. ":ring"
@@ -954,9 +963,13 @@ return function(S)
 				return pts, tag, jumps or jumpsFromPts(pts)
 			end
 			lastWhy = kind or lastWhy
+			-- Yield so Kill Aura walk loop is not frozen during multi-goal search
+			if gi < #goals then
+				task.wait()
+			end
 		end
 
-		-- Last resort: straight line ONLY if actually clear
+		-- Last resort: straight line ONLY if actually clear (includes elevation drops)
 		if M.hasClearWalk(from, primary) then
 			local line = { from, primary }
 			if S.pathVizEnabled then

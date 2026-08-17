@@ -635,60 +635,65 @@ return function(S)
 	end
 
 	-- Rebuild path to stand ring. Never keep a wall-clipping line (log 00-32-43).
+	-- Only 1–2 computePath calls (each already tries a small goal ring). Old code
+	-- did 8 × 33 PFS/A* searches and froze walk for 30s+ (log 02-56-20).
 	local function rebuildPath(playerPos: Vector3, epos: Vector3, enemy: Model, range: number)
 		local nav = Nav()
 		local pts: { Vector3 }? = nil
 		local kind = "blocked"
-		local goal = standGoalNear(playerPos, epos, range, 0)
+		local goal = standGoalNear(playerPos, epos, range, standAngleIdx * (math.pi / 4))
 
-		-- Try primary stand + rotated stand angles until computePath finds a walkable route
-		local angleSteps = { 0, 1, -1, 2, -2, 3, -3, 4 }
-		for _, step in ipairs(angleSteps) do
-			local ang = (standAngleIdx + step) * (math.pi / 4)
-			local g = standGoalNear(playerPos, epos, range, ang)
-			goal = g
-			local tryPts: { Vector3 }? = nil
-			local tryKind = "line"
-			if nav and nav.computePath then
-				tryPts, tryKind = nav.computePath(playerPos, g)
-			elseif nav and nav.findPath then
-				tryPts = nav.findPath(playerPos, g)
-				tryKind = "grid"
-			else
-				tryPts = { playerPos, g }
-				tryKind = "line"
+		local function acceptRoute(tryPts: { Vector3 }?, tryKind: string): boolean
+			if not tryPts or #tryPts < 2 then
+				return false
 			end
-			if tryPts and #tryPts >= 2 then
+			local isLine = tryKind == "line" or (string.sub(tryKind, 1, 4) == "line")
+			local isBlocked = tryKind == "blocked" or (string.sub(tryKind, 1, 7) == "blocked")
+			if isBlocked then
+				return false
+			end
+			if isLine then
 				local clear = true
-				if nav and nav.pathSegmentsClear then
-					clear = nav.pathSegmentsClear(tryPts)
-				elseif nav and nav.hasClearWalk then
-					clear = nav.hasClearWalk(playerPos, tryPts[2])
+				if nav and nav.hasClearWalk then
+					clear = nav.hasClearWalk(playerPos, tryPts[#tryPts])
 				end
-				-- Accept multi-wp routes even if a far segment is tight; reject pure blocked line
-				local isLine = tryKind == "line" or (string.sub(tryKind, 1, 4) == "line")
-				local isBlocked = tryKind == "blocked" or (string.sub(tryKind, 1, 7) == "blocked")
-				if isBlocked then
-					continue
+				if not clear then
+					return false
 				end
-				if isLine and not clear then
-					continue
-				end
-				if #tryPts == 1 then
-					continue
-				end
-				pts = tryPts
-				kind = tryKind
-				if step ~= 0 then
-					standAngleIdx = (standAngleIdx + step) % 8
-					kind = kind .. string.format(":a%d", step)
-				end
-				break
-			elseif tryPts and #tryPts == 1 and tryKind ~= "blocked" then
-				-- arrived-ish single node
-				pts = tryPts
-				kind = tryKind
-				break
+			end
+			pts = tryPts
+			kind = tryKind
+			return true
+		end
+
+		-- Attempt 1: stand toward player→enemy at current standAngle
+		local tryPts: { Vector3 }? = nil
+		local tryKind = "line"
+		if nav and nav.computePath then
+			tryPts, tryKind = nav.computePath(playerPos, goal, { maxGoals = 6 })
+		elseif nav and nav.findPath then
+			tryPts = nav.findPath(playerPos, goal)
+			tryKind = "grid"
+		else
+			tryPts = { playerPos, goal }
+			tryKind = "line"
+		end
+		if not acceptRoute(tryPts, tryKind) then
+			-- Attempt 2: rotate stand 90° (one more full compute, not 7)
+			standAngleIdx = (standAngleIdx + 2) % 8
+			goal = standGoalNear(playerPos, epos, range, standAngleIdx * (math.pi / 4))
+			task.wait()
+			if nav and nav.computePath then
+				tryPts, tryKind = nav.computePath(playerPos, goal, {
+					maxGoals = 6,
+					ringPhase = standAngleIdx * 0.4,
+				})
+			end
+			if not acceptRoute(tryPts, tryKind) then
+				pts = { playerPos }
+				kind = "blocked"
+			else
+				kind = kind .. ":a2"
 			end
 		end
 
@@ -709,19 +714,22 @@ return function(S)
 				kind,
 				enemy.Name
 			))
-			if blockedRouteFails >= 3 then
+			if blockedRouteFails >= 2 then
 				local Targets = T()
 				if Targets and Targets.clearHold then
 					Targets.clearHold("path_blocked")
 				end
 				blockedRouteFails = 0
-				pathPts = { playerPos }
-				pathEnemy = nil
+				-- Keep previous path if we had one so we still move this tick
+				if #pathPts < 2 then
+					pathPts = { playerPos }
+					pathEnemy = nil
+					pathIdx = 1
+					segBlocked = true
+				end
 				pathBuiltAt = os.clock()
 				lastRepathAt = pathBuiltAt
 				lastVizKind = "blocked"
-				pathIdx = 1
-				segBlocked = true
 				return
 			end
 		else
