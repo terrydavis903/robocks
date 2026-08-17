@@ -66,7 +66,7 @@ return function(S)
 			if U.ensureDir then
 				U.ensureDir(dir)
 			end
-			writefile(logFile, "# portal_mage kill aura v7.1 face→check→W (wide keep, stable seg)\n# " .. stamp .. "\n")
+			writefile(logFile, "# portal_mage kill aura v8 L/R pulse face→check→W + full-path hitbox\n# " .. stamp .. "\n")
 		end)
 	end
 
@@ -329,33 +329,37 @@ return function(S)
 	end
 
 	---------------------------------------------------------------------------
-	-- Face then move: rotate toward path → check HRP aim → only then W.
-	-- Gate on HRP look (not cam lag). No Left/Right arrows (permanent spin).
+	-- Face then move: Left/Right camera pulses → check aim → then W.
+	-- Calibrated short holds + gaps (never permanent arrow hold = spin).
 	---------------------------------------------------------------------------
 
-	local faceAlign = C.KILL_AURA_FACE_ALIGN or 0.72 -- start W when aimed at path
-	-- Wide hysteresis: only re-face when badly off (0.55 keep caused settle↔reface thrash)
-	local faceKeep = C.KILL_AURA_FACE_KEEP or C.KILL_AURA_FACE_STOP or 0.25
+	local faceAlign = C.KILL_AURA_FACE_ALIGN or 0.82
+	local faceKeep = C.KILL_AURA_FACE_KEEP or C.KILL_AURA_FACE_STOP or 0.30
 	if faceKeep > faceAlign - 0.15 then
-		faceKeep = math.max(0.2, faceAlign - 0.4)
+		faceKeep = math.max(0.2, faceAlign - 0.45)
 	end
 	local faceSettle = C.KILL_AURA_FACE_SETTLE or 0.0
-	local faceStuckT = C.KILL_AURA_FACE_STUCK or 0.4
-	-- Last face decision (for status)
+	local faceStuckT = C.KILL_AURA_FACE_STUCK or 0.6
 	local lastFaceDot = 0
 	local lastYawErr = 0
 	local lastTurnName = "-"
-	local faceOkSince = 0 -- os.clock when first hit faceAlign; 0 = not aligned
-	local walkingFacing = false -- true while allowed to hold W
-	local faceStuckSince = 0 -- face mode without progress
-	local faceStuckBest = -2 -- best faceDot while stuck-facing
+	local faceOkSince = 0
+	local walkingFacing = false
+	local faceStuckSince = 0
+	local faceStuckBest = -2
 	local progressPos: Vector3? = nil
 	local progressAt = 0
 	local noProgressRepaths = 0
-
 	local lastHrpDot = 0
 	local lastCamDot = 0
 
+	-- Arrow turn state machine: idle → hold (short) → gap (release) → remeasure
+	local turnPhase = "idle" -- idle | hold | gap
+	local turnPhaseUntil = 0
+	local turnKeyActive: Enum.KeyCode? = nil
+	local lastAbsAng = 0
+
+	-- Camera-primary facing (L/R turns the cam; WASD follows cam in this game).
 	local function facingQuality(target: Vector3): (number, number, Vector3, number, number)
 		local hrp = getHrp()
 		local pos = hrp and hrp.Position or target
@@ -374,119 +378,130 @@ return function(S)
 			end
 		end
 		local camDot = hrpDot
+		local camLook = measured
 		local cam = workspace.CurrentCamera
 		if cam then
 			local cl = Vector3.new(cam.CFrame.LookVector.X, 0, cam.CFrame.LookVector.Z)
 			if cl.Magnitude > 1e-4 then
 				cl = cl.Unit
+				camLook = cl
 				camDot = cl:Dot(to)
 			end
 		end
-		-- Gate / report on HRP (movement). Cam is diagnostic only.
-		local yawErr = measured.X * to.Z - measured.Z * to.X
-		return hrpDot, yawErr, measured, hrpDot, camDot
+		-- Yaw error from camera look (what L/R arrows change)
+		local yawErr = camLook.X * to.Z - camLook.Z * to.X
+		return camDot, yawErr, camLook, hrpDot, camDot
 	end
 
-	-- Force both HRP and camera to look at target (horizontal). Use sparingly.
-	local function hardFace(target: Vector3)
-		local hrp = getHrp()
-		if hrp then
-			pcall(function()
-				local p = hrp.Position
-				hrp.CFrame = CFrame.lookAt(p, Vector3.new(target.X, p.Y, target.Z))
-			end)
+	local function releaseTurn()
+		turnPhase = "idle"
+		turnKeyActive = nil
+		if U.holdTurnKey then
+			U.holdTurnKey(nil)
 		end
-		local cam = workspace.CurrentCamera
-		if cam then
-			pcall(function()
-				local cpos = cam.CFrame.Position
-				local look = cam.CFrame.LookVector
-				local aim = Vector3.new(target.X - cpos.X, 0, target.Z - cpos.Z)
-				if aim.Magnitude > 0.1 then
-					aim = aim.Unit
-					cam.CFrame = CFrame.lookAt(cpos, cpos + Vector3.new(aim.X, look.Y, aim.Z))
-				end
-			end)
-		end
+		lastTurnName = "-"
 	end
 
-	-- Gentle HRP + cam yaw toward path target. No arrow keys.
-	local function softFace(target: Vector3): number
-		local hrp = getHrp()
+	-- Calibrated L/R: short hold proportional to error, then mandatory release gap.
+	-- Returns camera facing dot toward target.
+	local function faceWithArrows(target: Vector3): number
 		local hum = getHum()
-		if not hrp then
-			return 0
-		end
 		if hum then
 			pcall(function()
 				hum.AutoRotate = false
 			end)
 		end
-		local poll = C.SMOOTH_WALK_POLL or 0.08
-		local turnRate = if walkingFacing
-			then (C.KILL_AURA_FACE_WALK_RATE or 5.0)
-			else (C.KILL_AURA_FACE_TURN_RATE or 7.0)
-		local pos = hrp.Position
 		local d, yawErr, measured, hrpDot, camDot = facingQuality(target)
+		-- Signed angle from cam to path (rad)
+		local ang = math.atan2(yawErr, math.clamp(d, -1, 1))
+		local absAng = math.abs(ang)
+		local now = os.clock()
+		local deadDeg = C.PATH_TURN_DEAD_DEG or 12
+		local dead = math.rad(deadDeg)
+		local baseHold = C.PATH_TURN_HOLD or 0.05
+		local baseGap = C.PATH_TURN_GAP or 0.10
+		local holdMax = C.PATH_TURN_HOLD_MAX or 0.11
+		local gapMin = C.PATH_TURN_GAP_MIN or 0.07
+		local invert = C.PATH_TURN_INVERT ~= false
 
-		pcall(function()
-			local lookAt = Vector3.new(target.X, pos.Y, target.Z)
-			local desired = CFrame.lookAt(pos, lookAt)
-			local alpha = 1 - math.exp(-turnRate * poll)
-			-- Establishing face: a bit snappier; walking: gentle only
-			if not walkingFacing then
-				alpha = math.clamp(alpha, 0.08, 0.45)
-			else
-				alpha = math.clamp(alpha * 0.55, 0.04, 0.22)
-			end
-			hrp.CFrame = hrp.CFrame:Lerp(desired, alpha)
-		end)
-
-		local cam = workspace.CurrentCamera
-		if cam then
-			pcall(function()
-				local cpos = cam.CFrame.Position
-				local look = cam.CFrame.LookVector
-				local to = Vector3.new(target.X - cpos.X, 0, target.Z - cpos.Z)
-				if to.Magnitude > 0.2 then
-					to = to.Unit
-					local flatLook = Vector3.new(look.X, 0, look.Z)
-					if flatLook.Magnitude > 0.1 then
-						flatLook = flatLook.Unit
-						local cdot = flatLook:Dot(to)
-						if cdot < 0.98 then
-							local desiredLook = CFrame.lookAt(cpos, cpos + Vector3.new(to.X, look.Y, to.Z)).LookVector
-							local a = if walkingFacing then 0.12 else 0.28
-							local blended = flatLook:Lerp(Vector3.new(desiredLook.X, 0, desiredLook.Z).Unit, a)
-							if blended.Magnitude > 0.1 then
-								blended = blended.Unit
-								cam.CFrame = CFrame.lookAt(
-									cpos,
-									cpos + Vector3.new(blended.X, look.Y, blended.Z)
-								)
-							end
-						end
-					end
-				end
-			end)
-		end
-
-		d, yawErr, measured, hrpDot, camDot = facingQuality(target)
 		lastFaceDot = d
 		lastYawErr = yawErr
 		lastHrpDot = hrpDot
 		lastCamDot = camDot
-		lastTurnName = "-"
-		updateFaceViz(hrp, target, measured, yawErr, nil)
+		lastAbsAng = absAng
+		updateFaceViz(getHrp(), target, measured, yawErr, turnKeyActive)
+
+		-- Aimed: release and done
+		if absAng <= dead and d >= (faceAlign * 0.92) then
+			releaseTurn()
+			return d
+		end
+		if absAng <= dead * 0.6 then
+			releaseTurn()
+			return d
+		end
+
+		-- Pick arrow (inverted for this game)
+		local key: Enum.KeyCode
+		if invert then
+			key = if yawErr > 0 then Enum.KeyCode.Right else Enum.KeyCode.Left
+		else
+			key = if yawErr > 0 then Enum.KeyCode.Left else Enum.KeyCode.Right
+		end
+
+		-- Scale: bigger error → slightly longer press; near aligned → longer gap
+		local err01 = math.clamp(absAng / math.pi, 0, 1)
+		local holdT = math.clamp(baseHold * (0.65 + err01 * 1.2), baseHold * 0.6, holdMax)
+		local gapT = math.clamp(baseGap * (0.75 + (1 - err01) * 0.9), gapMin, baseGap * 1.8)
+		-- Stuck facing: longer pulse to break inertia
+		if faceStuckSince > 0 and (now - faceStuckSince) >= faceStuckT then
+			holdT = math.min(holdMax * 1.15, holdT * 1.5)
+		end
+
+		if turnPhase == "hold" and turnKeyActive then
+			if now < turnPhaseUntil then
+				if U.holdTurnKey then
+					U.holdTurnKey(turnKeyActive, false) -- keep without re-edge
+				end
+				lastTurnName = if turnKeyActive == Enum.KeyCode.Left then "LEFT" else "RIGHT"
+				return d
+			end
+			-- End hold → gap
+			if U.holdTurnKey then
+				U.holdTurnKey(nil)
+			end
+			turnPhase = "gap"
+			turnPhaseUntil = now + gapT
+			turnKeyActive = nil
+			lastTurnName = "-"
+			return d
+		end
+
+		if turnPhase == "gap" then
+			if U.holdTurnKey then
+				U.holdTurnKey(nil)
+			end
+			lastTurnName = "-"
+			if now < turnPhaseUntil then
+				return d
+			end
+			turnPhase = "idle"
+		end
+
+		-- idle → start a new calibrated pulse
+		turnPhase = "hold"
+		turnPhaseUntil = now + holdT
+		turnKeyActive = key
+		if U.holdTurnKey then
+			U.holdTurnKey(key, true) -- edge down
+		end
+		lastTurnName = if key == Enum.KeyCode.Left then "LEFT" else "RIGHT"
+		updateFaceViz(getHrp(), target, measured, yawErr, key)
 		return d
 	end
 
-	-- Stand / combat face: soft only, no arrows
 	local function facePoint(target: Vector3): number
-		if U.holdTurnKey then
-			U.holdTurnKey(nil)
-		end
-		return softFace(target)
+		return faceWithArrows(target)
 	end
 
 	local function faceEnemy(epos: Vector3): number
@@ -690,6 +705,10 @@ return function(S)
 		lastVizKind = kind
 		pathIdx = 1
 		segBlocked = kind == "blocked"
+		-- Full-path clearance hitboxes for Clear Hitbox viz (every hop, body height)
+		if nav and nav.probeFullPath and #pathPts >= 2 then
+			nav.probeFullPath(pathPts)
+		end
 		-- Reset progress so we don't immediately NO_PROGRESS on a fresh path
 		progressPos = playerPos
 		progressAt = pathBuiltAt
@@ -899,9 +918,7 @@ return function(S)
 	end
 
 	local function driveStop()
-		if U.holdTurnKey then
-			U.holdTurnKey(nil)
-		end
+		releaseTurn()
 		setMoveKey(nil)
 		if U.holdJump then
 			U.holdJump(false)
@@ -931,7 +948,7 @@ return function(S)
 
 		local dist = flatDist(playerPos, epos)
 		if dist <= range then
-			softFace(epos)
+			faceWithArrows(epos)
 			driveStop()
 			walkingFacing = false
 			faceOkSince = 0
@@ -975,17 +992,25 @@ return function(S)
 		faceDir = faceDir.Unit
 
 		---------------------------------------------------------------------------
-		-- 1) Face path. 2) Check HRP. 3) W only if aimed.
-		-- Log 13-08-26: settle→W→reface every tick was the stuck loop.
+		-- 1) L/R camera pulses toward path. 2) Check cam aim. 3) W only if aimed.
 		---------------------------------------------------------------------------
 		local now = os.clock()
 		local d: number
 
 		if not walkingFacing then
-			-- Establishing face — soft turn, no W
-			driveStop()
-			d = softFace(target)
-			if d >= faceAlign then
+			-- Establishing face — arrows only, no W
+			setMoveKey(nil)
+			if U.holdJump then
+				U.holdJump(false)
+			end
+			local hum0 = getHum()
+			if hum0 then
+				pcall(function()
+					hum0:Move(Vector3.zero)
+				end)
+			end
+			d = faceWithArrows(target)
+			if d >= faceAlign and lastAbsAng <= math.rad((C.PATH_TURN_DEAD_DEG or 12) * 1.1) then
 				if faceOkSince <= 0 then
 					faceOkSince = now
 				end
@@ -995,7 +1020,8 @@ return function(S)
 					faceStuckBest = -2
 					progressPos = playerPos
 					progressAt = now
-					-- fall through to walk this tick
+					releaseTurn()
+					-- fall through to walk
 				else
 					return string.format("settle %.2f %s", d, segLabel)
 				end
@@ -1004,43 +1030,20 @@ return function(S)
 				if faceStuckSince <= 0 then
 					faceStuckSince = now
 					faceStuckBest = d
-					return string.format("face %.2f %s", d, segLabel)
-				elseif d > faceStuckBest + 0.02 then
+				elseif d > faceStuckBest + 0.03 then
 					faceStuckBest = d
 					faceStuckSince = now
-					return string.format("face %.2f %s", d, segLabel)
-				elseif (now - faceStuckSince) >= faceStuckT then
-					-- Hard snap and walk same tick if aimed (no FACE_SNAP infinite loop)
-					hardFace(target)
-					d = select(1, facingQuality(target))
-					lastFaceDot = d
-					lastHrpDot = d
-					log(string.format("FACE_SNAP d=%.2f %s", d, segLabel))
-					faceStuckSince = 0
-					faceStuckBest = -2
-					if d >= faceAlign * 0.9 then
-						walkingFacing = true
-						faceOkSince = now
-						progressPos = playerPos
-						progressAt = now
-						-- fall through to walk
-					else
-						return string.format("face %.2f %s", d, segLabel)
-					end
-				else
-					return string.format("face %.2f %s", d, segLabel)
 				end
+				return string.format("face %.2f %s t=%s", d, segLabel, lastTurnName)
 			end
 		else
-			-- Walking: measure only; reface only if badly wrong (wide hysteresis)
-			local yawErr, measured, hrpDot, camDot
-			d, yawErr, measured, hrpDot, camDot = facingQuality(target)
+			-- Walking: re-face only if cam badly off; micro-pulse if slightly off
+			d = select(1, facingQuality(target))
+			local _, yawErr, measured, hrpDot, camDot = facingQuality(target)
 			lastFaceDot = d
 			lastYawErr = yawErr
 			lastHrpDot = hrpDot
 			lastCamDot = camDot
-			updateFaceViz(getHrp(), target, measured, yawErr, nil)
-
 			if d < faceKeep then
 				walkingFacing = false
 				faceOkSince = 0
@@ -1048,13 +1051,21 @@ return function(S)
 				driveStop()
 				return string.format("reface %.2f %s", d, segLabel)
 			end
-			-- Mild keep-aligned only when slightly off — never hardFace mid-walk
 			if d < faceAlign then
-				softFace(target)
+				-- small corrections while walking (still pulsed L/R, not CFrame)
+				faceWithArrows(target)
+			else
+				releaseTurn()
+				updateFaceViz(getHrp(), target, measured, yawErr, nil)
 			end
 		end
 
-		-- Aimed at path → walk
+		-- Aimed at path → walk (release arrows first so W isn't fighting turn)
+		if turnPhase == "hold" then
+			-- finish current pulse before walking straight
+			return string.format("face %.2f %s t=%s", d, segLabel, lastTurnName)
+		end
+		releaseTurn()
 		local jump = needJumpUp(playerPos, target, faceDir)
 		driveForward(faceDir, jump)
 
@@ -1100,7 +1111,7 @@ return function(S)
 
 	local function runWalker()
 		logOpen()
-		log("walker start v7.1 face→check→W (wide keep, stable seg)")
+		log("walker start v8 L/R pulse face→check→W")
 
 		while S.walking do
 			local ok, err = pcall(function()
@@ -1198,7 +1209,7 @@ return function(S)
 
 				-- Stand band = distance only. Soft face enemy (no arrows, no spin).
 				if canStandForCombat(playerPos, epos, range, sticky) then
-					softFace(epos)
+					faceWithArrows(epos)
 					driveStop()
 					walkingFacing = false
 					faceOkSince = 0
@@ -1459,7 +1470,7 @@ return function(S)
 		clearPathState()
 
 		U.setStatus(string.format(
-			"Kill Aura ON — face→check→W→stand@%d→R/cast%s",
+			"Kill Aura ON — L/R face→check→W→stand@%d→R/cast%s",
 			T().fightRange(),
 			opts.fromRespawn and " (post-respawn)" or ""
 		))

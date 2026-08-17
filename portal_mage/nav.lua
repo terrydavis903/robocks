@@ -734,38 +734,29 @@ return function(S)
 		return true
 	end
 
-	-- True if player-sized hitboxes along from→to (at character height above floor)
-	-- do not intersect walls/meshes. Floor contact is ignored.
-	--
-	--   floor path polyline  ────●────●────●────  (nodes)
-	--   clear hitbox height       ▢    ▢    ▢     (probes)
-	--
-	function M.hasClearWalk(from: Vector3, to: Vector3): boolean
+	-- Sample player-sized hitboxes along one hop at body height above floor.
+	-- Returns clear?, samples (all probes — even after a block for full-path viz).
+	local function sampleHopProbes(from: Vector3, to: Vector3): (boolean, { any })
 		local flat = Vector3.new(to.X - from.X, 0, to.Z - from.Z)
 		local dist = flat.Magnitude
+		local samples: { any } = {}
 		if dist < 0.35 then
-			lastClearProbeSamples = {}
-			return true
+			return true, samples
 		end
-		-- Walk-off drops: gravity path; don't reject the cliff face under the ledge
+		local boxSize = M.playerHitboxSize()
+		local centerH = M.playerHitboxCenterHeight()
 		if M.isElevationDrop(from, to) then
-			local boxSize = M.playerHitboxSize()
-			local centerH = M.playerHitboxCenterHeight()
-			lastClearProbeSamples = {
-				{
-					pos = Vector3.new(from.X, from.Y - boxSize.Y * 0.5 + centerH, from.Z),
-					size = boxSize,
-					dir = flat.Unit,
-					blocked = false,
-					note = "drop",
-				},
-			}
-			return true
+			table.insert(samples, {
+				pos = Vector3.new(from.X, from.Y - boxSize.Y * 0.5 + centerH, from.Z),
+				size = boxSize,
+				dir = flat.Unit,
+				blocked = false,
+				note = "drop",
+			})
+			return true, samples
 		end
 
 		local dir = flat.Unit
-		local boxSize = M.playerHitboxSize()
-		local centerH = M.playerHitboxCenterHeight()
 		local step = cfg("NAV_CLEAR_STEP", 2.0)
 		if step < 1.0 then
 			step = 1.0
@@ -773,7 +764,7 @@ return function(S)
 		local maxFall = cfg("NAV_MAX_DROP_Y", 40)
 		local overlap = clearanceOverlapParams()
 		local nSteps = math.max(1, math.ceil(dist / step))
-		local samples: { any } = {}
+		local hopClear = true
 
 		for s = 0, nSteps do
 			local t = math.min(dist, s * step)
@@ -782,7 +773,6 @@ return function(S)
 			local x = from.X + dir.X * t
 			local z = from.Z + dir.Z * t
 
-			-- Snap to floor under this XZ (path nodes are on floor; hitbox is ABOVE)
 			local floorY = hintY
 			local floor = M.sampleFloor(x, z, hintY, { requireClear = false })
 			if floor and floor.pos then
@@ -794,18 +784,11 @@ return function(S)
 						blocked = true,
 						note = "void",
 					})
-					lastClearProbeSamples = samples
-					if S.hitboxVizEnabled then
-						M.refreshHitboxViz()
-					end
-					return false
+					hopClear = false
+					-- keep sampling remaining points for full-path viz
+					continue
 				end
 				floorY = floor.pos.Y
-			elseif s == 0 or s == nSteps then
-				-- Endpoints with no floor: still place box at hint height
-				floorY = hintY
-			else
-				floorY = hintY
 			end
 
 			local centerPos = Vector3.new(x, floorY + centerH, z)
@@ -822,7 +805,9 @@ return function(S)
 					end
 				end
 			end
-
+			if hitBlock then
+				hopClear = false
+			end
 			table.insert(samples, {
 				pos = centerPos,
 				size = boxSize,
@@ -831,20 +816,52 @@ return function(S)
 				floorY = floorY,
 				centerH = centerH,
 			})
-			if hitBlock then
-				lastClearProbeSamples = samples
-				if S.hitboxVizEnabled then
-					M.refreshHitboxViz()
-				end
-				return false
-			end
 		end
+		return hopClear, samples
+	end
 
+	-- True if player-sized hitboxes along from→to are clear (body height, not floor nodes).
+	function M.hasClearWalk(from: Vector3, to: Vector3): boolean
+		local ok, samples = sampleHopProbes(from, to)
 		lastClearProbeSamples = samples
 		if S.hitboxVizEnabled then
 			M.refreshHitboxViz()
 		end
-		return true
+		return ok
+	end
+
+	-- Probe every hop of a polyline; always stores ALL samples for Clear Hitbox viz.
+	function M.probeFullPath(pts: { Vector3 }?): boolean
+		if not pts or #pts < 2 then
+			lastClearProbeSamples = {}
+			if S.hitboxVizEnabled then
+				M.refreshHitboxViz()
+			end
+			return false
+		end
+		local all: { any } = {}
+		local allClear = true
+		local maxProbes = 120
+		for i = 1, #pts - 1 do
+			local hopOk, samples = sampleHopProbes(pts[i], pts[i + 1])
+			if not hopOk then
+				allClear = false
+			end
+			for _, s in ipairs(samples) do
+				if #all >= maxProbes then
+					break
+				end
+				table.insert(all, s)
+			end
+			if #all >= maxProbes then
+				break
+			end
+		end
+		lastClearProbeSamples = all
+		if S.hitboxVizEnabled then
+			M.refreshHitboxViz()
+		end
+		return allClear
 	end
 
 	-- If next waypoint is through a collide mesh, skip ahead while clear; nil if need repath.
@@ -919,6 +936,10 @@ return function(S)
 		if not points or #points == 0 then
 			M.clearPathViz()
 			return
+		end
+		-- Full-path clearance probes for Clear Hitbox viz (every hop)
+		if S.hitboxVizEnabled and #points >= 2 then
+			M.probeFullPath(points)
 		end
 		local folder = ensurePathVizFolder()
 		for _, ch in ipairs(folder:GetChildren()) do
@@ -996,20 +1017,8 @@ return function(S)
 	-- True if each hop of the polyline is walkable (no wall/prop/stall).
 	-- Short PFS paths often still clip custom meshes — reject those.
 	function M.pathSegmentsClear(pts: { Vector3 }?): boolean
-		if not pts or #pts < 2 then
-			return false
-		end
-		for i = 1, #pts - 1 do
-			local a, b = pts[i], pts[i + 1]
-			local flat = Vector3.new(b.X - a.X, 0, b.Z - a.Z).Magnitude
-			if flat < 0.35 then
-				continue
-			end
-			if not M.hasClearWalk(a, b) then
-				return false
-			end
-		end
-		return true
+		-- Full-path probe so Clear Hitbox viz shows every hop, not only the last.
+		return M.probeFullPath(pts)
 	end
 
 	local function snapGoal(to: Vector3): Vector3
@@ -1376,14 +1385,26 @@ return function(S)
 		local ch = M.playerHitboxCenterHeight()
 		if U and U.setStatus then
 			U.setStatus(string.format(
-				"Clear Hitbox ON — box %.1f×%.1f×%.1f @ floor+%.1f (probes along path at body height)",
+				"Clear Hitbox ON — %.1f×%.1f×%.1f @ floor+%.1f (full A* path probes)",
 				sz.X,
 				sz.Y,
 				sz.Z,
 				ch
 			))
 		end
-		-- Immediate draw (do not wait for pathing)
+		-- Re-probe last kill-aura / bot path so full route boxes appear immediately
+		local last = S.lastKillAuraPath or S.lastBotPath
+		if last and type(last.points) == "table" and #last.points >= 2 then
+			local pts: { Vector3 } = {}
+			for _, p in ipairs(last.points) do
+				if type(p) == "table" and p.x and p.z then
+					table.insert(pts, Vector3.new(p.x, p.y or 0, p.z))
+				end
+			end
+			if #pts >= 2 then
+				M.probeFullPath(pts)
+			end
+		end
 		M.refreshHitboxViz()
 		if S.hitboxVizThread then
 			pcall(task.cancel, S.hitboxVizThread)
@@ -1391,7 +1412,7 @@ return function(S)
 		S.hitboxVizThread = task.spawn(function()
 			while S.hitboxVizEnabled do
 				M.refreshHitboxViz()
-				task.wait(0.08)
+				task.wait(0.12)
 			end
 		end)
 	end
