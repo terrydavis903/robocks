@@ -1,12 +1,8 @@
--- portal_mage/path_record.lua — Human path traversal recorder (Waypoints tab)
+-- portal_mage/path_record.lua — Human path recorder + spawn-path registry
 --
--- Toggle "A* Rec" → walk the route yourself → toggle OFF to save.
--- Records position trail + key edges/holds + last bot path + Path Viz polyline.
--- Writes dumps/pathrec_YYYY-MM-DD_HH-MM-SS.json.
---
--- Planned: bind a recording to a map respawn pad; after sit+heal, walk that
--- human egress path before enabling Kill Aura (safe spawns are often behind
--- walls/cliffs where A* fails).
+-- Waypoints tab "A* Rec": walk a route → OFF saves dumps/pathrec_*.json AND
+-- registers a spawn egress path (start = first sample) in waypoints/respawn_paths.json.
+-- List/delete wrong recordings; "Respawn points" viz marks starts with recorded paths.
 return function(S)
 	local C = S.Config
 	local U = S.Util
@@ -46,6 +42,7 @@ return function(S)
 	}
 
 	local REC_FOLDER = "PortalMage_PathRecTrail"
+	local SPAWN_VIZ_FOLDER = "PortalMage_SpawnPathStarts"
 
 	local function setStatus(t: string)
 		if U and U.setStatus then
@@ -57,6 +54,257 @@ return function(S)
 		if S.ui and S.ui.setPathRecLabel then
 			S.ui.setPathRecLabel(S.pathRecEnabled == true)
 		end
+	end
+
+	local function refreshSpawnList()
+		if S.ui and S.ui.refreshSpawnPaths then
+			S.ui.refreshSpawnPaths()
+		end
+	end
+
+	local function spawnFilePath(): string
+		return C.RESPAWN_PATH_FILE or "waypoints/respawn_paths.json"
+	end
+
+	local function newSpawnId(): string
+		return string.format("sp_%s_%04d", os.date("%Y%m%d%H%M%S"), math.random(0, 9999))
+	end
+
+	---------------------------------------------------------------------------
+	-- Spawn-path registry (saved recordings for respawn egress)
+	---------------------------------------------------------------------------
+
+	function M.loadSpawnPaths(): number
+		S.spawnPaths = {}
+		S.selectedSpawnPathId = nil
+		local path = spawnFilePath()
+		local ok, data = pcall(function()
+			if not isfile or not isfile(path) then
+				return nil
+			end
+			return HttpService:JSONDecode(readfile(path))
+		end)
+		if ok and type(data) == "table" and type(data.paths) == "table" then
+			for _, p in ipairs(data.paths) do
+				if type(p) == "table" and type(p.start) == "table" and type(p.samples) == "table" then
+					table.insert(S.spawnPaths, {
+						id = tostring(p.id or newSpawnId()),
+						name = tostring(p.name or "spawn"),
+						placeId = p.placeId,
+						start = p.start,
+						finish = p.finish,
+						samples = p.samples,
+						sampleCount = type(p.samples) == "table" and #p.samples or (p.sampleCount or 0),
+						created = p.created or "",
+						pathrecFile = p.pathrecFile,
+					})
+				end
+			end
+		end
+		if #S.spawnPaths > 0 then
+			S.selectedSpawnPathId = S.spawnPaths[1].id
+		end
+		refreshSpawnList()
+		if S.spawnPathVizEnabled then
+			M.refreshSpawnPathViz()
+		end
+		return #S.spawnPaths
+	end
+
+	function M.saveSpawnPaths(): boolean
+		local path = spawnFilePath()
+		local dir = C.WAYPOINT_DIR or "waypoints"
+		local payload = {
+			version = 1,
+			updated = os.date("%Y-%m-%d_%H-%M-%S"),
+			paths = S.spawnPaths or {},
+		}
+		local ok, err = pcall(function()
+			if U and U.ensureDir then
+				U.ensureDir(dir)
+			end
+			writefile(path, HttpService:JSONEncode(payload))
+		end)
+		if not ok then
+			setStatus("Spawn path save failed: " .. tostring(err))
+			return false
+		end
+		return true
+	end
+
+	function M.listSpawnPaths(): { any }
+		return S.spawnPaths or {}
+	end
+
+	function M.getSelectedSpawnPath(): any?
+		local id = S.selectedSpawnPathId
+		if not id then
+			return nil
+		end
+		for _, p in ipairs(S.spawnPaths or {}) do
+			if p.id == id then
+				return p
+			end
+		end
+		return nil
+	end
+
+	function M.setSelectedSpawnPath(id: string?)
+		S.selectedSpawnPathId = id
+	end
+
+	function M.deleteSpawnPath(id: string?): boolean
+		if not id then
+			return false
+		end
+		local paths = S.spawnPaths or {}
+		for i, p in ipairs(paths) do
+			if p.id == id then
+				table.remove(paths, i)
+				if S.selectedSpawnPathId == id then
+					S.selectedSpawnPathId = if #paths > 0 then paths[1].id else nil
+				end
+				M.saveSpawnPaths()
+				refreshSpawnList()
+				if S.spawnPathVizEnabled then
+					M.refreshSpawnPathViz()
+				end
+				setStatus("Deleted spawn path: " .. tostring(p.name or id))
+				return true
+			end
+		end
+		return false
+	end
+
+	function M.addSpawnPathFromRecording(payload: any, pathrecFile: string?): any?
+		if type(payload) ~= "table" then
+			return nil
+		end
+		local samples = payload.samples
+		if type(samples) ~= "table" or #samples < 2 then
+			setStatus("Spawn path not saved — need ≥2 samples")
+			return nil
+		end
+		local start = payload.start or samples[1]
+		local finish = payload.finish or samples[#samples]
+		if type(start) ~= "table" or type(start.x) ~= "number" then
+			return nil
+		end
+		local id = newSpawnId()
+		local name = string.format(
+			"spawn_%.0f_%.0f_%.0f",
+			start.x or 0,
+			start.y or 0,
+			start.z or 0
+		)
+		local entry = {
+			id = id,
+			name = name,
+			placeId = game.PlaceId,
+			start = {
+				x = start.x,
+				y = start.y,
+				z = start.z,
+			},
+			finish = if type(finish) == "table"
+				then { x = finish.x, y = finish.y, z = finish.z }
+				else nil,
+			samples = samples,
+			sampleCount = #samples,
+			created = os.date("%Y-%m-%d_%H-%M-%S"),
+			pathrecFile = pathrecFile,
+			duration = payload.duration,
+		}
+		if not S.spawnPaths then
+			S.spawnPaths = {}
+		end
+		table.insert(S.spawnPaths, entry)
+		S.selectedSpawnPathId = id
+		M.saveSpawnPaths()
+		refreshSpawnList()
+		if S.spawnPathVizEnabled then
+			M.refreshSpawnPathViz()
+		end
+		return entry
+	end
+
+	function M.clearSpawnPathViz()
+		pcall(function()
+			if S.spawnPathVizFolder and S.spawnPathVizFolder.Parent then
+				S.spawnPathVizFolder:Destroy()
+			end
+			local f = workspace:FindFirstChild(SPAWN_VIZ_FOLDER)
+			if f then
+				f:Destroy()
+			end
+		end)
+		S.spawnPathVizFolder = nil
+	end
+
+	function M.refreshSpawnPathViz()
+		M.clearSpawnPathViz()
+		if not S.spawnPathVizEnabled then
+			return
+		end
+		local folder = Instance.new("Folder")
+		folder.Name = SPAWN_VIZ_FOLDER
+		folder.Parent = workspace
+		S.spawnPathVizFolder = folder
+		local n = 0
+		for _, p in ipairs(S.spawnPaths or {}) do
+			local st = p.start
+			if type(st) == "table" and type(st.x) == "number" then
+				n += 1
+				local part = Instance.new("Part")
+				part.Name = "Spawn_" .. tostring(p.id)
+				part.Shape = Enum.PartType.Ball
+				part.Size = Vector3.new(3.2, 3.2, 3.2)
+				part.Anchored = true
+				part.CanCollide = false
+				part.CanQuery = false
+				part.CanTouch = false
+				part.CastShadow = false
+				part.Material = Enum.Material.Neon
+				part.Color = Color3.fromRGB(255, 200, 60)
+				part.Transparency = 0.25
+				part.CFrame = CFrame.new(st.x, (st.y or 0) + 2.2, st.z)
+				part.Parent = folder
+				local bb = Instance.new("BillboardGui")
+				bb.Size = UDim2.fromOffset(120, 28)
+				bb.StudsOffset = Vector3.new(0, 2.5, 0)
+				bb.AlwaysOnTop = true
+				bb.Parent = part
+				local lab = Instance.new("TextLabel")
+				lab.Size = UDim2.fromScale(1, 1)
+				lab.BackgroundTransparency = 0.35
+				lab.BackgroundColor3 = Color3.fromRGB(20, 20, 28)
+				lab.Font = Enum.Font.GothamBold
+				lab.TextSize = 11
+				lab.TextColor3 = Color3.fromRGB(255, 230, 120)
+				lab.Text = tostring(p.name or p.id)
+				lab.Parent = bb
+			end
+		end
+		if U and U.setStatus then
+			U.setStatus(string.format("Respawn points ON — %d start marker(s)", n))
+		end
+	end
+
+	function M.setSpawnPathVizEnabled(on: boolean)
+		S.spawnPathVizEnabled = on and true or false
+		if S.ui and S.ui.setRespawnPathVizLabel then
+			S.ui.setRespawnPathVizLabel(S.spawnPathVizEnabled)
+		end
+		if S.spawnPathVizEnabled then
+			M.refreshSpawnPathViz()
+		else
+			M.clearSpawnPathViz()
+			setStatus("Respawn points OFF")
+		end
+	end
+
+	function M.toggleSpawnPathViz()
+		M.setSpawnPathVizEnabled(not S.spawnPathVizEnabled)
 	end
 
 	local function keyName(k: Enum.KeyCode): string
@@ -315,6 +563,10 @@ return function(S)
 			setStatus("Path rec write failed: " .. tostring(err))
 			return nil
 		end
+		-- Also register as a spawn egress path (start = first sample / start snap)
+		pcall(function()
+			M.addSpawnPathFromRecording(payload, path)
+		end)
 		return path
 	end
 
@@ -409,6 +661,11 @@ return function(S)
 	function M.clearTrailViz()
 		clearTrail()
 	end
+
+	-- Load registry on module init
+	task.defer(function()
+		M.loadSpawnPaths()
+	end)
 
 	return M
 end

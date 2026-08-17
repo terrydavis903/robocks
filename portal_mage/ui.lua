@@ -105,19 +105,31 @@ return function(S)
 			setSelected: (string) -> (),
 			getSelectedName: () -> string?,
 			onSelect: ((any) -> ())?,
+			listHeight: number?, -- dropdown list height (default 140)
+			compact: boolean?, -- slightly tighter spacing for teleport blocks
 		}
 	)
 		local y = y0
+		local compact = opts.compact == true
+		local listH = opts.listHeight or (if compact then 88 else 140)
 		local nameBox = mkBox(parent, y, "Name…")
-		y += 32
+		if compact then
+			nameBox.Size = UDim2.new(1, -16, 0, 24)
+		end
+		y += if compact then 28 else 32
 
 		local saveBtn = mkSmall(parent, "Save", 8, y, 82, Color3.fromRGB(50, 110, 150))
 		local renameBtn = mkSmall(parent, "Rename", 94, y, 82, Color3.fromRGB(90, 90, 140))
 		local delBtn = mkSmall(parent, "Delete", 180, y, 84, Color3.fromRGB(120, 55, 55))
-		y += 34
+		if compact then
+			saveBtn.Size = UDim2.fromOffset(82, 24)
+			renameBtn.Size = UDim2.fromOffset(82, 24)
+			delBtn.Size = UDim2.fromOffset(84, 24)
+		end
+		y += if compact then 28 else 34
 
 		local dropBtn = Instance.new("TextButton")
-		dropBtn.Size = UDim2.new(1, -16, 0, 30)
+		dropBtn.Size = UDim2.new(1, -16, 0, if compact then 26 else 30)
 		dropBtn.Position = UDim2.fromOffset(8, y)
 		dropBtn.BackgroundColor3 = Color3.fromRGB(36, 36, 48)
 		dropBtn.BorderSizePixel = 0
@@ -129,7 +141,7 @@ return function(S)
 		dropBtn.Parent = parent
 		corner(dropBtn)
 		local arrow = Instance.new("TextLabel")
-		arrow.Size = UDim2.fromOffset(20, 30)
+		arrow.Size = UDim2.fromOffset(20, if compact then 26 else 30)
 		arrow.Position = UDim2.new(1, -24, 0, 0)
 		arrow.BackgroundTransparency = 1
 		arrow.Font = Enum.Font.GothamBold
@@ -137,10 +149,10 @@ return function(S)
 		arrow.TextColor3 = Color3.fromRGB(160, 160, 180)
 		arrow.Text = "▾"
 		arrow.Parent = dropBtn
-		y += 34
+		y += if compact then 28 else 34
 
 		local listFrame = Instance.new("ScrollingFrame")
-		listFrame.Size = UDim2.new(1, -16, 0, 140)
+		listFrame.Size = UDim2.new(1, -16, 0, listH)
 		listFrame.Position = UDim2.fromOffset(8, y)
 		listFrame.BackgroundColor3 = Color3.fromRGB(28, 28, 36)
 		listFrame.BorderSizePixel = 0
@@ -154,7 +166,7 @@ return function(S)
 		layout.SortOrder = Enum.SortOrder.LayoutOrder
 		layout.Padding = UDim.new(0, 2)
 		layout.Parent = listFrame
-		y += 146
+		y += listH + 6
 
 		local function refreshDisplay()
 			local nm = opts.getSelectedName()
@@ -682,8 +694,11 @@ return function(S)
 		wpScroll.Parent = wpPage
 		local wpRoot = wpScroll
 
-		mkLabel(wpRoot, "Saved positions (teleport)", 4)
-		local wpPicker = buildPicker(wpRoot, 24, {
+		-- Compact teleport blocks so Path record has room
+		mkLabel(wpRoot, "Saved positions (teleport)", 2)
+		local wpPicker = buildPicker(wpRoot, 18, {
+			compact = true,
+			listHeight = 80,
 			getList = function()
 				return S.Waypoints and S.Waypoints.list() or {}
 			end,
@@ -704,43 +719,16 @@ return function(S)
 			end,
 		})
 		local recallBtn = mkButton(wpRoot, "Recall (teleport)", wpPicker.y, Color3.fromRGB(70, 100, 160))
+		recallBtn.Size = UDim2.new(1, -16, 0, 26)
 
-		-- Human path recording (egress / stuck routes → dumps/pathrec_*.json)
-		-- Future: bind a recording to a map respawn pad, then walk it after sit+heal
-		-- before enabling Kill Aura (avoids A* from safe cliffs / walled spawns).
-		local py = wpPicker.y + 40
-		mkLabel(wpRoot, "— Path record —", py)
-		py += 20
-		mkLabel(wpRoot, "Walk a route yourself → dumps/pathrec_*.json", py)
-		py += 18
-		local pathRecBtn = mkButton(wpRoot, "A* Rec: OFF", py, Color3.fromRGB(70, 70, 80))
-		py += 34
-		S.ui.setPathRecLabel = function(on: boolean)
-			pathRecBtn.Text = on and "A* Rec: ON" or "A* Rec: OFF"
-			pathRecBtn.BackgroundColor3 = on and Color3.fromRGB(50, 160, 90) or Color3.fromRGB(70, 70, 80)
-		end
-		pathRecBtn.MouseButton1Click:Connect(function()
-			if S.PathRecord and S.PathRecord.toggle then
-				if not S.pathRecEnabled and S.autoOreEnabled and S.AutoOre and S.AutoOre.stop then
-					S.AutoOre.stop()
-					S.Util.setStatus("Auto Ore paused for A* Rec — walk the route, toggle OFF to save")
-				elseif not S.pathRecEnabled and S.walking and S.Pathing and S.Pathing.toggleWalk then
-					S.Pathing.toggleWalk()
-					S.Util.setStatus("Kill Aura paused for A* Rec — walk the route, toggle OFF to save")
-				end
-				S.PathRecord.toggle()
-			else
-				S.Util.setStatus("Path recorder not loaded — reload script")
-			end
-		end)
-
-		-- Live players
+		-- Live players (compact)
+		local py = wpPicker.y + 30
 		mkLabel(wpRoot, "Teleport to player", py)
-		py += 20
+		py += 16
 
 		local playerDrop = Instance.new("TextButton")
 		playerDrop.Name = "PlayerDropdown"
-		playerDrop.Size = UDim2.new(1, -16, 0, 30)
+		playerDrop.Size = UDim2.new(1, -16, 0, 26)
 		playerDrop.Position = UDim2.fromOffset(8, py)
 		playerDrop.BackgroundColor3 = Color3.fromRGB(36, 36, 48)
 		playerDrop.BorderSizePixel = 0
@@ -752,7 +740,7 @@ return function(S)
 		playerDrop.Parent = wpRoot
 		corner(playerDrop)
 		local playerArrow = Instance.new("TextLabel")
-		playerArrow.Size = UDim2.fromOffset(20, 30)
+		playerArrow.Size = UDim2.fromOffset(20, 26)
 		playerArrow.Position = UDim2.new(1, -24, 0, 0)
 		playerArrow.BackgroundTransparency = 1
 		playerArrow.Font = Enum.Font.GothamBold
@@ -760,11 +748,12 @@ return function(S)
 		playerArrow.TextColor3 = Color3.fromRGB(160, 160, 180)
 		playerArrow.Text = "▾"
 		playerArrow.Parent = playerDrop
-		py += 34
+		py += 28
 
+		local playerListH = 72
 		local playerList = Instance.new("ScrollingFrame")
 		playerList.Name = "PlayerList"
-		playerList.Size = UDim2.new(1, -16, 0, 120)
+		playerList.Size = UDim2.new(1, -16, 0, playerListH)
 		playerList.Position = UDim2.fromOffset(8, py)
 		playerList.BackgroundColor3 = Color3.fromRGB(28, 28, 36)
 		playerList.BorderSizePixel = 0
@@ -799,13 +788,13 @@ return function(S)
 			lastPlayerScan = S.Waypoints and S.Waypoints.scanPlayers() or {}
 			for i, pl in ipairs(lastPlayerScan) do
 				local row = Instance.new("TextButton")
-				row.Size = UDim2.new(1, -6, 0, 26)
+				row.Size = UDim2.new(1, -6, 0, 22)
 				row.BackgroundColor3 = if pl.name == selectedPlayerName
 					then Color3.fromRGB(55, 70, 100)
 					else Color3.fromRGB(38, 38, 50)
 				row.BorderSizePixel = 0
 				row.Font = Enum.Font.Gotham
-				row.TextSize = 12
+				row.TextSize = 11
 				row.TextColor3 = Color3.new(1, 1, 1)
 				row.TextXAlignment = Enum.TextXAlignment.Left
 				local posStr = if pl.x
@@ -823,12 +812,11 @@ return function(S)
 					S.Util.setStatus("Selected player: " .. pl.name)
 				end)
 			end
-			playerList.CanvasSize = UDim2.fromOffset(0, math.max(0, #lastPlayerScan * 28))
+			playerList.CanvasSize = UDim2.fromOffset(0, math.max(0, #lastPlayerScan * 24))
 			if #lastPlayerScan == 0 then
 				playerDrop.Text = "  (no other players)"
 				selectedPlayerName = nil
 			elseif selectedPlayerName then
-				-- keep selection if still present
 				local still = false
 				for _, pl in ipairs(lastPlayerScan) do
 					if pl.name == selectedPlayerName then
@@ -848,12 +836,13 @@ return function(S)
 			S.Util.setStatus(string.format("Player scan: %d other player(s)", #lastPlayerScan))
 		end
 
-		local scanBtn = mkSmall(wpRoot, "Scan", 8, py + 126, 90, Color3.fromRGB(70, 90, 120))
-		local tpPlayerBtn = mkSmall(wpRoot, "TP to player", 104, py + 126, 200, Color3.fromRGB(70, 100, 160))
-		wpScroll.CanvasSize = UDim2.fromOffset(0, py + 126 + 40)
+		local scanBtn = mkSmall(wpRoot, "Scan", 8, py + playerListH + 4, 90, Color3.fromRGB(70, 90, 120))
+		scanBtn.Size = UDim2.fromOffset(90, 24)
+		local tpPlayerBtn = mkSmall(wpRoot, "TP to player", 104, py + playerListH + 4, 200, Color3.fromRGB(70, 100, 160))
+		tpPlayerBtn.Size = UDim2.fromOffset(200, 24)
+		local afterTpY = py + playerListH + 32
 
 		playerDrop.MouseButton1Click:Connect(function()
-			-- Always rescan when opening
 			rebuildPlayerList()
 			playerList.Visible = not playerList.Visible
 		end)
@@ -904,6 +893,105 @@ return function(S)
 		S.ui.refreshWaypoints = function()
 			wpPicker.refresh()
 		end
+
+		---------------------------------------------------------------------------
+		-- Path record / spawn egress (human routes after respawn)
+		---------------------------------------------------------------------------
+		local ry = afterTpY + 6
+		mkLabel(wpRoot, "— Path record (spawn egress) —", ry)
+		ry += 18
+		local pathRecBtn = mkButton(wpRoot, "A* Rec: OFF", ry, Color3.fromRGB(70, 70, 80))
+		pathRecBtn.Size = UDim2.new(1, -16, 0, 26)
+		ry += 30
+		S.ui.setPathRecLabel = function(on: boolean)
+			pathRecBtn.Text = on and "A* Rec: ON (toggle off to save)" or "A* Rec: OFF"
+			pathRecBtn.BackgroundColor3 = on and Color3.fromRGB(50, 160, 90) or Color3.fromRGB(70, 70, 80)
+		end
+		pathRecBtn.MouseButton1Click:Connect(function()
+			if S.PathRecord and S.PathRecord.toggle then
+				if not S.pathRecEnabled and S.autoOreEnabled and S.AutoOre and S.AutoOre.stop then
+					S.AutoOre.stop()
+					S.Util.setStatus("Auto Ore paused for A* Rec — walk the route, toggle OFF to save")
+				elseif not S.pathRecEnabled and S.walking and S.Pathing and S.Pathing.toggleWalk then
+					S.Pathing.toggleWalk()
+					S.Util.setStatus("Kill Aura paused for A* Rec — walk the route, toggle OFF to save")
+				end
+				S.PathRecord.toggle()
+			else
+				S.Util.setStatus("Path recorder not loaded — reload script")
+			end
+		end)
+
+		mkLabel(wpRoot, "Saved spawn paths (delete if wrong)", ry)
+		ry += 16
+		local spawnPicker = buildPicker(wpRoot, ry, {
+			compact = true,
+			listHeight = 72,
+			getList = function()
+				if S.PathRecord and S.PathRecord.listSpawnPaths then
+					return S.PathRecord.listSpawnPaths()
+				end
+				return S.spawnPaths or {}
+			end,
+			getSelectedId = function()
+				return S.selectedSpawnPathId
+			end,
+			setSelected = function(id)
+				if S.PathRecord and S.PathRecord.setSelectedSpawnPath then
+					S.PathRecord.setSelectedSpawnPath(id)
+				else
+					S.selectedSpawnPathId = id
+				end
+			end,
+			getSelectedName = function()
+				if S.PathRecord and S.PathRecord.getSelectedSpawnPath then
+					local p = S.PathRecord.getSelectedSpawnPath()
+					return p and p.name or nil
+				end
+				return nil
+			end,
+			onSelect = function(item)
+				local n = item.sampleCount or (item.samples and #item.samples) or 0
+				S.Util.setStatus(string.format("Spawn path: %s (%d samples)", item.name or "?", n))
+			end,
+		})
+		-- Hide Save/Rename on spawn picker — only select + delete
+		spawnPicker.saveBtn.Visible = false
+		spawnPicker.renameBtn.Visible = false
+		spawnPicker.nameBox.PlaceholderText = "(select spawn path)"
+		spawnPicker.delBtn.Position = UDim2.fromOffset(8, spawnPicker.delBtn.Position.Y.Offset)
+		spawnPicker.delBtn.Size = UDim2.fromOffset(120, 24)
+		spawnPicker.delBtn.Text = "Delete path"
+		spawnPicker.delBtn.MouseButton1Click:Connect(function()
+			if S.PathRecord and S.PathRecord.deleteSpawnPath then
+				S.PathRecord.deleteSpawnPath(S.selectedSpawnPathId)
+				spawnPicker.setName("")
+				spawnPicker.refresh()
+			else
+				S.Util.setStatus("Spawn path delete unavailable — reload")
+			end
+		end)
+		S.ui.refreshSpawnPaths = function()
+			spawnPicker.refresh()
+		end
+
+		ry = spawnPicker.y + 4
+		local spawnVizBtn = mkButton(wpRoot, "Respawn points: OFF", ry, Color3.fromRGB(70, 70, 80))
+		spawnVizBtn.Size = UDim2.new(1, -16, 0, 26)
+		ry += 32
+		S.ui.setRespawnPathVizLabel = function(on: boolean)
+			spawnVizBtn.Text = on and "Respawn points: ON" or "Respawn points: OFF"
+			spawnVizBtn.BackgroundColor3 = on and Color3.fromRGB(180, 140, 40) or Color3.fromRGB(70, 70, 80)
+		end
+		spawnVizBtn.MouseButton1Click:Connect(function()
+			if S.PathRecord and S.PathRecord.toggleSpawnPathViz then
+				S.PathRecord.toggleSpawnPathViz()
+			else
+				S.Util.setStatus("Respawn path viz not loaded — reload script")
+			end
+		end)
+
+		wpScroll.CanvasSize = UDim2.fromOffset(0, ry + 12)
 
 		---------------------------------------------------------------------------
 		-- Claw tab (one-shot prize grab)

@@ -20,6 +20,7 @@ return {
 	DUMP_DIR = "dumps",
 	WAYPOINT_DIR = "waypoints",
 	WAYPOINT_FILE = "waypoints/waypoints.json",
+	RESPAWN_PATH_FILE = "waypoints/respawn_paths.json", -- human egress paths after respawn
 	-- World dump: non-combat workspace assets (ores, farms, NPCs, pickups, â€¦)
 	WORLD_DUMP_NEAR_STUDS = 100, -- Models/BaseParts near player
 	WORLD_DUMP_NEAR_MAX = 800,
