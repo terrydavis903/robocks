@@ -1,12 +1,12 @@
 -- portal_mage/combat.lua — ability half of Kill Aura
 --
 -- Loop (with pathing.lua):
---   hold = living enemy (pathing picks closest by path)
---   when dist ≈ 30 and reticle on hold and handler exists → cast schema
---   enemy dies → clear hold → pathing picks next → reloop
+--   hold = nearest living enemy
+--   path to stand range → R reticle → cast ready slot (s4 hold 5s / s1 tap)
+--   enemy dies → clear hold → next nearest (no full CD lockout; switch slots free)
 --   we die → respawn module resumes Kill Aura → reloop
 --
--- Never cast without reticle. Never freefire. No special boss branches.
+-- Never cast without reticle. Never freefire. No creature-specific sequences.
 return function(S)
 	local C = S.Config
 	local U = S.Util
@@ -178,26 +178,14 @@ return function(S)
 			end
 		end
 
-		-- After a kill: wait active CDs before reloop (death clears waitAllCds).
+		-- Legacy waitAllCds (no longer set after kill — no QS4 lockout). Clear if stuck.
 		if S.waitAllCds then
-			T().clearHold("wait_cds")
-			if A().allCombatCdsReady() then
-				S.waitAllCds = false
-				U.setStatus("[cds] ready — reloop")
-				task.wait(0.05)
-				return
-			end
-			U.setStatus(string.format(
-				"[cds] wait… max %.1fs | %s",
-				A().maxCombatCdRemaining(),
-				A().formatCds()
-			))
-			task.wait(0.15)
-			return
+			S.waitAllCds = false
 		end
 
 		local range = T().fightRange()
 		local sticky = C.KILL_AURA_STICKY or 5
+		-- Nearest mob (pathing approaches); no creature schema filter
 		local hold, _pos, dist = T().ensureEnemy()
 
 		if not hold then
@@ -206,11 +194,14 @@ return function(S)
 			return
 		end
 
-		local handler = A().findHandler(hold)
+		-- Ready slot: prefer s4 hold, else s1 tap (no creature sequences)
+		local handler = A().pickCombatHandler and A().pickCombatHandler() or A().findHandler(hold)
 		if not handler then
-			U.setStatus(string.format("[fight] no schema for %s — next", hold.Name))
-			T().clearHold("no_schema")
-			task.wait(0.1)
+			handler = A().getDefaultHandler()
+		end
+		if not handler then
+			U.setStatus("[fight] no combat slots configured")
+			task.wait(0.2)
 			return
 		end
 
@@ -256,23 +247,33 @@ return function(S)
 
 		local rem = A().getCooldownRemaining(handler.slot)
 		if rem > 0.35 then
-			U.setStatus(string.format(
-				"[fight] CD s%d %.1fs | %s d=%.1f",
-				handler.slot or 0,
-				rem,
-				hold.Name,
-				dist
-			))
-			task.wait(0.15)
-			return
+			-- Slot on CD — try the other combat slot immediately (no lockout)
+			local alt = nil
+			if A().pickCombatHandler then
+				alt = A().pickCombatHandler()
+			end
+			if alt and alt.slot ~= handler.slot and A().isHandlerReady(alt) then
+				handler = alt
+			else
+				U.setStatus(string.format(
+					"[fight] CD s%d %.1fs | %s d=%.1f | %s",
+					handler.slot or 0,
+					rem,
+					hold.Name,
+					dist,
+					A().formatCds()
+				))
+				task.wait(0.12)
+				return
+			end
 		end
 
 		A().cast(hold, handler, "fight")
 
 		if not T().isAlive(hold) then
 			T().clearHold("killed")
-			S.waitAllCds = true
-			U.setStatus("[fight] target down — wait CDs then reloop")
+			-- No waitAllCds: QS4 has no lockout — path next / cast s1 immediately if ready
+			U.setStatus("[fight] target down — next")
 		end
 	end
 

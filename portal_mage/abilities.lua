@@ -146,15 +146,17 @@ return function(S)
 
 	M.getSlotCooldownRemaining = M.getCooldownRemaining
 
-	-- After a cast: remember CD so we don't re-arm before UI updates.
+	-- After a cast: remember CD for THIS slot only (no global lockout — other slots stay free).
 	function M.noteCastCooldown(slot: number?, handler: any?)
 		if type(slot) ~= "number" then
 			return
 		end
 		task.wait(0.2)
 		local ui = M.getUiCooldownRemaining(slot)
-		local minCd = (handler and tonumber(handler.minCd)) or C.ABILITY_MIN_CD or 1.5
-		local lock = C.CAST_LOCKOUT or 0.85
+		local usage = (C.QUICKSLOT_USAGE or {})[slot]
+		local usageMin = usage and tonumber(usage.minCd)
+		local minCd = (handler and tonumber(handler.minCd)) or usageMin or C.ABILITY_MIN_CD or 0.5
+		local lock = C.CAST_LOCKOUT or 0.15
 		local rem = math.max(ui, minCd, lock)
 		S.slotCdUntil = S.slotCdUntil or {}
 		S.slotCdUntil[slot] = os.clock() + rem
@@ -180,7 +182,7 @@ return function(S)
 		return M.isSlotReady(handler.slot)
 	end
 
-	-- Unique slots used by COMBAT_HANDLERS + QUICKSLOT_USAGE / DEFAULT_COMBAT_SLOT
+	-- Combat slots from QUICKSLOT_USAGE + DEFAULT (no creature map, no QS3).
 	function M.combatSlots(): { number }
 		local seen = {}
 		local out = {}
@@ -190,9 +192,6 @@ return function(S)
 				seen[n] = true
 				table.insert(out, n)
 			end
-		end
-		for _, h in ipairs(C.COMBAT_HANDLERS or {}) do
-			add(h.slot)
 		end
 		add(C.DEFAULT_COMBAT_SLOT or 4)
 		for slot, _ in pairs(C.QUICKSLOT_USAGE or {}) do
@@ -249,10 +248,10 @@ return function(S)
 	end
 
 	---------------------------------------------------------------------------
-	-- Handlers = mob match → quickslot + QUICKSLOT_USAGE steps (no skill names)
+	-- Handlers = quickslot + QUICKSLOT_USAGE steps (no creature schemas)
 	---------------------------------------------------------------------------
 
-	-- Build a castable handler from slot (+ optional steps override on the row).
+	-- Build a castable handler from slot (+ optional steps override).
 	function M.handlerForSlot(slot: number, match: string?, stepsOverride: any?): any
 		local usage = (C.QUICKSLOT_USAGE or {})[slot]
 		local steps = stepsOverride
@@ -262,26 +261,45 @@ return function(S)
 		if type(steps) ~= "table" then
 			steps = { { key = Enum.KeyCode.E } }
 		end
+		local minCd = usage and tonumber(usage.minCd) or nil
 		return {
 			id = string.format("s%d", slot), -- display / CD label only
 			slot = slot,
 			match = match,
 			steps = steps,
+			minCd = minCd,
 		}
 	end
 
-	function M.findHandler(model: Model)
+	-- Prefer DEFAULT_COMBAT_SLOT when ready; else any ready combat slot (QS1);
+	-- else DEFAULT so combat can wait on its CD. Never uses QS3.
+	function M.pickCombatHandler(): any
+		local def = C.DEFAULT_COMBAT_SLOT or 4
+		local slots = M.combatSlots()
+		if M.isSlotReady(def) then
+			return M.handlerForSlot(def, nil, nil)
+		end
+		local bestSlot: number? = nil
+		local bestRem = math.huge
+		for _, slot in ipairs(slots) do
+			local rem = M.getCooldownRemaining(slot)
+			if rem <= 0.35 then
+				return M.handlerForSlot(slot, nil, nil)
+			end
+			if rem < bestRem then
+				bestRem = rem
+				bestSlot = slot
+			end
+		end
+		return M.handlerForSlot(bestSlot or def, nil, nil)
+	end
+
+	-- Any living mob: same combat (path nearest + s4 hold / s1 tap). Model only for API compat.
+	function M.findHandler(model: Model?)
 		if not model then
 			return nil
 		end
-		for _, row in ipairs(C.COMBAT_HANDLERS or {}) do
-			local m = row.match
-			if type(m) == "string" and m ~= "" and string.find(model.Name, m, 1, true) then
-				local slot = row.slot or C.DEFAULT_COMBAT_SLOT or 4
-				return M.handlerForSlot(slot, m, row.steps)
-			end
-		end
-		return nil
+		return M.pickCombatHandler()
 	end
 
 	M.findHandlerForModel = M.findHandler
@@ -318,7 +336,7 @@ return function(S)
 		return M.handlerForSlot(1, nil, nil)
 	end
 
-	-- Handler for model; if useDefault and unmatched, DEFAULT_COMBAT_SLOT.
+	-- Always combat handler for a model (creature schemas removed).
 	function M.resolve(model: Model, useDefault: boolean?)
 		local h = M.findHandler(model)
 		if h then
@@ -415,9 +433,9 @@ return function(S)
 				U.setStatus(string.format(
 					"[cast] HOLD %s %.1fs",
 					tostring(step.hold.Name),
-					step.duration or C.HOLD_DURATION or 6
+					step.duration or C.HOLD_DURATION or 5
 				))
-				U.holdKeyCharge(step.hold, isWalking, step.duration or C.HOLD_DURATION)
+				U.holdKeyCharge(step.hold, isWalking, step.duration or C.HOLD_DURATION or 5)
 			elseif step.key then
 				if isHotbarKey(step.key) then
 					-- Legacy configs may still list One/Four in steps — skip always

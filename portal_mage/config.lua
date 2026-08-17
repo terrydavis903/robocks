@@ -1,12 +1,13 @@
 -- portal_mage/config.lua — constants & combat handler table
 return {
 	SHORT_DELAY = 0.18, -- settle after fire key (E); slot select has its own wait
-	HOLD_DURATION = 6,
+	HOLD_DURATION = 5, -- QS4 channel default (hold E then release)
 	SLOT_SELECT_WAIT = 0.55, -- max wait for diamond after ONE arm press (never double-tap)
 	SLOT_FIRE_SETTLE = 0.12, -- pause after arm before E so toggle registers
-	CAST_LOCKOUT = 0.85, -- min settle after cast even if UI timer still 0
-	ABILITY_MIN_CD = 1.5, -- synthetic CD floor after cast when CooldownTimer lags
-	-- After kill: wait only slots that were used / still show CD (not every idle slot)
+	-- Per-slot settle after cast (same slot only). No global lockout — switch slots immediately.
+	CAST_LOCKOUT = 0.15,
+	ABILITY_MIN_CD = 0.5, -- fallback synthetic floor when usage.minCd missing
+	-- After kill: do not gate reloop on all CDs (QS4 has no lockout; switch to QS1 immediately)
 	WAIT_CDS_ONLY_ACTIVE = true,
 
 	-- Stance toggles (state-driven — observe sit/draw, don't assume sequence done):
@@ -302,37 +303,24 @@ return {
 	TIN_TORTOISE_TAGS = { "Tin Tortoise", "TinTortoise", "Tin_Tortoise" },
 	TIN_TORTOISE_ENGAGE_RANGE = 30,
 
-	-- Quickslot USAGE only (1–4). What to press when that slot is armed — not skill names.
-	-- ALL slots are TOGGLES: press 1–4 to arm (Slot_Select diamond ON), then fire steps.
+	-- Combat quickslots only. ALL are TOGGLES: press N to arm (diamond ON), then fire steps.
 	-- Do NOT put One/Two/… in steps (re-pressing toggles OFF). Cast arms via handler.slot.
+	-- QS3 / enchant is intentionally absent — never used in kill-aura sequences.
 	QUICKSLOT_USAGE = {
 		[1] = {
-			-- tap cast (e.g. Aurora on your bar)
+			-- tap cast (no hold)
 			steps = { { key = Enum.KeyCode.E } },
-		},
-		[2] = {
-			steps = { { key = Enum.KeyCode.E } },
-		},
-		[3] = {
-			steps = { { key = Enum.KeyCode.E } },
+			minCd = 0.5,
 		},
 		[4] = {
-			-- hold cast (e.g. Holy Wounds on your bar)
-			steps = { { hold = Enum.KeyCode.E, duration = 6 } },
+			-- hold E for 5s, release; 2s CD; no lockout — may switch to QS1 immediately
+			steps = { { hold = Enum.KeyCode.E, duration = 5 } },
+			minCd = 2,
 		},
 	},
-	-- Unmatched / default combat uses this quickslot
+	-- Prefer this slot when ready; fall back to other combat slots (QS1)
 	DEFAULT_COMBAT_SLOT = 4,
 
-	-- Mob name substring → which quickslot to use. Optional per-row `steps` overrides
-	-- QUICKSLOT_USAGE[slot]. No ability skill names here.
-	COMBAT_HANDLERS = {
-		{ match = "ScarecrowGoblin", slot = 1 },
-		{ match = "PatchHound", slot = 1 },
-		{ match = "KettleBeetle", slot = 1 },
-		{ match = "CritterGoblin", slot = 1 },
-		{ match = "JunkKing", slot = 4 },
-		{ match = "TinTortoise", slot = 4 },
-		{ match = "BucketheadGoblin", slot = 4 },
-	},
+	-- Deprecated: creature-specific sequences removed. Kill aura = nearest mob + ready slot.
+	COMBAT_HANDLERS = {},
 }

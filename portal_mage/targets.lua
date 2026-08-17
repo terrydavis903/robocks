@@ -356,8 +356,9 @@ return function(S)
 		return 100 + #pri
 	end
 
-	-- Closest useful enemy. Prefer combat-schema; then KILL_AURA_PRIORITY; then dist.
-	function M.pickEnemy(playerPos: Vector3?, preferHandler: boolean?): (Model?, Vector3?, number?)
+	-- Closest useful enemy by KILL_AURA_PRIORITY then dist.
+	-- Creature-specific combat schemas removed — every living mob is fair game.
+	function M.pickEnemy(playerPos: Vector3?, _preferHandler: boolean?): (Model?, Vector3?, number?)
 		local origin = playerPos or U.getLivePlayerVector()
 		if not origin then
 			return nil, nil, nil
@@ -367,20 +368,7 @@ return function(S)
 			return nil, nil, nil
 		end
 
-		local pool = snaps
-		if preferHandler ~= false and S.Abilities and S.Abilities.findHandler then
-			local withSchema = {}
-			for _, e in ipairs(snaps) do
-				if S.Abilities.findHandler(e.model) then
-					table.insert(withSchema, e)
-				end
-			end
-			if #withSchema > 0 then
-				pool = withSchema
-			end
-		end
-
-		table.sort(pool, function(a, b)
+		table.sort(snaps, function(a, b)
 			local pa = M.killAuraPriority(a.model)
 			local pb = M.killAuraPriority(b.model)
 			if pa ~= pb then
@@ -389,7 +377,7 @@ return function(S)
 			return a.dist < b.dist
 		end)
 
-		local best = pool[1]
+		local best = snaps[1]
 		return best.model, best.pos, best.dist
 	end
 
