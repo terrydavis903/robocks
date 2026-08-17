@@ -449,14 +449,42 @@ return function(S)
 		end
 
 		---------------------------------------------------------------------------
-		-- Bot tab
+		-- Bot tab (order: Dump → ESP/Viz → Toggles → Stop All)
 		---------------------------------------------------------------------------
-		local bot = tabs.Bot
+		local botPage = tabs.Bot
+		local bot = Instance.new("ScrollingFrame")
+		bot.Name = "BotScroll"
+		bot.Size = UDim2.new(1, 0, 1, 0)
+		bot.BackgroundTransparency = 1
+		bot.BorderSizePixel = 0
+		bot.ScrollBarThickness = 5
+		bot.ScrollBarImageColor3 = Color3.fromRGB(90, 90, 110)
+		bot.CanvasSize = UDim2.fromOffset(0, 0)
+		bot.AutomaticCanvasSize = Enum.AutomaticSize.Y
+		bot.Parent = botPage
+		local botPad = Instance.new("UIPadding")
+		botPad.PaddingBottom = UDim.new(0, 8)
+		botPad.Parent = bot
+
 		local by = 4
+		local function botSection(title: string)
+			mkLabel(bot, title, by)
+			by += 20
+		end
+
+		-- 1) Dump
+		botSection("— Dump —")
 		local dumpBtn = mkButton(bot, "Dump World", by, Color3.fromRGB(50, 120, 70))
 		by += 34
 		local dumpMeshBtn = mkButton(bot, "Dump Mesh (walls/floor)", by, Color3.fromRGB(30, 100, 110))
 		by += 34
+		local dumpAstarBtn = mkButton(bot, "Dump A* path", by, Color3.fromRGB(35, 100, 140))
+		by += 34
+		local dumpGuiBtn = mkButton(bot, "Dump GUI", by, Color3.fromRGB(40, 130, 90))
+		by += 38
+
+		-- 2) ESP / visualization
+		botSection("— ESP / Visualization —")
 		local meshOutlineBtn = mkButton(bot, "Outline Mesh: OFF", by, Color3.fromRGB(70, 70, 80))
 		by += 34
 		local pathVizBtn = mkButton(bot, "Path Viz (A*): OFF", by, Color3.fromRGB(70, 70, 80))
@@ -465,26 +493,28 @@ return function(S)
 		by += 34
 		local pathRecBtn = mkButton(bot, "A* Rec: OFF", by, Color3.fromRGB(70, 70, 80))
 		by += 34
-		local dumpAstarBtn = mkButton(bot, "Dump A* path", by, Color3.fromRGB(35, 100, 140))
+		local oreEspBtn = mkButton(bot, "Ore ESP: OFF", by, Color3.fromRGB(70, 70, 80))
 		by += 34
-		local dumpGuiBtn = mkButton(bot, "Dump GUI", by, Color3.fromRGB(40, 130, 90))
+		local playerEspBtn = mkButton(bot, "Player ESP: OFF", by, Color3.fromRGB(70, 70, 80))
 		by += 34
-		local stopBtn = mkButton(bot, "Stop All", by, Color3.fromRGB(140, 50, 50))
-		by += 34
+		local enemyEspBtn = mkButton(bot, "Enemy ESP: OFF", by, Color3.fromRGB(70, 70, 80))
+		by += 38
+
+		-- 3) Runtime toggles
+		botSection("— Toggles —")
 		local killAuraBtn = mkButton(bot, "Kill Aura: OFF", by, Color3.fromRGB(70, 70, 80))
 		by += 34
 		local proxBtn = mkButton(bot, "Prox Guard: ON", by, Color3.fromRGB(160, 70, 50))
 		by += 34
 		local antiAfkBtn = mkButton(bot, "Anti-AFK Jump: OFF", by, Color3.fromRGB(70, 70, 80))
 		by += 34
-		local oreEspBtn = mkButton(bot, "Ore ESP: OFF", by, Color3.fromRGB(70, 70, 80))
-		by += 34
-		local playerEspBtn = mkButton(bot, "Player ESP: OFF", by, Color3.fromRGB(70, 70, 80))
-		by += 34
-		local enemyEspBtn = mkButton(bot, "Enemy ESP: OFF", by, Color3.fromRGB(70, 70, 80))
-		by += 34
 		local autoOreBtn = mkButton(bot, "Auto Ore: OFF", by, Color3.fromRGB(70, 70, 80))
+		by += 38
+
+		-- 4) Stop last
+		local stopBtn = mkButton(bot, "Stop All", by, Color3.fromRGB(140, 50, 50))
 		by += 34
+		bot.CanvasSize = UDim2.fromOffset(0, by + 8)
 
 		S.ui.setProxLabel = function(on: boolean)
 			proxBtn.Text = on and "Prox Guard: ON" or "Prox Guard: OFF"
