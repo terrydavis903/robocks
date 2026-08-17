@@ -1299,17 +1299,52 @@ return function(S)
 				-- A*/PFS path = movement segments (+ Path Viz when ON)
 				ensurePath(playerPos, epos, model, range)
 
-				-- No walkable route (would be straight line through wall) — don't W into it
+						-- No validated route: still try a best-effort line to stand goal so we
+				-- never idle forever with combat saying "wait stand" (log 03-24-10).
 				if lastVizKind == "blocked" or #pathPts < 2 then
-					stopMove()
-					U.setStatus(string.format(
-						"[path] blocked d=%.1f → %s (repath/drop) | %s",
-						dist,
-						model.Name,
-						cds()
-					))
-					task.wait(0.15)
-					return
+					local goal = standGoalNear(playerPos, epos, range, standAngleIdx * (math.pi / 4))
+					local nav = Nav()
+					local canLine = nav and nav.hasClearWalk and nav.hasClearWalk(playerPos, goal)
+					if canLine then
+						pathPts = { playerPos, goal }
+						pathIdx = 2
+						pathEnemy = model
+						lastVizKind = "line:fallback"
+						segBlocked = false
+						log(string.format(
+							"path line:fallback → %s goal=(%.0f,%.0f,%.0f)",
+							model.Name,
+							goal.X,
+							goal.Y,
+							goal.Z
+						))
+					else
+						-- Nudge toward goal even if full hop fails — short probe walk
+						local flat = Vector3.new(goal.X - playerPos.X, 0, goal.Z - playerPos.Z)
+						if flat.Magnitude > 2 then
+							local dir = flat.Unit
+							local near = playerPos + dir * math.min(8, flat.Magnitude)
+							pathPts = { playerPos, near }
+							pathIdx = 2
+							pathEnemy = model
+							lastVizKind = "line:nudge"
+							segBlocked = false
+							log(string.format("path line:nudge 8st → %s", model.Name))
+						else
+							stopMove()
+							U.setStatus(string.format(
+								"[path] no route d=%.1f → %s (dropping hold) | %s",
+								dist,
+								model.Name,
+								cds()
+							))
+							if Targets.clearHold then
+								Targets.clearHold("no_route")
+							end
+							task.wait(0.2)
+							return
+						end
+					end
 				end
 
 				-- Stand band only with clear walk to enemy (else keep pathing around wall).

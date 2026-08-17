@@ -658,12 +658,11 @@ return function(S)
 		return params
 	end
 
-	-- Does this part block a player-sized box at sample center?
+	-- Does this part block a player-sized box? Ground under feet = no; walls/stalls = yes.
 	local function partBlocksHitbox(bp: BasePart, samplePos: Vector3, boxSize: Vector3): boolean
 		if not bp.CanCollide then
 			return false
 		end
-		-- Map bounds / zone shells always block (InvisibleWall, Zone_*, …)
 		if isBarrierInstance(bp) then
 			return true
 		end
@@ -671,31 +670,28 @@ return function(S)
 		local path = string.lower(bp:GetFullName())
 		if string.find(path, "invisiblewall", 1, true)
 			or string.find(n, "invisible wall", 1, true)
-			or string.find(path, ".zones.", 1, true)
 		then
 			return true
 		end
 		if isNamedObstacle(bp) then
 			return true
 		end
-		if isCollideProp(bp) then
-			return true
-		end
-		-- Floor under feet / walk slabs: ignore (box sits on ground)
+		-- Anything whose top is only at foot level is ground clutter / floor
 		local footY = samplePos.Y - boxSize.Y * 0.5
 		local topY = bp.Position.Y + bp.Size.Y * 0.5
-		if isWalkFloorPart(bp) and topY <= footY + 0.75 then
+		if topY <= footY + 0.7 then
 			return false
 		end
 		if isWalkFloorPart(bp) then
 			return false
 		end
+		-- Body-volume intersection with non-floor collide = wall/prop
 		return true
 	end
 
-	-- True if player hitbox can sweep from→to every NAV_CLEAR_STEP studs (default 0.5).
-	-- Requires ground under each sample (rejects void / out-of-map). Does NOT skip
-	-- checks on elevation drops — only walk-off is allowed when floor still exists.
+	-- True if player hitbox fits along from→to every NAV_CLEAR_STEP (default 0.5 studs).
+	-- Floor/void check only at endpoints + sparse samples (dense floor checks rejected
+	-- every real path — log 03-24-10 all computePath → blocked → combat "wait stand").
 	function M.hasClearWalk(from: Vector3, to: Vector3): boolean
 		local flat = Vector3.new(to.X - from.X, 0, to.Z - from.Z)
 		local dist = flat.Magnitude
@@ -708,8 +704,8 @@ return function(S)
 		if step < 0.25 then
 			step = 0.25
 		end
-		local maxSnap = cfg("NAV_MAX_SNAP_Y", 10)
 		local maxFall = cfg("NAV_MAX_DROP_Y", 40)
+		local floorEvery = math.max(1, math.floor((cfg("NAV_FLOOR_CHECK_EVERY", 2.0)) / step))
 		local overlap = clearanceOverlapParams()
 		local nSteps = math.max(1, math.ceil(dist / step))
 
@@ -719,35 +715,35 @@ return function(S)
 			local hintY = from.Y + (to.Y - from.Y) * alpha
 			local pos = Vector3.new(from.X + dir.X * t, hintY, from.Z + dir.Z * t)
 
-			-- Must have walkable floor under this sample (void / outside map = fail)
-			local floor = M.sampleFloor(pos.X, pos.Z, hintY, { requireClear = false })
-			if not floor or not floor.pos then
-				return false
-			end
-			local dyFloor = floor.pos.Y - hintY
-			-- Floor far above = ceiling/wrong hit; far below = void jump off map
-			if dyFloor > maxSnap then
-				return false
-			end
-			if dyFloor < -maxFall then
-				return false
+			-- Sparse floor/void: ends always; middle every ~2 studs
+			local needFloor = (s == 0) or (s == nSteps) or (s % floorEvery == 0)
+			local standY = hintY
+			if needFloor then
+				local floor = M.sampleFloor(pos.X, pos.Z, hintY, { requireClear = false })
+				if floor and floor.pos then
+					if floor.pos.Y < hintY - maxFall then
+						return false -- void / off-map drop
+					end
+					standY = floor.pos.Y + boxSize.Y * 0.5 + 0.05
+				elseif s == 0 or s == nSteps then
+					-- Endpoints must have ground
+					return false
+				end
+				-- Mid samples without floor: still run hitbox at hintY (bridge gaps)
+			else
+				standY = hintY
 			end
 
-			-- Place hitbox standing on sampled floor
-			local standPos = Vector3.new(pos.X, floor.pos.Y + boxSize.Y * 0.5 + 0.05, pos.Z)
+			local standPos = Vector3.new(pos.X, standY, pos.Z)
 			local cf = CFrame.lookAt(standPos, standPos + dir)
-			local hits: { Instance }
 			local ok, res = pcall(function()
 				return workspace:GetPartBoundsInBox(cf, boxSize, overlap)
 			end)
 			if ok and type(res) == "table" then
-				hits = res
-			else
-				hits = {}
-			end
-			for _, inst in ipairs(hits) do
-				if inst:IsA("BasePart") and partBlocksHitbox(inst :: BasePart, standPos, boxSize) then
-					return false
+				for _, inst in ipairs(res) do
+					if inst:IsA("BasePart") and partBlocksHitbox(inst :: BasePart, standPos, boxSize) then
+						return false
+					end
 				end
 			end
 		end

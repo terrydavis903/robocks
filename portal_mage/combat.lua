@@ -241,21 +241,30 @@ return function(S)
 			dist = T().dist(hold) or 999
 		end
 
-		-- Only fight after pathing has approached. Sticky band requires clear walk —
-		-- otherwise pathing is still routing around a wall (do not R/face through it).
+		-- Only fight after pathing has approached. Do NOT overwrite pathing status
+		-- while walking in (was spamming "wait stand" when path was blocked / still moving).
 		local maxFight = range + sticky -- e.g. ~34
 		if dist > maxFight then
-			U.setStatus(string.format("[fight] wait stand d=%.1f (need ≤%.0f) | %s", dist, maxFight, hold.Name))
+			if not S.walking then
+				U.setStatus(string.format(
+					"[fight] wait stand d=%.1f (need ≤%.0f) | %s",
+					dist,
+					maxFight,
+					hold.Name
+				))
+			end
 			task.wait(0.12)
 			return
 		end
 		if dist > range and eposFlat and playerFlat and S.Nav and S.Nav.hasClearWalk then
 			if not S.Nav.hasClearWalk(playerFlat, eposFlat) then
-				U.setStatus(string.format(
-					"[fight] wait path d=%.1f (wall LOS) | %s",
-					dist,
-					hold.Name
-				))
+				if not S.walking then
+					U.setStatus(string.format(
+						"[fight] wait path d=%.1f (wall LOS) | %s",
+						dist,
+						hold.Name
+					))
+				end
 				task.wait(0.12)
 				return
 			end
