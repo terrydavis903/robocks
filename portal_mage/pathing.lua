@@ -575,13 +575,24 @@ return function(S)
 	local lastVizKind = ""
 	local lastSegLabel = "-"
 	local segBlocked = false -- current hop hasClearWalk failed; strafe instead of repath thrash
+	local standAngleIdx = 0 -- rotate stand ring when line/blocked thrash
+	local blockedRouteFails = 0 -- consecutive unusable routes → drop hold
 
-	local function standGoalNear(playerPos: Vector3, epos: Vector3, range: number): Vector3
+	-- Stand on ring around enemy. angleOffsetRad rotates which side (detour walls).
+	local function standGoalNear(playerPos: Vector3, epos: Vector3, range: number, angleOffsetRad: number?): Vector3
 		local flat = Vector3.new(playerPos.X - epos.X, 0, playerPos.Z - epos.Z)
 		if flat.Magnitude < 0.2 then
 			flat = Vector3.new(0, 0, 1)
 		else
 			flat = flat.Unit
+		end
+		local off = angleOffsetRad or 0
+		if math.abs(off) > 1e-4 then
+			local c, s = math.cos(off), math.sin(off)
+			flat = Vector3.new(flat.X * c - flat.Z * s, 0, flat.X * s + flat.Z * c)
+			if flat.Magnitude > 1e-4 then
+				flat = flat.Unit
+			end
 		end
 		local dest = epos + flat * range
 		local nav = Nav()
@@ -614,30 +625,100 @@ return function(S)
 		end
 	end
 
-	-- Rebuild path to stand ring. Always used for movement; draws when Path Viz ON.
+	-- Rebuild path to stand ring. Never keep a wall-clipping line (log 00-32-43).
 	local function rebuildPath(playerPos: Vector3, epos: Vector3, enemy: Model, range: number)
-		local goal = standGoalNear(playerPos, epos, range)
 		local nav = Nav()
-		local pts: { Vector3 }
-		local kind = "line"
-		if nav and nav.computePath then
-			pts, kind = nav.computePath(playerPos, goal)
-		elseif nav and nav.findPath then
-			pts = nav.findPath(playerPos, goal) or { playerPos, goal }
-			kind = "grid"
-			if S.pathVizEnabled and nav.showPathViz then
-				nav.showPathViz(pts, kind)
+		local pts: { Vector3 }? = nil
+		local kind = "blocked"
+		local goal = standGoalNear(playerPos, epos, range, 0)
+
+		-- Try primary stand + rotated stand angles until computePath finds a walkable route
+		local angleSteps = { 0, 1, -1, 2, -2, 3, -3, 4 }
+		for _, step in ipairs(angleSteps) do
+			local ang = (standAngleIdx + step) * (math.pi / 4)
+			local g = standGoalNear(playerPos, epos, range, ang)
+			goal = g
+			local tryPts: { Vector3 }? = nil
+			local tryKind = "line"
+			if nav and nav.computePath then
+				tryPts, tryKind = nav.computePath(playerPos, g)
+			elseif nav and nav.findPath then
+				tryPts = nav.findPath(playerPos, g)
+				tryKind = "grid"
+			else
+				tryPts = { playerPos, g }
+				tryKind = "line"
+			end
+			if tryPts and #tryPts >= 2 then
+				local clear = true
+				if nav and nav.pathSegmentsClear then
+					clear = nav.pathSegmentsClear(tryPts)
+				elseif nav and nav.hasClearWalk then
+					clear = nav.hasClearWalk(playerPos, tryPts[2])
+				end
+				-- Accept multi-wp routes even if a far segment is tight; reject pure blocked line
+				local isLine = tryKind == "line" or (string.sub(tryKind, 1, 4) == "line")
+				local isBlocked = tryKind == "blocked" or (string.sub(tryKind, 1, 7) == "blocked")
+				if isBlocked then
+					continue
+				end
+				if isLine and not clear then
+					continue
+				end
+				if #tryPts == 1 then
+					continue
+				end
+				pts = tryPts
+				kind = tryKind
+				if step ~= 0 then
+					standAngleIdx = (standAngleIdx + step) % 8
+					kind = kind .. string.format(":a%d", step)
+				end
+				break
+			elseif tryPts and #tryPts == 1 and tryKind ~= "blocked" then
+				-- arrived-ish single node
+				pts = tryPts
+				kind = tryKind
+				break
+			end
+		end
+
+		if not pts or #pts == 0 then
+			pts = { playerPos }
+			kind = "blocked"
+		end
+
+		-- Unusable route thrash → rotate + eventually drop hold
+		local unusable = kind == "blocked"
+			or (kind == "line" and nav and nav.hasClearWalk and not nav.hasClearWalk(playerPos, pts[#pts]))
+		if unusable then
+			blockedRouteFails += 1
+			standAngleIdx = (standAngleIdx + 1) % 8
+			log(string.format(
+				"path BLOCKED n=%d kind=%s → %s (rotate stand)",
+				blockedRouteFails,
+				kind,
+				enemy.Name
+			))
+			if blockedRouteFails >= 3 then
+				local Targets = T()
+				if Targets and Targets.clearHold then
+					Targets.clearHold("path_blocked")
+				end
+				blockedRouteFails = 0
+				pathPts = { playerPos }
+				pathEnemy = nil
+				pathBuiltAt = os.clock()
+				lastRepathAt = pathBuiltAt
+				lastVizKind = "blocked"
+				pathIdx = 1
+				segBlocked = true
+				return
 			end
 		else
-			pts = { playerPos, goal }
-			if S.pathVizEnabled and nav and nav.showPathViz then
-				nav.showPathViz(pts, "line")
-			end
+			blockedRouteFails = 0
 		end
-		if not pts or #pts == 0 then
-			pts = { playerPos, goal }
-			kind = "line"
-		end
+
 		pathPts = pts
 		pathEnemy = enemy
 		pathBuiltAt = os.clock()
@@ -647,10 +728,8 @@ return function(S)
 		segBlocked = false
 		advancePathIndex(playerPos)
 		if pathIdx < #pathPts and flatDist(playerPos, pathPts[pathIdx]) < 1.0 and pathIdx < #pathPts then
-			-- skip near-start duplicate
 			pathIdx = math.min(pathIdx + 1, #pathPts)
 		end
-		-- Do NOT clear walkingFacing / faceOkSince — repath thrash was freezing settle forever
 		local parts = {}
 		for i, p in ipairs(pathPts) do
 			table.insert(parts, string.format("%d:%.0f,%.0f,%.0f", i, p.X, p.Y, p.Z))
@@ -776,6 +855,8 @@ return function(S)
 		progressPos = nil
 		progressAt = 0
 		noProgressRepaths = 0
+		standAngleIdx = 0
+		blockedRouteFails = 0
 		segBlocked = false
 		lastSegLabel = "-"
 	end
@@ -1120,6 +1201,19 @@ return function(S)
 
 				-- A*/PFS path = movement segments (+ Path Viz when ON)
 				ensurePath(playerPos, epos, model, range)
+
+				-- No walkable route (would be straight line through wall) — don't W into it
+				if lastVizKind == "blocked" or #pathPts < 2 then
+					stopMove()
+					U.setStatus(string.format(
+						"[path] blocked d=%.1f → %s (repath/drop) | %s",
+						dist,
+						model.Name,
+						cds()
+					))
+					task.wait(0.15)
+					return
+				end
 
 				-- Stand band: stop move, keep facing enemy (leave turn keys to facePoint)
 				if dist <= range + sticky then

@@ -810,45 +810,149 @@ return function(S)
 		return pts, "pfs", jumps
 	end
 
-	-- Prefer native PathfindingService; fall back to custom floor A*; then straight line.
+	-- True if each hop of the polyline is walkable (no wall/prop).
+	-- Short PFS paths often still clip custom meshes — reject those.
+	function M.pathSegmentsClear(pts: { Vector3 }?): boolean
+		if not pts or #pts < 2 then
+			return false
+		end
+		for i = 1, #pts - 1 do
+			local a, b = pts[i], pts[i + 1]
+			local flat = Vector3.new(b.X - a.X, 0, b.Z - a.Z).Magnitude
+			if flat < 0.35 then
+				continue
+			end
+			-- Chunk long hops so mid-segment walls are seen
+			local step = 10
+			if flat <= step + 1 then
+				if not M.hasClearWalk(a, b) then
+					return false
+				end
+			else
+				local dir = Vector3.new(b.X - a.X, 0, b.Z - a.Z).Unit
+				local traveled = 0
+				local cur = a
+				while traveled < flat - 0.5 do
+					local chunk = math.min(step, flat - traveled)
+					local nxt = cur + dir * chunk
+					nxt = Vector3.new(nxt.X, cur.Y + (b.Y - a.Y) * ((traveled + chunk) / flat), nxt.Z)
+					if not M.hasClearWalk(cur, nxt) then
+						return false
+					end
+					cur = nxt
+					traveled += chunk
+				end
+			end
+		end
+		return true
+	end
+
+	local function snapGoal(to: Vector3): Vector3
+		local s = M.sampleFloor(to.X, to.Z, to.Y, { requireClear = false })
+		if s and s.pos then
+			return s.pos
+		end
+		return to
+	end
+
+	local function jumpsFromPts(pts: { Vector3 }): { boolean }
+		local inf: { boolean } = {}
+		for i, p in ipairs(pts) do
+			local j = false
+			if i > 1 then
+				j = (p.Y - pts[i - 1].Y) >= 3.5
+			end
+			table.insert(inf, j)
+		end
+		return inf
+	end
+
+	-- Try one goal: PFS (validated) → floor A* (validated). Nil if both fail/clip.
+	local function tryRoute(from: Vector3, goal: Vector3): ({ Vector3 }?, string, { boolean }?)
+		local native, _nWhy, jumps = M.computeNativePath(from, goal)
+		if native and #native >= 2 then
+			if M.pathSegmentsClear(native) then
+				return native, "pfs", jumps or {}
+			end
+			-- Multi-wp navmesh with one dirty far hop: still OK if first hop is clear
+			if #native >= 3 and M.hasClearWalk(from, native[2]) then
+				return native, "pfs:partial", jumps or {}
+			end
+			-- 2-wp through wall → reject (common when navmesh ignores custom stalls)
+		elseif native and #native == 1 then
+			if M.hasClearWalk(from, native[1]) then
+				return { from, native[1] }, "pfs", { false, false }
+			end
+		end
+
+		local dist = Vector3.new(goal.X - from.X, 0, goal.Z - from.Z).Magnitude
+		local cell = cfg("NAV_CELL", 4)
+		local maxCells = math.max(cfg("NAV_MAX_CELLS", 40), math.ceil(dist / cell) + 8)
+		local custom = M.findPath(from, goal, { maxCells = maxCells, cell = cell })
+		if custom and #custom >= 1 then
+			local pts = if #custom == 1 then { from, custom[1] } else custom
+			if M.pathSegmentsClear(pts) then
+				return pts, "grid", jumpsFromPts(pts)
+			end
+			if #pts >= 3 and M.hasClearWalk(from, pts[2]) then
+				return pts, "grid:partial", jumpsFromPts(pts)
+			end
+		end
+		return nil, "none", nil
+	end
+
+	-- Prefer native PathfindingService; fall back to floor A*; try ring goals.
+	-- NEVER return a straight line through a wall (log 00-32-43: path line thrash).
 	-- Third return: jump flags aligned with points (true = Space at that node).
 	function M.computePath(from: Vector3, to: Vector3): ({ Vector3 }, string, { boolean })
-		local goal = to
-		local s = M.sampleFloor(to.X, to.Z, to.Y, { requireClear = false })
-		if s then
-			goal = s.pos
+		local primary = snapGoal(to)
+
+		-- Candidate stand goals: primary + ring around primary (detour around walls)
+		local goals: { Vector3 } = { primary }
+		local ringR = { 10, 18, 28, 38 }
+		local ringN = 8
+		for _, r in ipairs(ringR) do
+			for i = 0, ringN - 1 do
+				local ang = (i / ringN) * math.pi * 2
+				local cand = Vector3.new(
+					primary.X + math.cos(ang) * r,
+					primary.Y,
+					primary.Z + math.sin(ang) * r
+				)
+				table.insert(goals, snapGoal(cand))
+			end
 		end
 
-		local native, nWhy, jumps = M.computeNativePath(from, goal)
-		if native and #native > 0 then
-			if S.pathVizEnabled then
-				M.showPathViz(native, "pfs")
-			end
-			return native, "pfs", jumps or {}
-		end
-
-		local custom = M.findPath(from, goal)
-		if custom and #custom > 0 then
-			if S.pathVizEnabled then
-				M.showPathViz(custom, "grid")
-			end
-			-- Infer jump on large step-ups
-			local inf: { boolean } = {}
-			for i, p in ipairs(custom) do
-				local j = false
-				if i > 1 then
-					j = (p.Y - custom[i - 1].Y) >= 3.5
+		local lastWhy = "fail"
+		for gi, goal in ipairs(goals) do
+			local pts, kind, jumps = tryRoute(from, goal)
+			if pts and #pts > 0 then
+				local tag = kind
+				if gi > 1 then
+					tag = kind .. ":ring"
 				end
-				table.insert(inf, j)
+				if S.pathVizEnabled then
+					M.showPathViz(pts, tag)
+				end
+				return pts, tag, jumps or jumpsFromPts(pts)
 			end
-			return custom, "grid", inf
+			lastWhy = kind or lastWhy
 		end
 
-		local line = { from, goal }
-		if S.pathVizEnabled then
-			M.showPathViz(line, "line:" .. tostring(nWhy or "fail"))
+		-- Last resort: straight line ONLY if actually clear
+		if M.hasClearWalk(from, primary) then
+			local line = { from, primary }
+			if S.pathVizEnabled then
+				M.showPathViz(line, "line")
+			end
+			return line, "line", { false, (primary.Y - from.Y) >= 3.5 }
 		end
-		return line, "line", { false, (goal.Y - from.Y) >= 3.5 }
+
+		-- Stuck: no walkable route. Return single point (pathing should drop / re-aim).
+		if S.pathVizEnabled then
+			M.showPathViz({ from }, "blocked:" .. tostring(lastWhy))
+		end
+		return { from }, "blocked", { false }
 	end
 
 	function M.setPathVizEnabled(on: boolean)
