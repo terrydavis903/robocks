@@ -1352,18 +1352,29 @@ return function(S)
 
 	function M.togglePathViz()
 		local nav = Nav()
-		if nav and nav.togglePathViz then
-			nav.togglePathViz()
+		local turningOn = not S.pathVizEnabled
+		if nav and nav.setPathVizEnabled then
+			nav.setPathVizEnabled(turningOn)
 		else
-			S.pathVizEnabled = not S.pathVizEnabled
+			S.pathVizEnabled = turningOn
 			if S.ui and S.ui.setPathVizLabel then
 				S.ui.setPathVizLabel(S.pathVizEnabled)
 			end
-			if not S.pathVizEnabled and nav and nav.clearPathViz then
+		end
+		-- Always hard-clear workspace folder when OFF (stale folder left neon boxes)
+		if not S.pathVizEnabled then
+			if nav and nav.clearPathViz then
 				nav.clearPathViz()
 			end
+			pcall(function()
+				local f = workspace:FindFirstChild("PortalMage_PathViz")
+				if f then
+					f:Destroy()
+				end
+			end)
+			return
 		end
-		-- Force path rebuild so viz (and segment index) refresh immediately
+		-- ON: force path rebuild so viz redraws immediately
 		pathBuiltAt = 0
 		pathEnemy = nil
 		if S.walking then
@@ -1390,9 +1401,18 @@ return function(S)
 			if S.ui and S.ui.setPathVizLabel then
 				S.ui.setPathVizLabel(S.pathVizEnabled)
 			end
-			if not on and nav and nav.clearPathViz then
+		end
+		if not S.pathVizEnabled then
+			if nav and nav.clearPathViz then
 				nav.clearPathViz()
 			end
+			pcall(function()
+				local f = workspace:FindFirstChild("PortalMage_PathViz")
+				if f then
+					f:Destroy()
+				end
+			end)
+			return
 		end
 		pathBuiltAt = 0
 		pathEnemy = nil
@@ -1491,15 +1511,26 @@ return function(S)
 			-- Manual off cancels scheduled blacklist resume
 			S.blacklistResumeKillAura = false
 			S.blacklistResumeAt = 0
+			-- Drop sticky hold so next ON re-picks nearest (not last focus)
+			if T() and T().clearHold then
+				T().clearHold("kill_aura_off")
+			end
 			stopMove()
+			clearPathState()
+			S.lastKillAuraPath = nil
 			S.ui.setWalkLabel(false)
-			U.setStatus("Kill Aura stopping…")
+			U.setStatus("Kill Aura OFF — hold cleared")
 			return
 		end
 
 		-- Manual on cancels pending auto-resume (user already enabled)
 		S.blacklistResumeKillAura = false
 		S.blacklistResumeAt = 0
+		-- Ensure no stale hold from before stop
+		if T() and T().clearHold then
+			T().clearHold("kill_aura_on")
+		end
+		clearPathState()
 
 		M.startWalk(nil)
 	end

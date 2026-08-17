@@ -893,10 +893,12 @@ return function(S)
 				S.pathVizFolder:Destroy()
 			end
 		end)
+		-- Destroy every PathViz folder (duplicates / stale refs left neon boxes after OFF)
 		pcall(function()
-			local f = workspace:FindFirstChild(PATH_VIZ_FOLDER)
-			if f then
-				f:Destroy()
+			for _, ch in ipairs(workspace:GetChildren()) do
+				if ch.Name == PATH_VIZ_FOLDER or string.find(ch.Name, "PortalMage_PathViz", 1, true) == 1 then
+					ch:Destroy()
+				end
 			end
 		end)
 		S.pathVizFolder = nil
@@ -1164,6 +1166,8 @@ return function(S)
 		end
 		if not S.pathVizEnabled then
 			M.clearPathViz()
+			-- Do not leave clearance probe boxes if they were only drawn for path review
+			-- (full-path probes still live under Clear Hitbox toggle)
 			if U and U.setStatus then
 				U.setStatus("Path Viz OFF")
 			end
@@ -1176,6 +1180,16 @@ return function(S)
 
 	function M.togglePathViz()
 		M.setPathVizEnabled(not S.pathVizEnabled)
+	end
+
+	-- showPathViz must no-op hard when disabled (guards against late async redraw)
+	local _showPathVizImpl = M.showPathViz
+	function M.showPathViz(points: { Vector3 }?, tag: string?)
+		if not S.pathVizEnabled then
+			M.clearPathViz()
+			return
+		end
+		return _showPathVizImpl(points, tag)
 	end
 
 	---------------------------------------------------------------------------
