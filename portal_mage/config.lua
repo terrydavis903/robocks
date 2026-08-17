@@ -133,14 +133,14 @@ return {
 	NAV_WALL_CLEARANCE = 1.6, -- sampleFloor pinch reject (was 2.75 — over-rejected stand goals)
 	NAV_WALL_PROBE = 8,
 	NAV_WALL_DIRS = 8,
-	-- Ray heights for wall LOS (primary clearance). Sparse — not dense thrash.
-	NAV_BODY_HEIGHTS = { 1.2, 2.4, 3.8 },
-	-- Hitbox secondary / viz (not the only wall check)
+	NAV_BODY_HEIGHTS = { 1.2, 2.4, 3.8 }, -- legacy (unused by clearance)
+	-- Clearance: pseudo player hitboxes along path at character height above floor
+	-- (not at floor nodes — floor always "collides"). Step = spacing along hop.
 	NAV_CLEAR_STEP = 2.0,
-	NAV_FLOOR_CHECK_EVERY = 4.0,
 	NAV_HITBOX_PAD = 0.05,
-	NAV_HITBOX_SCALE = 0.85,
-	NAV_CLEAR_STRICT = false,
+	NAV_HITBOX_SCALE = 0.9,
+	-- Lift box slightly so the bottom clears the floor slab (studs)
+	NAV_HITBOX_FLOOR_LIFT = 0.15,
 	-- World props that must NEVER be treated as walk floors (mesh dump 2026-08-16):
 	-- Buildings.Stalls, Buildings.Tents, Modular_Standalone_Roof_*, Mech_Sail_ClothMesh
 	NAV_OBSTACLE_PATH_KEYWORDS = {

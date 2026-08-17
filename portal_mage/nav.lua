@@ -610,11 +610,11 @@ return function(S)
 		return (to.Y - from.Y) <= -allow
 	end
 
-	-- Player body hitbox for clearance probes (HRP size × scale + pad).
-	-- Exported for hitbox viz button.
+	-- Player body hitbox size for clearance probes (HRP size × scale + pad).
+	-- Exported for Clear Hitbox viz button.
 	function M.playerHitboxSize(): Vector3
 		local pad = cfg("NAV_HITBOX_PAD", 0.05)
-		local scale = cfg("NAV_HITBOX_SCALE", 0.8)
+		local scale = cfg("NAV_HITBOX_SCALE", 0.9)
 		if scale < 0.4 then
 			scale = 0.4
 		elseif scale > 1.2 then
@@ -634,6 +634,31 @@ return function(S)
 		local r = (cfg("NAV_AGENT_RADIUS", 2) or 2) * 2 * scale
 		local h = (cfg("NAV_AGENT_HEIGHT", 5) or 5) * scale
 		return Vector3.new(r, h, r)
+	end
+
+	-- How high above the floor the Clear Hitbox CENTER sits (live character).
+	-- Probes use this delta so we never test at floor-node Y (always "hits floor").
+	function M.playerHitboxCenterHeight(): number
+		local box = M.playerHitboxSize()
+		local lift = cfg("NAV_HITBOX_FLOOR_LIFT", 0.15)
+		local lp = Players.LocalPlayer
+		local char = lp and lp.Character
+		local hrp = char and char:FindFirstChild("HumanoidRootPart")
+		local hum = char and char:FindFirstChildOfClass("Humanoid")
+		if hrp and hrp:IsA("BasePart") then
+			local floor = M.sampleFloor(hrp.Position.X, hrp.Position.Z, hrp.Position.Y, {
+				requireClear = false,
+			})
+			if floor and floor.pos then
+				local dy = hrp.Position.Y - floor.pos.Y
+				if dy > 0.4 and dy < 12 then
+					return dy + lift
+				end
+			end
+			local hip = (hum and hum.HipHeight) or 2
+			return hip + (hrp :: BasePart).Size.Y * 0.5 + lift
+		end
+		return box.Y * 0.5 + lift
 	end
 
 	local HITBOX_VIZ_FOLDER = "PortalMage_HitboxViz"
@@ -672,81 +697,49 @@ return function(S)
 		return params
 	end
 
-	-- Wall ray params: exclude self/mobs/viz only. Do NOT exclude InvisibleWall
-	-- (map bounds must block). Floor sample rays may still use M.rayParams().
-	local function wallRayParams(): RaycastParams
-		local params = RaycastParams.new()
-		params.FilterType = Enum.RaycastFilterType.Exclude
-		local exclude: { Instance } = {}
-		local lp = Players.LocalPlayer
-		if lp and lp.Character then
-			table.insert(exclude, lp.Character)
-		end
-		pcall(function()
-			local mobs = workspace:FindFirstChild("Mobs")
-			if mobs then
-				table.insert(exclude, mobs)
-			end
-		end)
-		pcall(function()
-			for _, name in ipairs({
-				"PortalMage_TerrainFloorOutline",
-				"PortalMage_PathViz",
-				"PortalMage_FaceViz",
-				HITBOX_VIZ_FOLDER,
-			}) do
-				local f = workspace:FindFirstChild(name)
-				if f then
-					table.insert(exclude, f)
-				end
-			end
-		end)
-		params.FilterDescendantsInstances = exclude
-		params.IgnoreWater = false
-		return params
-	end
-
-	local function rayBlocksWalk(hit: RaycastResult): boolean
-		local inst = hit.Instance
-		if not inst then
+	-- Does this part count as a body collision (not the floor under our feet)?
+	local function partBlocksBody(bp: BasePart, centerPos: Vector3, boxSize: Vector3): boolean
+		if not bp.CanCollide then
 			return false
 		end
-		if isBarrierInstance(inst) then
+		if isBarrierInstance(bp) then
 			return true
 		end
-		if isNamedObstacle(inst) and inst:IsA("BasePart") and (inst :: BasePart).CanCollide then
+		local n = string.lower(bp.Name)
+		local path = string.lower(bp:GetFullName())
+		if string.find(path, "invisiblewall", 1, true)
+			or string.find(n, "invisible wall", 1, true)
+		then
 			return true
 		end
-		if isCollideProp(inst) then
+		if isNamedObstacle(bp) then
 			return true
 		end
-		local minNy = cfg("NAV_MIN_NORMAL_Y", 0.45)
-		if inst:IsA("Terrain") then
-			return hit.Normal.Y < minNy -- steep cliff face
+		-- Floor / terrain under feet: ignore (hitbox sits above walk surface)
+		local footY = centerPos.Y - boxSize.Y * 0.5
+		local topY = bp.Position.Y + bp.Size.Y * 0.5
+		if topY <= footY + 0.45 then
+			return false
 		end
-		if inst:IsA("BasePart") then
-			local bp = inst :: BasePart
-			if not bp.CanCollide then
-				return false
-			end
-			-- Real floor with upward normal = walk on it, not a wall
-			if isWalkFloorPart(bp) and hit.Normal.Y >= minNy then
-				return false
-			end
-			-- Vertical-ish collide = wall
-			if hit.Normal.Y < minNy then
-				return true
-			end
-			-- Upward normal on non-floor prop still blocks (stall roof, crate top)
+		if bp:IsA("Terrain") then
+			return false
+		end
+		if isWalkFloorPart(bp) then
+			return false
+		end
+		if isCollideProp(bp) then
 			return true
 		end
-		return hit.Normal.Y < minNy
+		-- Any other collide mesh in the body volume = wall / structure
+		return true
 	end
 
-	-- True if horizontal walk from→to is not blocked by a wall/prop.
-	-- Primary: multi-height + lateral rays (reliable for walls).
-	-- Secondary: sparse hitbox for fat props rays can miss.
-	-- Elevation drops always clear (walk off ledge).
+	-- True if player-sized hitboxes along from→to (at character height above floor)
+	-- do not intersect walls/meshes. Floor contact is ignored.
+	--
+	--   floor path polyline  ────●────●────●────  (nodes)
+	--   clear hitbox height       ▢    ▢    ▢     (probes)
+	--
 	function M.hasClearWalk(from: Vector3, to: Vector3): boolean
 		local flat = Vector3.new(to.X - from.X, 0, to.Z - from.Z)
 		local dist = flat.Magnitude
@@ -754,11 +747,14 @@ return function(S)
 			lastClearProbeSamples = {}
 			return true
 		end
+		-- Walk-off drops: gravity path; don't reject the cliff face under the ledge
 		if M.isElevationDrop(from, to) then
+			local boxSize = M.playerHitboxSize()
+			local centerH = M.playerHitboxCenterHeight()
 			lastClearProbeSamples = {
 				{
-					pos = from,
-					size = M.playerHitboxSize(),
+					pos = Vector3.new(from.X, from.Y - boxSize.Y * 0.5 + centerH, from.Z),
+					size = boxSize,
 					dir = flat.Unit,
 					blocked = false,
 					note = "drop",
@@ -768,115 +764,87 @@ return function(S)
 		end
 
 		local dir = flat.Unit
-		local right = Vector3.new(-dir.Z, 0, dir.X)
-		local params = wallRayParams()
-		local halfW = math.max(0.55, (cfg("NAV_AGENT_RADIUS", 2) or 2) * 0.5)
-		local heights = cfg("NAV_BODY_HEIGHTS", { 1.2, 2.4, 3.8 })
-		if type(heights) ~= "table" then
-			heights = { 1.2, 2.4, 3.8 }
-		end
-		local laterals = { 0, -halfW, halfW }
 		local boxSize = M.playerHitboxSize()
-		local samples: { any } = {}
-		local blockedAt: Vector3? = nil
-		local blockedNote = ""
-
-		for _, hy in ipairs(heights) do
-			if type(hy) ~= "number" then
-				continue
-			end
-			for _, lat in ipairs(laterals) do
-				local origin = from + Vector3.new(0, hy, 0) + right * lat
-				local start = origin + dir * 0.35
-				local remain = math.max(0.1, dist - 0.5)
-				local hit = workspace:Raycast(start, dir * remain, params)
-				if hit and rayBlocksWalk(hit) then
-					blockedAt = hit.Position
-					blockedNote = "ray"
-					break
-				end
-			end
-			if blockedAt then
-				break
-			end
+		local centerH = M.playerHitboxCenterHeight()
+		local step = cfg("NAV_CLEAR_STEP", 2.0)
+		if step < 1.0 then
+			step = 1.0
 		end
+		local maxFall = cfg("NAV_MAX_DROP_Y", 40)
+		local overlap = clearanceOverlapParams()
+		local nSteps = math.max(1, math.ceil(dist / step))
+		local samples: { any } = {}
 
-		-- Sparse hitbox samples (secondary) — catches fat mesh walls rays skim past
-		if not blockedAt then
-			local step = math.max(1.5, cfg("NAV_CLEAR_STEP", 2.0))
-			local overlap = clearanceOverlapParams()
-			local nSteps = math.max(1, math.ceil(dist / step))
-			for s = 1, nSteps do
-				local t = math.min(dist, s * step)
-				local alpha = t / dist
-				local hintY = from.Y + (to.Y - from.Y) * alpha + boxSize.Y * 0.15
-				local standPos = Vector3.new(from.X + dir.X * t, hintY, from.Z + dir.Z * t)
-				local cf = CFrame.lookAt(standPos, standPos + dir)
-				local ok, res = pcall(function()
-					return workspace:GetPartBoundsInBox(cf, boxSize, overlap)
-				end)
-				local hitBlock = false
-				if ok and type(res) == "table" then
-					for _, inst in ipairs(res) do
-						if not inst:IsA("BasePart") then
-							continue
-						end
-						local bp = inst :: BasePart
-						if not bp.CanCollide then
-							continue
-						end
-						if isBarrierInstance(bp) or isNamedObstacle(bp) or isCollideProp(bp) then
-							hitBlock = true
-							break
-						end
-						-- Vertical-ish bulk (not floor slab)
-						if not isWalkFloorPart(bp) then
-							local footY = standPos.Y - boxSize.Y * 0.5
-							local topY = bp.Position.Y + bp.Size.Y * 0.5
-							if topY > footY + 1.2 then
-								hitBlock = true
-								break
-							end
-						end
+		for s = 0, nSteps do
+			local t = math.min(dist, s * step)
+			local alpha = if dist > 1e-4 then t / dist else 0
+			local hintY = from.Y + (to.Y - from.Y) * alpha
+			local x = from.X + dir.X * t
+			local z = from.Z + dir.Z * t
+
+			-- Snap to floor under this XZ (path nodes are on floor; hitbox is ABOVE)
+			local floorY = hintY
+			local floor = M.sampleFloor(x, z, hintY, { requireClear = false })
+			if floor and floor.pos then
+				if floor.pos.Y < hintY - maxFall then
+					table.insert(samples, {
+						pos = Vector3.new(x, hintY + centerH, z),
+						size = boxSize,
+						dir = dir,
+						blocked = true,
+						note = "void",
+					})
+					lastClearProbeSamples = samples
+					if S.hitboxVizEnabled then
+						M.refreshHitboxViz()
+					end
+					return false
+				end
+				floorY = floor.pos.Y
+			elseif s == 0 or s == nSteps then
+				-- Endpoints with no floor: still place box at hint height
+				floorY = hintY
+			else
+				floorY = hintY
+			end
+
+			local centerPos = Vector3.new(x, floorY + centerH, z)
+			local cf = CFrame.lookAt(centerPos, centerPos + dir)
+			local hitBlock = false
+			local ok, res = pcall(function()
+				return workspace:GetPartBoundsInBox(cf, boxSize, overlap)
+			end)
+			if ok and type(res) == "table" then
+				for _, inst in ipairs(res) do
+					if inst:IsA("BasePart") and partBlocksBody(inst :: BasePart, centerPos, boxSize) then
+						hitBlock = true
+						break
 					end
 				end
-				table.insert(samples, {
-					pos = standPos,
-					size = boxSize,
-					dir = dir,
-					blocked = hitBlock,
-				})
-				if hitBlock then
-					blockedAt = standPos
-					blockedNote = "box"
-					break
-				end
 			end
-		else
-			table.insert(samples, {
-				pos = blockedAt,
-				size = boxSize,
-				dir = dir,
-				blocked = true,
-				note = blockedNote,
-			})
-		end
 
-		if not blockedAt then
-			-- endpoint sample for viz
 			table.insert(samples, {
-				pos = Vector3.new(to.X, to.Y + boxSize.Y * 0.15, to.Z),
+				pos = centerPos,
 				size = boxSize,
 				dir = dir,
-				blocked = false,
+				blocked = hitBlock,
+				floorY = floorY,
+				centerH = centerH,
 			})
+			if hitBlock then
+				lastClearProbeSamples = samples
+				if S.hitboxVizEnabled then
+					M.refreshHitboxViz()
+				end
+				return false
+			end
 		end
 
 		lastClearProbeSamples = samples
 		if S.hitboxVizEnabled then
 			M.refreshHitboxViz()
 		end
-		return blockedAt == nil
+		return true
 	end
 
 	-- If next waypoint is through a collide mesh, skip ahead while clear; nil if need repath.
@@ -1405,12 +1373,14 @@ return function(S)
 			return
 		end
 		local sz = M.playerHitboxSize()
+		local ch = M.playerHitboxCenterHeight()
 		if U and U.setStatus then
 			U.setStatus(string.format(
-				"Clear Hitbox ON — cyan wire=clearance %.1f×%.1f×%.1f (amber=HRP) probes after path",
+				"Clear Hitbox ON — box %.1f×%.1f×%.1f @ floor+%.1f (probes along path at body height)",
 				sz.X,
 				sz.Y,
-				sz.Z
+				sz.Z,
+				ch
 			))
 		end
 		-- Immediate draw (do not wait for pathing)
