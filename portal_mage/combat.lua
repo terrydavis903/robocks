@@ -205,7 +205,12 @@ return function(S)
 			return
 		end
 
-		if not dist then
+		-- Flat XZ distance (matches pathing stand band — avoids height deadlock)
+		local eposFlat = U.getCharacterLikePosition(hold)
+		local playerFlat = U.getLivePlayerVector()
+		if eposFlat and playerFlat then
+			dist = Vector3.new(eposFlat.X - playerFlat.X, 0, eposFlat.Z - playerFlat.Z).Magnitude
+		elseif not dist then
 			dist = T().dist(hold) or 999
 		end
 

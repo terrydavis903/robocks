@@ -342,14 +342,23 @@ return function(S)
 	local walkingFacing = false -- true while allowed to hold W
 	local faceStuckSince = 0 -- face mode without progress
 	local faceStuckBest = -2 -- best faceDot while stuck-facing
+	local forceWalkUntil = 0 -- after FACE_STUCK_ESCAPE: keep W even if face still rough
+	local progressPos: Vector3? = nil
+	local progressAt = 0
+	local noProgressRepaths = 0
 
-	-- Best available facing quality: HRP look AND camera (game often moves by cam)
-	local function facingQuality(target: Vector3): (number, number, Vector3)
+	-- Facing quality: report min(HRP, cam) for gates, plus separate dots for diagnostics.
+	-- Log 23-06-49: HRP ~0.94 (yaw~20°) while cam ~-0.15 → min stuck; turnKeyToward
+	-- early-out on HRP-only align and never pressed arrows → permanent face thrash.
+	local lastHrpDot = 0
+	local lastCamDot = 0
+
+	local function facingQuality(target: Vector3): (number, number, Vector3, number, number)
 		local hrp = getHrp()
 		local pos = hrp and hrp.Position or target
 		local to = Vector3.new(target.X - pos.X, 0, target.Z - pos.Z)
 		if to.Magnitude < 1e-4 then
-			return 1, 0, Vector3.new(0, 0, -1)
+			return 1, 0, Vector3.new(0, 0, -1), 1, 1
 		end
 		to = to.Unit
 		local hrpDot = 0
@@ -370,10 +379,10 @@ return function(S)
 				camDot = cl:Dot(to)
 			end
 		end
-		-- Use the worse of the two — both must aim at the path for reliable W
+		-- Worse of the two — both must aim at the path for reliable W
 		local d = math.min(hrpDot, camDot)
 		local yawErr = measured.X * to.Z - measured.Z * to.X
-		return d, yawErr, measured
+		return d, yawErr, measured, hrpDot, camDot
 	end
 
 	-- Force both HRP and camera to look at target (horizontal).
@@ -399,7 +408,16 @@ return function(S)
 		end
 	end
 
-	-- Continuous soft face + optional arrows. Always corrects toward path while moving.
+	-- Game-inverted L/R from pathing's own yawErr (do NOT use turnKeyToward HRP early-out).
+	local function turnKeyFromYaw(yawErr: number): Enum.KeyCode
+		-- yawErr > 0 = goal left of HRP look (math) → this game needs opposite arrow
+		if yawErr > 0 then
+			return Enum.KeyCode.Right
+		end
+		return Enum.KeyCode.Left
+	end
+
+	-- Continuous soft face + arrows. Always corrects toward path while moving.
 	local function facePoint(target: Vector3): number
 		local hrp = getHrp()
 		local hum = getHum()
@@ -414,7 +432,7 @@ return function(S)
 
 		local pos = hrp.Position
 		local flat = Vector3.new(target.X - pos.X, 0, target.Z - pos.Z)
-		local d, yawErr, measuredLook = facingQuality(target)
+		local d, yawErr, measuredLook, hrpDot, camDot = facingQuality(target)
 
 		if flat.Magnitude < 0.2 then
 			if U.holdTurnKey then
@@ -423,23 +441,29 @@ return function(S)
 			lastFaceDot = 1
 			lastYawErr = 0
 			lastTurnName = "-"
+			lastHrpDot = 1
+			lastCamDot = 1
 			faceOkSince = os.clock()
 			updateFaceViz(hrp, target, measuredLook, 0, nil)
 			return 1
 		end
 
 		local poll = C.SMOOTH_WALK_POLL or 0.06
-		-- Snappier while establishing face; gentler while already walking
 		local turnRate = if walkingFacing
 			then (C.KILL_AURA_FACE_WALK_RATE or 6.0)
 			else (C.KILL_AURA_FACE_TURN_RATE or 8.0)
 
-		-- ALWAYS soft-aim HRP at path target (this is the rigor we were missing)
+		-- Cam lagging HRP badly → hard snap cam (soft steps were not enough)
+		if camDot + 0.2 < hrpDot or camDot < 0.35 then
+			hardFace(target)
+			d, yawErr, measuredLook, hrpDot, camDot = facingQuality(target)
+		end
+
+		-- Soft-aim HRP at path target
 		pcall(function()
 			local lookAt = Vector3.new(target.X, pos.Y, target.Z)
 			local desired = CFrame.lookAt(pos, lookAt)
 			local alpha = 1 - math.exp(-turnRate * poll)
-			-- Harder snap when badly off
 			if d < 0.5 then
 				alpha = math.clamp(alpha * 1.8, 0.05, 0.75)
 			else
@@ -448,7 +472,7 @@ return function(S)
 			hrp.CFrame = hrp.CFrame:Lerp(desired, alpha)
 		end)
 
-		-- ALWAYS keep camera with path (many games drive WASD from camera)
+		-- Keep camera with path (WASD often follows cam)
 		local cam = workspace.CurrentCamera
 		if cam then
 			pcall(function()
@@ -460,13 +484,16 @@ return function(S)
 					local flatLook = Vector3.new(look.X, 0, look.Z)
 					if flatLook.Magnitude > 0.1 then
 						flatLook = flatLook.Unit
-						local cross = flatLook.X * to.Z - flatLook.Z * to.X -- >0 target left of cam
+						local cross = flatLook.X * to.Z - flatLook.Z * to.X
 						local cdot = flatLook:Dot(to)
 						if cdot < 0.995 then
-							-- Match util invert: math-left (cross>0) → negative yaw for this game
 							local base = C.PATH_CAMERA_YAW_DEG or 5
 							if walkingFacing then
-								base = base * 0.7 -- lighter while walking
+								base = base * 0.7
+							end
+							-- Stronger when cam is the lagging axis
+							if cdot < 0.5 then
+								base = base * 1.6
 							end
 							local deg = base * (if cross > 0 then -1 else 1)
 							if cdot < 0 then
@@ -485,20 +512,33 @@ return function(S)
 			end)
 		end
 
-		-- Re-measure after soft correction
-		d, yawErr, measuredLook = facingQuality(target)
+		d, yawErr, measuredLook, hrpDot, camDot = facingQuality(target)
 
-		-- Arrow keys whenever off-axis enough (including while walking — micro-correct)
+		-- Arrows from pathing yawErr whenever min-face OR residual yaw is off.
+		-- Never let HRP-only "good enough" suppress keys while cam/min is still bad.
 		local dead = C.PATH_TURN_YAW_DEADZONE or 0.06
 		local turnKey: Enum.KeyCode? = nil
 		local alignForKeys = if walkingFacing then (C.KILL_AURA_FACE_WALK_ALIGN or 0.94) else faceAlign
-		if d < alignForKeys and math.abs(yawErr) >= dead then
-			-- Prefer util mapping (game-inverted L/R)
-			if U.turnKeyToward then
-				turnKey = U.turnKeyToward(target.X, target.Z, alignForKeys)
-			else
-				-- same invert as util
-				turnKey = if yawErr > 0 then Enum.KeyCode.Right else Enum.KeyCode.Left
+		local needTurn = d < alignForKeys
+			or math.abs(yawErr) >= dead
+			or camDot < alignForKeys
+			or hrpDot < alignForKeys
+		if needTurn and math.abs(yawErr) >= (dead * 0.5) then
+			turnKey = turnKeyFromYaw(yawErr)
+		elseif needTurn and camDot < hrpDot - 0.05 then
+			-- HRP on-axis-ish but cam still off: turn using cam cross via hardFace path
+			local cam = workspace.CurrentCamera
+			if cam then
+				local cl = Vector3.new(cam.CFrame.LookVector.X, 0, cam.CFrame.LookVector.Z)
+				local to = Vector3.new(target.X - hrp.Position.X, 0, target.Z - hrp.Position.Z)
+				if cl.Magnitude > 1e-4 and to.Magnitude > 1e-4 then
+					cl = cl.Unit
+					to = to.Unit
+					local camYaw = cl.X * to.Z - cl.Z * to.X
+					if math.abs(camYaw) >= dead * 0.5 then
+						turnKey = turnKeyFromYaw(camYaw)
+					end
+				end
 			end
 		end
 		if U.holdTurnKey then
@@ -507,6 +547,8 @@ return function(S)
 
 		lastFaceDot = d
 		lastYawErr = yawErr
+		lastHrpDot = hrpDot
+		lastCamDot = camDot
 		lastTurnName = if turnKey == Enum.KeyCode.Left
 			then "LEFT"
 			elseif turnKey == Enum.KeyCode.Right then "RIGHT"
@@ -730,6 +772,10 @@ return function(S)
 		walkingFacing = false
 		faceStuckSince = 0
 		faceStuckBest = -2
+		forceWalkUntil = 0
+		progressPos = nil
+		progressAt = 0
+		noProgressRepaths = 0
 		segBlocked = false
 		lastSegLabel = "-"
 	end
@@ -784,7 +830,15 @@ return function(S)
 		end
 
 		local dist = flatDist(playerPos, epos)
+		local now = os.clock()
+		local forceWalk = now < forceWalkUntil
+
+		-- Near fight range: face the enemy (not a behind-geometry stand WP)
 		local target, segLabel = segmentTarget(playerPos, epos, range)
+		if dist <= range + (C.KILL_AURA_STICKY or 4) + 6 then
+			target = epos
+			segLabel = segLabel .. ">en"
+		end
 		lastSegLabel = segLabel
 		local faceDot = facePoint(target)
 
@@ -793,17 +847,51 @@ return function(S)
 			if U.holdJump then
 				U.holdJump(false)
 			end
-			if U.holdTurnKey then
-				U.holdTurnKey(nil)
-			end
+			-- Keep soft-facing enemy (combat may need turn keys); don't release here.
 			faceOkSince = 0
 			walkingFacing = false
+			forceWalkUntil = 0
 			return "stand"
 		end
 
-		-- Walk only when facing path well enough. facePoint() always micro-corrects look.
-		if walkingFacing then
-			if faceDot < faceStop then
+		-- No XZ progress for too long → force repath + walk grace (log: strafe forever @51)
+		if not progressPos or flatDist(playerPos, progressPos) > 1.25 then
+			progressPos = playerPos
+			progressAt = now
+			noProgressRepaths = 0
+		elseif (now - progressAt) >= (C.KILL_AURA_NO_PROGRESS or 2.4) then
+			hardFace(epos)
+			forceWalkUntil = now + (C.KILL_AURA_FORCE_WALK or 1.4)
+			forceWalk = true
+			walkingFacing = true
+			faceStuckSince = 0
+			progressAt = now
+			noProgressRepaths += 1
+			pathBuiltAt = 0 -- allow ensurePath rebuild next tick
+			lastRepathAt = 0
+			log(string.format(
+				"NO_PROGRESS_ESCAPE n=%d dist=%.1f face=%.2f hrp=%.2f cam=%.2f %s",
+				noProgressRepaths,
+				dist,
+				faceDot,
+				lastHrpDot,
+				lastCamDot,
+				segLabel
+			))
+			if noProgressRepaths >= 3 then
+				-- Drop sticky hold so we can pick a different mob / approach angle
+				local Targets = T()
+				if Targets and Targets.clearHold then
+					Targets.clearHold("no_progress")
+				end
+				noProgressRepaths = 0
+				return "no-progress-drop"
+			end
+		end
+
+		-- Walk when facing is good enough, or during force-walk grace after face stuck.
+		if walkingFacing or forceWalk then
+			if not forceWalk and faceDot < faceStop then
 				walkingFacing = false
 				faceOkSince = 0
 				faceStuckSince = 0
@@ -812,6 +900,9 @@ return function(S)
 					U.holdJump(false)
 				end
 				return string.format("reface %s d=%.2f", segLabel, faceDot)
+			end
+			if forceWalk then
+				walkingFacing = true
 			end
 			faceStuckSince = 0
 			-- keep W; facePoint continues soft-aiming at path
@@ -822,7 +913,7 @@ return function(S)
 					U.holdJump(false)
 				end
 				faceOkSince = 0
-				local nowF = os.clock()
+				local nowF = now
 				if faceStuckSince <= 0 then
 					faceStuckSince = nowF
 					faceStuckBest = faceDot
@@ -830,16 +921,19 @@ return function(S)
 					if faceDot > faceStuckBest + 0.05 then
 						faceStuckBest = faceDot
 						faceStuckSince = nowF
-					elseif (nowF - faceStuckSince) >= (C.KILL_AURA_FACE_STUCK or 1.0) then
+					elseif (nowF - faceStuckSince) >= (C.KILL_AURA_FACE_STUCK or 0.7) then
+						-- hardFace + walk grace — previous escape only lasted 1 tick
+						-- because faceStop reface fired immediately (log FACE_STUCK loop)
 						hardFace(target)
-						if U.holdTurnKey then
-							U.holdTurnKey(nil)
-						end
 						walkingFacing = true
+						forceWalkUntil = nowF + (C.KILL_AURA_FORCE_WALK or 1.4)
 						faceStuckSince = 0
 						log(string.format(
-							"FACE_STUCK_ESCAPE d=%.2f → hardFace+walk %s",
+							"FACE_STUCK_ESCAPE d=%.2f hrp=%.2f cam=%.2f → hardFace+walk %.1fs %s",
 							faceDot,
+							lastHrpDot,
+							lastCamDot,
+							C.KILL_AURA_FORCE_WALK or 1.4,
 							segLabel
 						))
 					end
@@ -849,7 +943,6 @@ return function(S)
 				end
 			else
 				faceStuckSince = 0
-				local now = os.clock()
 				if faceOkSince <= 0 then
 					faceOkSince = now
 				end
@@ -860,7 +953,6 @@ return function(S)
 					end
 					return string.format("settle %s d=%.2f", segLabel, faceDot)
 				end
-				-- Lock face hard once before first W so residual error is ~0
 				hardFace(target)
 				walkingFacing = true
 			end
@@ -869,7 +961,6 @@ return function(S)
 		-- Walk toward path target (look is continuously corrected above)
 		local faceDir = Vector3.new(target.X - playerPos.X, 0, target.Z - playerPos.Z)
 		if faceDir.Magnitude < 0.2 then
-			-- arrived at waypoint mid-tick; advance and re-face next
 			advancePathIndex(playerPos)
 			setMoveKey(nil)
 			if U.holdJump then
@@ -880,7 +971,6 @@ return function(S)
 		faceDir = faceDir.Unit
 		local probe = C.KILL_AURA_PROBE or 4.5
 
-		-- Stuck? (pressed move but barely moved) → force slide
 		local stuck = false
 		if lastPos then
 			local moved = flatDist(playerPos, lastPos)
@@ -896,7 +986,6 @@ return function(S)
 		end
 		lastPos = playerPos
 
-		-- Jump only for path ledge / nearby step — never enemy absolute height
 		local jump = needJumpUp(playerPos, target, faceDir)
 		if U.holdJump then
 			U.holdJump(jump)
@@ -909,7 +998,7 @@ return function(S)
 			return string.format("%s %s", if jump then "W+Space" else "W", segLabel)
 		end
 
-		-- Blocked hop / wall: prefer W+strafe (human pathrec: W+D around obstacle)
+		-- Blocked hop / wall: W+strafe (human pathrec: W+D around obstacle)
 		local right = Vector3.new(-faceDir.Z, 0, faceDir.X).Unit
 		local leftBlocked = wallAhead(playerPos, -right, probe)
 		local rightBlocked = wallAhead(playerPos, right, probe)
@@ -921,13 +1010,16 @@ return function(S)
 		elseif lastSlide and (os.clock() - lastSlideAt) < 1.8 then
 			pick = lastSlide
 		else
-			-- Prefer side toward enemy flat offset
 			local toE = Vector3.new(epos.X - playerPos.X, 0, epos.Z - playerPos.Z)
 			if toE.Magnitude > 0.2 then
 				toE = toE.Unit
 				pick = if toE:Dot(right) > 0 then "WD" else "WA"
 			else
 				pick = if lastSlide == "WA" then "WD" else "WA"
+			end
+			-- Alternate strafe side after repeated no-progress
+			if noProgressRepaths % 2 == 1 then
+				pick = if pick == "WA" then "WD" else "WA"
 			end
 		end
 		lastSlide = pick
@@ -987,14 +1079,9 @@ return function(S)
 					end
 				end
 
+				-- Legacy flag (combat no longer sets it). Never freeze pathing here.
 				if S.waitAllCds then
-					if Targets.getHold() then
-						Targets.clearHold("wait_cds")
-					end
-					stopMove()
-					U.setStatus(string.format("[cds] holding… | %s", cds()))
-					task.wait(0.2)
-					return
+					S.waitAllCds = false
 				end
 
 				if S.combatBusy then
@@ -1017,7 +1104,7 @@ return function(S)
 
 				local range = Targets.fightRange()
 				local sticky = C.KILL_AURA_STICKY or 4
-				local model, epos, dist = Targets.ensureEnemy()
+				local model, epos, dist3 = Targets.ensureEnemy()
 
 				if not model or not epos then
 					stopMove()
@@ -1027,28 +1114,28 @@ return function(S)
 					return
 				end
 
-				if not dist then
-					dist = flatDist(playerPos, epos)
-				end
+				-- Always use flat XZ for stand/approach (matches approachStep; avoids
+				-- height-delta deadlock where path "stands" but combat waits).
+				local dist = flatDist(playerPos, epos)
 
 				-- A*/PFS path = movement segments (+ Path Viz when ON)
 				ensurePath(playerPos, epos, model, range)
 
-				-- Stand band: stop move, face enemy for combat
+				-- Stand band: stop move, keep facing enemy (leave turn keys to facePoint)
 				if dist <= range + sticky then
 					local fd = faceEnemy(epos)
 					setMoveKey(nil)
 					if U.holdJump then
 						U.holdJump(false)
 					end
-					if U.holdTurnKey then
-						U.holdTurnKey(nil)
-					end
+					-- Do NOT nil turn keys — combat face assist needs them; faceEnemy holds them
 					local pathInfo = string.format(" %s#%d", lastVizKind, #pathPts)
 					U.setStatus(string.format(
-						"[stand] d=%.1f face=%.2f yaw=%+.2f turn=%s %s%s | %s",
+						"[stand] d=%.1f face=%.2f h/c=%.2f/%.2f yaw=%+.2f turn=%s %s%s | %s",
 						dist,
 						fd,
+						lastHrpDot,
+						lastCamDot,
 						lastYawErr,
 						lastTurnName,
 						model.Name,
@@ -1061,32 +1148,37 @@ return function(S)
 
 				local tag = approachStep(playerPos, epos, range)
 				U.setStatus(string.format(
-					"[approach] d=%.1f %s yaw=%+.2f turn=%s → %s %s | %s",
+					"[approach] d=%.1f %s yaw=%+.2f h/c=%.2f/%.2f turn=%s → %s %s | %s",
 					dist,
 					tag,
 					lastYawErr,
+					lastHrpDot,
+					lastCamDot,
 					lastTurnName,
 					model.Name,
 					lastVizKind,
 					cds()
 				))
-				-- Log face thrash + movement (W was invisible in stuck log)
 				local head = string.sub(tag, 1, 4)
 				if head == "face"
 					or head == "sett"
 					or head == "refa"
 					or head == "stra"
+					or head == "no-p"
 					or string.sub(tag, 1, 1) == "W"
 					or string.sub(tag, 1, 4) == "turn"
 				then
 					log(string.format(
-						"%s yaw=%+.3f turn=%s enemy=%s dist=%.1f walkFace=%s blocked=%s",
+						"%s yaw=%+.3f turn=%s hrp=%.2f cam=%.2f enemy=%s dist=%.1f walkFace=%s force=%s blocked=%s",
 						tag,
 						lastYawErr,
 						lastTurnName,
+						lastHrpDot,
+						lastCamDot,
 						model.Name,
 						dist,
 						tostring(walkingFacing),
+						tostring(os.clock() < forceWalkUntil),
 						tostring(segBlocked)
 					))
 				end
