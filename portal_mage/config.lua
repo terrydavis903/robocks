@@ -184,7 +184,13 @@ return {
 	KILL_AURA_APPROACH = 30, -- alias
 	KILL_AURA_STICKY = 4,
 	KILL_AURA_HOLD_STICKY = 8, -- studs closer to switch hold when in/near fight range
-	KILL_AURA_MAX_PATH_DETOR = 2.2, -- reject paths longer than this Ã— straight (anti-circle)
+	-- Skip / R-release targets too high above us (world dump: many +40–50 Y).
+	-- Max engage ΔY = MULT × floor→ClearHitbox center height (live; fallback 3 studs).
+	KILL_AURA_MAX_DY_MULT = 3,
+	KILL_AURA_HITBOX_HEIGHT_FALLBACK = 3.0, -- studs if Nav measure unavailable
+	KILL_AURA_TOO_HIGH_IGNORE = 12, -- seconds before re-considering a released high target
+	KILL_AURA_RETICLE_RELEASE_HOLD = 0.4, -- hold R to unlock reticle
+	KILL_AURA_MAX_PATH_DETOR = 2.2, -- reject paths longer than this × straight (anti-circle)
 	-- Optional name priority (first match wins). Empty = nearest schema mob only.
 	-- Example: { "ScarecrowGoblin", "PatchHound", "CritterGoblin" }
 	KILL_AURA_PRIORITY = {},

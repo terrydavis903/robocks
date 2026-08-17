@@ -196,9 +196,116 @@ return function(S)
 
 	M.clearHoldTarget = M.clearHold
 
+	---------------------------------------------------------------------------
+	-- Height gate: enemies far above us (cliff/roof) — don't path/fight them.
+	-- Threshold = MULT × floor→Clear Hitbox center height (Nav measure; fallback 3).
+	---------------------------------------------------------------------------
+
+	local tooHighIgnore: { [Model]: number } = {} -- model → os.clock until
+
+	function M.clearHitboxFloorHeight(): number
+		local fallback = C.KILL_AURA_HITBOX_HEIGHT_FALLBACK or 3.0
+		if S.Nav and S.Nav.playerHitboxCenterHeight then
+			local ok, h = pcall(function()
+				return S.Nav.playerHitboxCenterHeight()
+			end)
+			if ok and type(h) == "number" and h > 0.5 and h < 20 then
+				return h
+			end
+		end
+		return fallback
+	end
+
+	-- Max enemy.Y - player.Y we will engage (only ABOVE; drops are fine).
+	function M.maxEngageDyAbove(): number
+		local mult = C.KILL_AURA_MAX_DY_MULT or 3
+		return mult * M.clearHitboxFloorHeight()
+	end
+
+	function M.dyAbovePlayer(model: Model?, playerPos: Vector3?): number?
+		if not model then
+			return nil
+		end
+		local origin = playerPos or U.getLivePlayerVector()
+		local epos = U.getCharacterLikePosition(model)
+		if not origin or not epos then
+			return nil
+		end
+		return epos.Y - origin.Y
+	end
+
+	function M.isTooHigh(model: Model?, playerPos: Vector3?): boolean
+		local dy = M.dyAbovePlayer(model, playerPos)
+		if dy == nil then
+			return false
+		end
+		return dy > M.maxEngageDyAbove()
+	end
+
+	function M.markTooHighIgnore(model: Model?)
+		if not model then
+			return
+		end
+		local sec = C.KILL_AURA_TOO_HIGH_IGNORE or 12
+		tooHighIgnore[model] = os.clock() + sec
+	end
+
+	function M.isTooHighIgnored(model: Model?): boolean
+		if not model then
+			return false
+		end
+		local untilT = tooHighIgnore[model]
+		if not untilT then
+			return false
+		end
+		if os.clock() >= untilT then
+			tooHighIgnore[model] = nil
+			return false
+		end
+		return true
+	end
+
+	-- Hold R to release reticle, clear hold, ignore height for a while.
+	function M.releaseReticleTooHigh(model: Model?, why: string?): boolean
+		if not model then
+			return false
+		end
+		local dy = M.dyAbovePlayer(model)
+		local maxDy = M.maxEngageDyAbove()
+		local h = M.clearHitboxFloorHeight()
+		M.markTooHighIgnore(model)
+		if S.holdTarget == model then
+			M.clearHold(why or "too_high")
+		end
+		local holdFor = C.KILL_AURA_RETICLE_RELEASE_HOLD or 0.4
+		if U.holdKeyCharge then
+			U.holdKeyCharge(Enum.KeyCode.R, function()
+				return S.walking == true
+			end, holdFor)
+		elseif U.pressKey then
+			U.pressKey(Enum.KeyCode.R)
+		end
+		if U.setStatus then
+			U.setStatus(string.format(
+				"[target] R-release too high dY=+%.0f (max +%.0f = %d×%.1f hitbox) %s",
+				dy or 0,
+				maxDy,
+				C.KILL_AURA_MAX_DY_MULT or 3,
+				h,
+				model.Name
+			))
+		end
+		return true
+	end
+
 	function M.getHold(): Model?
 		local t = S.holdTarget
 		if t and M.isAlive(t) then
+			-- Drop unreachable high holds so pathing doesn't chase roofs
+			if M.isTooHigh(t) then
+				M.clearHold("hold_too_high")
+				return nil
+			end
 			return t
 		end
 		if t then
@@ -368,7 +475,18 @@ return function(S)
 			return nil, nil, nil
 		end
 
-		table.sort(snaps, function(a, b)
+		-- Drop ignored / too-high (above) targets before ranking
+		local filtered = {}
+		for _, e in ipairs(snaps) do
+			if not M.isTooHighIgnored(e.model) and not M.isTooHigh(e.model, origin) then
+				table.insert(filtered, e)
+			end
+		end
+		if #filtered == 0 then
+			return nil, nil, nil
+		end
+
+		table.sort(filtered, function(a, b)
 			local pa = M.killAuraPriority(a.model)
 			local pb = M.killAuraPriority(b.model)
 			if pa ~= pb then
@@ -377,7 +495,7 @@ return function(S)
 			return a.dist < b.dist
 		end)
 
-		local best = snaps[1]
+		local best = filtered[1]
 		return best.model, best.pos, best.dist
 	end
 
@@ -388,6 +506,14 @@ return function(S)
 		local origin = U.getLivePlayerVector()
 		local hold = M.getHold()
 		local pick, ppos, pdist = M.pickEnemy(origin, true)
+
+		if hold and M.isAlive(hold) then
+			-- Height gate (getHold may already drop; re-check for race)
+			if M.isTooHigh(hold, origin) then
+				M.clearHold("hold_too_high")
+				hold = nil
+			end
+		end
 
 		if hold and M.isAlive(hold) then
 			local hpos = U.getCharacterLikePosition(hold)

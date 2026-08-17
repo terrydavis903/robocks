@@ -208,6 +208,21 @@ return function(S)
 
 		local range = T().fightRange()
 		local sticky = C.KILL_AURA_STICKY or 5
+		local playerFlat = U.getLivePlayerVector()
+
+		-- Reticle locked on enemy far above us (roof/cliff): hold R to unlock, move on.
+		-- World dump 13-26-06: 24 mobs +40–50 Y while player ~109.
+		do
+			local ret = T().getReticleLiving and T().getReticleLiving() or T().getReticle()
+			if ret and T().isTooHigh and T().isTooHigh(ret, playerFlat) then
+				if T().releaseReticleTooHigh then
+					T().releaseReticleTooHigh(ret, "reticle_too_high")
+				end
+				task.wait(0.1)
+				return
+			end
+		end
+
 		-- Nearest mob (pathing approaches); no creature schema filter
 		local hold, _pos, dist = T().ensureEnemy()
 
@@ -218,6 +233,20 @@ return function(S)
 			end
 			U.setStatus(string.format("[fight] scan… | %s", A().formatCds()))
 			task.wait(0.15)
+			return
+		end
+
+		-- Hold is too high: release reticle if on them, clear, pick another
+		if T().isTooHigh and T().isTooHigh(hold, playerFlat) then
+			if T().hasReticleOn and T().hasReticleOn(hold) and T().releaseReticleTooHigh then
+				T().releaseReticleTooHigh(hold, "hold_too_high")
+			else
+				if T().markTooHighIgnore then
+					T().markTooHighIgnore(hold)
+				end
+				T().clearHold("hold_too_high")
+			end
+			task.wait(0.1)
 			return
 		end
 
@@ -234,7 +263,6 @@ return function(S)
 
 		-- Flat XZ distance (matches pathing stand band — avoids height deadlock)
 		local eposFlat = U.getCharacterLikePosition(hold)
-		local playerFlat = U.getLivePlayerVector()
 		if eposFlat and playerFlat then
 			dist = Vector3.new(eposFlat.X - playerFlat.X, 0, eposFlat.Z - playerFlat.Z).Magnitude
 		elseif not dist then
@@ -273,6 +301,14 @@ return function(S)
 			U.setStatus(string.format("[fight] R → %s d=%.1f", hold.Name, dist))
 			U.pressKey(Enum.KeyCode.R)
 			task.wait(C.TARGET_CYCLE_DELAY or 0.12)
+			-- R may have locked a different (e.g. high) mob — unlock and bail
+			local ret = T().getReticleLiving and T().getReticleLiving() or T().getReticle()
+			if ret and not T().reticleOn(hold, ret) then
+				if T().isTooHigh and T().isTooHigh(ret, playerFlat) and T().releaseReticleTooHigh then
+					T().releaseReticleTooHigh(ret, "r_locked_too_high")
+				end
+				return
+			end
 			if not T().hasReticleOn(hold) then
 				return
 			end
