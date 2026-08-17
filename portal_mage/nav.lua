@@ -611,7 +611,8 @@ return function(S)
 	end
 
 	-- True if horizontal walk from→to is not blocked by a wall-like / collide mesh.
-	-- Body-width: center + left/right offsets so thin wall gaps don't look clear.
+	-- Body-width + multi-height rays; dense samples so stall MeshParts are not missed
+	-- (astar 03-10-46: PFS path through Goblin_Stall_Round_1 with hopClear all true).
 	-- Downward path hops: clear (walk off ledge) — cliff faces false-positive as walls.
 	function M.hasClearWalk(from: Vector3, to: Vector3): boolean
 		local flat = Vector3.new(to.X - from.X, 0, to.Z - from.Z)
@@ -627,9 +628,9 @@ return function(S)
 		local right = Vector3.new(-dir.Z, 0, dir.X)
 		local params = M.rayParams()
 		local minNy = cfg("NAV_MIN_NORMAL_Y", 0.45)
-		local halfW = math.max(0.6, (cfg("NAV_AGENT_RADIUS", 2) or 2) * 0.55)
-		local heights = cfg("NAV_BODY_HEIGHTS", { 1.2, 2.5, 4.5 })
-		local laterals = { 0, -halfW, halfW }
+		local halfW = math.max(0.75, (cfg("NAV_AGENT_RADIUS", 2) or 2) * 0.65)
+		local heights = cfg("NAV_BODY_HEIGHTS", { 0.9, 1.6, 2.4, 3.4, 4.5 })
+		local laterals = { 0, -halfW * 0.5, halfW * 0.5, -halfW, halfW }
 
 		local function blocksWalk(hit: RaycastResult): boolean
 			local inst = hit.Instance
@@ -639,16 +640,14 @@ return function(S)
 			if isBarrierInstance(inst) then
 				return true
 			end
-			-- Stalls / tents / tarps / sails / named props always block (even "floor-like" tops)
+			-- Stalls / tents / tarps / sails / named props always block
 			if isNamedObstacle(inst) and inst:IsA("BasePart") and (inst :: BasePart).CanCollide then
 				return true
 			end
-			-- Props with CanCollide (horses, mounts, crates…) block even if top normal faces up
 			if isCollideProp(inst) then
 				return true
 			end
 			if inst:IsA("Terrain") then
-				-- Flat terrain OK; steep faces block
 				return hit.Normal.Y < minNy
 			end
 			if inst:IsA("BasePart") then
@@ -656,25 +655,29 @@ return function(S)
 				if not bp.CanCollide then
 					return false
 				end
-				-- Real floor slabs with upward normal: walk OK
 				if isWalkFloorPart(bp) and hit.Normal.Y >= minNy then
 					return false
 				end
-				-- Any other collide part (walls, mesh props, horse body sides/tops)
 				return true
 			end
 			return hit.Normal.Y < minNy
 		end
 
-		for _, hy in ipairs(heights) do
-			for _, lat in ipairs(laterals) do
-				local origin = from + Vector3.new(0, hy, 0) + right * lat
-				-- Slight inset so we don't start inside a wall we're already touching
-				local start = origin + dir * 0.35
-				local remain = math.max(0.1, dist - 0.5)
-				local hit = workspace:Raycast(start, dir * remain, params)
-				if hit and blocksWalk(hit) then
-					return false
+		-- Dense steps along the hop (stall posts/glass are easy to miss at 10-stud chunks)
+		local step = cfg("NAV_CLEAR_STEP", 2.5)
+		local nSteps = math.max(1, math.ceil(dist / step))
+		for s = 0, nSteps - 1 do
+			local t0 = (s / nSteps) * dist
+			local t1 = ((s + 1) / nSteps) * dist
+			local segLen = math.max(0.15, t1 - t0)
+			for _, hy in ipairs(heights) do
+				for _, lat in ipairs(laterals) do
+					local origin = from + dir * t0 + Vector3.new(0, hy, 0) + right * lat
+					local start = origin + dir * 0.05
+					local hit = workspace:Raycast(start, dir * segLen, params)
+					if hit and blocksWalk(hit) then
+						return false
+					end
 				end
 			end
 		end
@@ -827,7 +830,7 @@ return function(S)
 		return pts, "pfs", jumps
 	end
 
-	-- True if each hop of the polyline is walkable (no wall/prop).
+	-- True if each hop of the polyline is walkable (no wall/prop/stall).
 	-- Short PFS paths often still clip custom meshes — reject those.
 	function M.pathSegmentsClear(pts: { Vector3 }?): boolean
 		if not pts or #pts < 2 then
@@ -839,26 +842,8 @@ return function(S)
 			if flat < 0.35 then
 				continue
 			end
-			-- Chunk long hops so mid-segment walls are seen
-			local step = 10
-			if flat <= step + 1 then
-				if not M.hasClearWalk(a, b) then
-					return false
-				end
-			else
-				local dir = Vector3.new(b.X - a.X, 0, b.Z - a.Z).Unit
-				local traveled = 0
-				local cur = a
-				while traveled < flat - 0.5 do
-					local chunk = math.min(step, flat - traveled)
-					local nxt = cur + dir * chunk
-					nxt = Vector3.new(nxt.X, cur.Y + (b.Y - a.Y) * ((traveled + chunk) / flat), nxt.Z)
-					if not M.hasClearWalk(cur, nxt) then
-						return false
-					end
-					cur = nxt
-					traveled += chunk
-				end
+			if not M.hasClearWalk(a, b) then
+				return false
 			end
 		end
 		return true
@@ -884,18 +869,32 @@ return function(S)
 		return inf
 	end
 
-	-- Try one goal: PFS (validated) → floor A* (validated). Nil if both fail/clip.
+	-- Try one goal: PFS (fully validated) → floor A* (validated). Nil if clip stalls/walls.
+	-- No more "partial" accept of PFS that only checks the first hop (astar 03-10-46
+	-- accepted a full pfs loop through Goblin_Stall_Round_1).
 	local function tryRoute(from: Vector3, goal: Vector3): ({ Vector3 }?, string, { boolean }?)
 		local native, _nWhy, jumps = M.computeNativePath(from, goal)
 		if native and #native >= 2 then
 			if M.pathSegmentsClear(native) then
 				return native, "pfs", jumps or {}
 			end
-			-- Multi-wp navmesh with one dirty far hop: still OK if first hop is clear
-			if #native >= 3 and M.hasClearWalk(from, native[2]) then
-				return native, "pfs:partial", jumps or {}
+			-- Truncate to longest clear prefix (still better than through a stall)
+			if #native >= 3 then
+				local prefix = { native[1] }
+				for i = 2, #native do
+					if not M.hasClearWalk(prefix[#prefix], native[i]) then
+						break
+					end
+					table.insert(prefix, native[i])
+				end
+				if #prefix >= 2 and M.pathSegmentsClear(prefix) then
+					-- Only useful if we actually advanced toward goal
+					local gain = Vector3.new(prefix[#prefix].X - from.X, 0, prefix[#prefix].Z - from.Z).Magnitude
+					if gain >= 6 then
+						return prefix, "pfs:prefix", jumpsFromPts(prefix)
+					end
+				end
 			end
-			-- 2-wp through wall → reject (common when navmesh ignores custom stalls)
 		elseif native and #native == 1 then
 			if M.hasClearWalk(from, native[1]) then
 				return { from, native[1] }, "pfs", { false, false }
@@ -910,9 +909,6 @@ return function(S)
 			local pts = if #custom == 1 then { from, custom[1] } else custom
 			if M.pathSegmentsClear(pts) then
 				return pts, "grid", jumpsFromPts(pts)
-			end
-			if #pts >= 3 and M.hasClearWalk(from, pts[2]) then
-				return pts, "grid:partial", jumpsFromPts(pts)
 			end
 		end
 		return nil, "none", nil

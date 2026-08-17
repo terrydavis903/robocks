@@ -133,7 +133,8 @@ return {
 	NAV_WALL_CLEARANCE = 2.75,
 	NAV_WALL_PROBE = 8,
 	NAV_WALL_DIRS = 8,
-	NAV_BODY_HEIGHTS = { 1.2, 2.5, 4.5 },
+	NAV_BODY_HEIGHTS = { 0.9, 1.6, 2.4, 3.4, 4.5 },
+	NAV_CLEAR_STEP = 2.5, -- hasClearWalk sample spacing (stall posts/glass)
 	-- World props that must NEVER be treated as walk floors (mesh dump 2026-08-16):
 	-- Buildings.Stalls, Buildings.Tents, Modular_Standalone_Roof_*, Mech_Sail_ClothMesh
 	NAV_OBSTACLE_PATH_KEYWORDS = {

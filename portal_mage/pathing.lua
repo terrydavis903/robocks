@@ -587,30 +587,56 @@ return function(S)
 	local standAngleIdx = 0 -- rotate stand ring when line/blocked thrash
 	local blockedRouteFails = 0 -- consecutive unusable routes → drop hold
 
-	-- Stand on ring around enemy. angleOffsetRad rotates which side (detour walls).
+	-- Stand on ring around enemy. Prefer a floor sample with wall clearance that we
+	-- can actually walk to (requireClear) so stand goals do not land inside stalls.
 	local function standGoalNear(playerPos: Vector3, epos: Vector3, range: number, angleOffsetRad: number?): Vector3
-		local flat = Vector3.new(playerPos.X - epos.X, 0, playerPos.Z - epos.Z)
-		if flat.Magnitude < 0.2 then
-			flat = Vector3.new(0, 0, 1)
-		else
-			flat = flat.Unit
-		end
-		local off = angleOffsetRad or 0
-		if math.abs(off) > 1e-4 then
-			local c, s = math.cos(off), math.sin(off)
-			flat = Vector3.new(flat.X * c - flat.Z * s, 0, flat.X * s + flat.Z * c)
-			if flat.Magnitude > 1e-4 then
-				flat = flat.Unit
-			end
-		end
-		local dest = epos + flat * range
 		local nav = Nav()
-		if nav and nav.sampleFloor then
-			local s = nav.sampleFloor(dest.X, dest.Z, playerPos.Y, { requireClear = false })
-			if s and s.pos then
-				return s.pos
+		local base = Vector3.new(playerPos.X - epos.X, 0, playerPos.Z - epos.Z)
+		if base.Magnitude < 0.2 then
+			base = Vector3.new(0, 0, 1)
+		else
+			base = base.Unit
+		end
+		local off0 = angleOffsetRad or 0
+		-- Try preferred angle first, then a few ring offsets for open stand slots
+		local offsets = { off0, off0 + 0.7, off0 - 0.7, off0 + 1.4, off0 - 1.4, off0 + math.pi }
+		local bestFallback: Vector3? = nil
+		for _, off in ipairs(offsets) do
+			local flat = base
+			if math.abs(off) > 1e-4 then
+				local c, s = math.cos(off), math.sin(off)
+				flat = Vector3.new(base.X * c - base.Z * s, 0, base.X * s + base.Z * c)
+				if flat.Magnitude > 1e-4 then
+					flat = flat.Unit
+				end
+			end
+			local dest = epos + flat * range
+			if nav and nav.sampleFloor then
+				-- requireClear avoids pinching into stall/wall corners
+				local s = nav.sampleFloor(dest.X, dest.Z, playerPos.Y, { requireClear = true })
+				if s and s.pos then
+					-- Prefer goals we can walk to from here (or that are elevation drops)
+					if not nav.hasClearWalk or nav.hasClearWalk(playerPos, s.pos) then
+						return s.pos
+					end
+					if not bestFallback then
+						bestFallback = s.pos
+					end
+				end
+				if not bestFallback then
+					local s2 = nav.sampleFloor(dest.X, dest.Z, playerPos.Y, { requireClear = false })
+					if s2 and s2.pos then
+						bestFallback = s2.pos
+					end
+				end
+			else
+				return Vector3.new(dest.X, playerPos.Y, dest.Z)
 			end
 		end
+		if bestFallback then
+			return bestFallback
+		end
+		local dest = epos + base * range
 		return Vector3.new(dest.X, playerPos.Y, dest.Z)
 	end
 
