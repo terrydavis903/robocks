@@ -472,7 +472,7 @@ return function(S)
 			by += 20
 		end
 
-		-- 1) Dump (+ A* Rec: records a walk path into dumps/)
+		-- 1) Dump
 		botSection("— Dump —")
 		local dumpBtn = mkButton(bot, "Dump World", by, Color3.fromRGB(50, 120, 70))
 		by += 34
@@ -481,8 +481,6 @@ return function(S)
 		local dumpAstarBtn = mkButton(bot, "Dump A* path", by, Color3.fromRGB(35, 100, 140))
 		by += 34
 		local dumpGuiBtn = mkButton(bot, "Dump GUI", by, Color3.fromRGB(40, 130, 90))
-		by += 34
-		local pathRecBtn = mkButton(bot, "A* Rec: OFF", by, Color3.fromRGB(70, 70, 80))
 		by += 38
 
 		-- 2) ESP / visualization
@@ -553,10 +551,6 @@ return function(S)
 			hitboxVizBtn.Text = on and "Clear Hitbox: ON" or "Clear Hitbox: OFF"
 			hitboxVizBtn.BackgroundColor3 = on and Color3.fromRGB(50, 150, 120) or Color3.fromRGB(70, 70, 80)
 		end
-		S.ui.setPathRecLabel = function(on: boolean)
-			pathRecBtn.Text = on and "A* Rec: ON" or "A* Rec: OFF"
-			pathRecBtn.BackgroundColor3 = on and Color3.fromRGB(50, 160, 90) or Color3.fromRGB(70, 70, 80)
-		end
 		-- WalkSpeed force removed — never write Humanoid.WalkSpeed
 		S.ui.setWalkSpeedLabel = function(_on: boolean, _speed: number?) end
 
@@ -599,18 +593,6 @@ return function(S)
 					"Clear Hitbox not loaded (Nav=%s) — reload script",
 					tostring(S.Nav ~= nil)
 				))
-			end
-		end)
-		pathRecBtn.MouseButton1Click:Connect(function()
-			if S.PathRecord and S.PathRecord.toggle then
-				-- If auto-ore is running, pause it so human walk is clean
-				if not S.pathRecEnabled and S.autoOreEnabled and S.AutoOre and S.AutoOre.stop then
-					S.AutoOre.stop()
-					S.Util.setStatus("Auto Ore paused for A* Rec — walk the route, toggle OFF to save")
-				end
-				S.PathRecord.toggle()
-			else
-				S.Util.setStatus("Path recorder not loaded — reload script")
 			end
 		end)
 		dumpAstarBtn.MouseButton1Click:Connect(function()
@@ -688,8 +670,20 @@ return function(S)
 		-- Waypoints tab
 		---------------------------------------------------------------------------
 		local wpPage = tabs.Waypoints
-		mkLabel(wpPage, "Saved positions (teleport)", 4)
-		local wpPicker = buildPicker(wpPage, 24, {
+		local wpScroll = Instance.new("ScrollingFrame")
+		wpScroll.Name = "WaypointsScroll"
+		wpScroll.Size = UDim2.new(1, 0, 1, 0)
+		wpScroll.BackgroundTransparency = 1
+		wpScroll.BorderSizePixel = 0
+		wpScroll.ScrollBarThickness = 5
+		wpScroll.ScrollBarImageColor3 = Color3.fromRGB(90, 90, 110)
+		wpScroll.CanvasSize = UDim2.fromOffset(0, 0)
+		wpScroll.AutomaticCanvasSize = Enum.AutomaticSize.Y
+		wpScroll.Parent = wpPage
+		local wpRoot = wpScroll
+
+		mkLabel(wpRoot, "Saved positions (teleport)", 4)
+		local wpPicker = buildPicker(wpRoot, 24, {
 			getList = function()
 				return S.Waypoints and S.Waypoints.list() or {}
 			end,
@@ -709,11 +703,39 @@ return function(S)
 				S.Util.setStatus("Selected waypoint: " .. (item.name or "?"))
 			end,
 		})
-		local recallBtn = mkButton(wpPage, "Recall (teleport)", wpPicker.y, Color3.fromRGB(70, 100, 160))
+		local recallBtn = mkButton(wpRoot, "Recall (teleport)", wpPicker.y, Color3.fromRGB(70, 100, 160))
+
+		-- Human path recording (egress / stuck routes → dumps/pathrec_*.json)
+		-- Future: bind a recording to a map respawn pad, then walk it after sit+heal
+		-- before enabling Kill Aura (avoids A* from safe cliffs / walled spawns).
+		local py = wpPicker.y + 40
+		mkLabel(wpRoot, "— Path record —", py)
+		py += 20
+		mkLabel(wpRoot, "Walk a route yourself → dumps/pathrec_*.json", py)
+		py += 18
+		local pathRecBtn = mkButton(wpRoot, "A* Rec: OFF", py, Color3.fromRGB(70, 70, 80))
+		py += 34
+		S.ui.setPathRecLabel = function(on: boolean)
+			pathRecBtn.Text = on and "A* Rec: ON" or "A* Rec: OFF"
+			pathRecBtn.BackgroundColor3 = on and Color3.fromRGB(50, 160, 90) or Color3.fromRGB(70, 70, 80)
+		end
+		pathRecBtn.MouseButton1Click:Connect(function()
+			if S.PathRecord and S.PathRecord.toggle then
+				if not S.pathRecEnabled and S.autoOreEnabled and S.AutoOre and S.AutoOre.stop then
+					S.AutoOre.stop()
+					S.Util.setStatus("Auto Ore paused for A* Rec — walk the route, toggle OFF to save")
+				elseif not S.pathRecEnabled and S.walking and S.Pathing and S.Pathing.toggleWalk then
+					S.Pathing.toggleWalk()
+					S.Util.setStatus("Kill Aura paused for A* Rec — walk the route, toggle OFF to save")
+				end
+				S.PathRecord.toggle()
+			else
+				S.Util.setStatus("Path recorder not loaded — reload script")
+			end
+		end)
 
 		-- Live players
-		local py = wpPicker.y + 36
-		mkLabel(wpPage, "Teleport to player", py)
+		mkLabel(wpRoot, "Teleport to player", py)
 		py += 20
 
 		local playerDrop = Instance.new("TextButton")
@@ -727,7 +749,7 @@ return function(S)
 		playerDrop.TextColor3 = Color3.new(1, 1, 1)
 		playerDrop.TextXAlignment = Enum.TextXAlignment.Left
 		playerDrop.Text = "  (scan for players)"
-		playerDrop.Parent = wpPage
+		playerDrop.Parent = wpRoot
 		corner(playerDrop)
 		local playerArrow = Instance.new("TextLabel")
 		playerArrow.Size = UDim2.fromOffset(20, 30)
@@ -750,7 +772,7 @@ return function(S)
 		playerList.Visible = false
 		playerList.ZIndex = 35
 		playerList.CanvasSize = UDim2.fromOffset(0, 0)
-		playerList.Parent = wpPage
+		playerList.Parent = wpRoot
 		corner(playerList)
 		local playerLayout = Instance.new("UIListLayout")
 		playerLayout.SortOrder = Enum.SortOrder.LayoutOrder
@@ -826,8 +848,9 @@ return function(S)
 			S.Util.setStatus(string.format("Player scan: %d other player(s)", #lastPlayerScan))
 		end
 
-		local scanBtn = mkSmall(wpPage, "Scan", 8, py + 126, 90, Color3.fromRGB(70, 90, 120))
-		local tpPlayerBtn = mkSmall(wpPage, "TP to player", 104, py + 126, 200, Color3.fromRGB(70, 100, 160))
+		local scanBtn = mkSmall(wpRoot, "Scan", 8, py + 126, 90, Color3.fromRGB(70, 90, 120))
+		local tpPlayerBtn = mkSmall(wpRoot, "TP to player", 104, py + 126, 200, Color3.fromRGB(70, 100, 160))
+		wpScroll.CanvasSize = UDim2.fromOffset(0, py + 126 + 40)
 
 		playerDrop.MouseButton1Click:Connect(function()
 			-- Always rescan when opening

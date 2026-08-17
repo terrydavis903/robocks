@@ -1,8 +1,12 @@
--- portal_mage/path_record.lua — Human A* / path traversal recorder
+-- portal_mage/path_record.lua — Human path traversal recorder (Waypoints tab)
 --
--- When stuck on Auto Ore: pause bot → toggle "A* Rec" → walk the route yourself.
+-- Toggle "A* Rec" → walk the route yourself → toggle OFF to save.
 -- Records position trail + key edges/holds + last bot path + Path Viz polyline.
--- Writes dumps/pathrec_YYYY-MM-DD_HH-MM-SS.json for offline fix of traversal.
+-- Writes dumps/pathrec_YYYY-MM-DD_HH-MM-SS.json.
+--
+-- Planned: bind a recording to a map respawn pad; after sit+heal, walk that
+-- human egress path before enabling Kill Aura (safe spawns are often behind
+-- walls/cliffs where A* fails).
 return function(S)
 	local C = S.Config
 	local U = S.Util
