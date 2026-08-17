@@ -1162,7 +1162,15 @@ return function(S)
 		return f :: Folder
 	end
 
-	local function mkHitboxPart(name: string, size: Vector3, cf: CFrame, color: Color3, parent: Folder): BasePart
+	-- Same Neon style as Path Viz (ForceField was nearly invisible in-game).
+	local function mkHitboxPart(
+		name: string,
+		size: Vector3,
+		cf: CFrame,
+		color: Color3,
+		parent: Instance,
+		transparency: number?
+	): BasePart
 		local p = Instance.new("Part")
 		p.Name = name
 		p.Anchored = true
@@ -1170,62 +1178,140 @@ return function(S)
 		p.CanQuery = false
 		p.CanTouch = false
 		p.CastShadow = false
-		p.Material = Enum.Material.ForceField
+		p.Material = Enum.Material.Neon
 		p.Color = color
-		p.Transparency = 0.55
+		p.Transparency = transparency or 0.45
 		p.Size = size
 		p.CFrame = cf
 		p.Parent = parent
+		local sb = Instance.new("SelectionBox")
+		sb.Name = "Outline"
+		sb.Adornee = p
+		sb.Color3 = color
+		sb.LineThickness = 0.06
+		sb.SurfaceTransparency = 0.85
+		sb.Transparency = 0
+		sb.Parent = p
 		return p
+	end
+
+	-- 12-edge wireframe so the box stays visible even when solid fill sits inside the body mesh.
+	local function mkWireBox(
+		name: string,
+		size: Vector3,
+		cf: CFrame,
+		color: Color3,
+		parent: Instance
+	)
+		local hx, hy, hz = size.X * 0.5, size.Y * 0.5, size.Z * 0.5
+		local corners = {
+			Vector3.new(-hx, -hy, -hz),
+			Vector3.new(hx, -hy, -hz),
+			Vector3.new(hx, -hy, hz),
+			Vector3.new(-hx, -hy, hz),
+			Vector3.new(-hx, hy, -hz),
+			Vector3.new(hx, hy, -hz),
+			Vector3.new(hx, hy, hz),
+			Vector3.new(-hx, hy, hz),
+		}
+		local edges = {
+			{ 1, 2 }, { 2, 3 }, { 3, 4 }, { 4, 1 },
+			{ 5, 6 }, { 6, 7 }, { 7, 8 }, { 8, 5 },
+			{ 1, 5 }, { 2, 6 }, { 3, 7 }, { 4, 8 },
+		}
+		local thick = 0.12
+		for ei, e in ipairs(edges) do
+			local a = cf:PointToWorldSpace(corners[e[1]])
+			local b = cf:PointToWorldSpace(corners[e[2]])
+			local mid = (a + b) * 0.5
+			local delta = b - a
+			local len = delta.Magnitude
+			if len < 0.05 then
+				continue
+			end
+			local edge = Instance.new("Part")
+			edge.Name = string.format("%s_E%02d", name, ei)
+			edge.Shape = Enum.PartType.Cylinder
+			edge.Anchored = true
+			edge.CanCollide = false
+			edge.CanQuery = false
+			edge.CanTouch = false
+			edge.CastShadow = false
+			edge.Material = Enum.Material.Neon
+			edge.Color = color
+			edge.Transparency = 0.05
+			edge.Size = Vector3.new(len, thick, thick)
+			-- Cylinder axis is +X; aim X along edge
+			edge.CFrame = CFrame.lookAt(mid, mid + delta) * CFrame.Angles(0, math.rad(90), 0)
+			edge.Parent = parent
+		end
 	end
 
 	function M.refreshHitboxViz()
 		if not S.hitboxVizEnabled then
 			return
 		end
-		local folder = ensureHitboxVizFolder()
-		-- Clear previous samples (keep player part if present)
-		for _, ch in ipairs(folder:GetChildren()) do
-			if ch.Name ~= "PlayerHitbox" then
+		local okAll, errAll = pcall(function()
+			local folder = ensureHitboxVizFolder()
+			-- Full redraw each tick (wire + probes) — simpler than reuse churn
+			for _, ch in ipairs(folder:GetChildren()) do
 				ch:Destroy()
 			end
-		end
-		-- Live player hitbox at HRP
-		local lp = Players.LocalPlayer
-		local char = lp and lp.Character
-		local hrp = char and char:FindFirstChild("HumanoidRootPart")
-		local boxSize = M.playerHitboxSize()
-		local playerPart = folder:FindFirstChild("PlayerHitbox")
-		if hrp and hrp:IsA("BasePart") then
-			local cf = (hrp :: BasePart).CFrame
-			if playerPart and playerPart:IsA("BasePart") then
-				playerPart.Size = boxSize
-				playerPart.CFrame = cf
+
+			local lp = Players.LocalPlayer
+			local char = lp and lp.Character
+			local hrp = char and char:FindFirstChild("HumanoidRootPart")
+			local boxSize = M.playerHitboxSize()
+			-- Minimum so a tiny HRP still shows a readable box
+			boxSize = Vector3.new(
+				math.max(boxSize.X, 1.4),
+				math.max(boxSize.Y, 2.0),
+				math.max(boxSize.Z, 1.4)
+			)
+
+			if hrp and hrp:IsA("BasePart") then
+				local cf = (hrp :: BasePart).CFrame
+				-- Solid fill (see-through neon)
+				mkHitboxPart("PlayerHitbox", boxSize, cf, Color3.fromRGB(60, 220, 255), folder, 0.65)
+				-- Bright wire outline outside the mesh
+				mkWireBox("PlayerWire", boxSize * 1.05, cf, Color3.fromRGB(0, 255, 255), folder)
+				-- True HRP size (amber) so you can compare pad/scale
+				local raw = (hrp :: BasePart).Size
+				mkWireBox("HrpWire", raw, cf, Color3.fromRGB(255, 200, 60), folder)
 			else
-				mkHitboxPart("PlayerHitbox", boxSize, cf, Color3.fromRGB(80, 220, 255), folder)
-			end
-		elseif playerPart then
-			playerPart:Destroy()
-		end
-		-- Last hasClearWalk probe samples
-		for i, sample in ipairs(lastClearProbeSamples) do
-			if type(sample) == "table" and sample.pos and sample.size then
-				local dir = sample.dir
-				if typeof(dir) ~= "Vector3" or dir.Magnitude < 1e-4 then
-					dir = Vector3.new(0, 0, -1)
+				-- No character: drop a marker at camera look so toggle still proves itself
+				local cam = workspace.CurrentCamera
+				if cam then
+					local pos = cam.CFrame.Position + cam.CFrame.LookVector * 8
+					local cf = CFrame.new(pos)
+					mkHitboxPart("NoCharHitbox", boxSize, cf, Color3.fromRGB(255, 120, 40), folder, 0.4)
+					mkWireBox("NoCharWire", boxSize, cf, Color3.fromRGB(255, 160, 60), folder)
 				end
-				local cf = CFrame.lookAt(sample.pos, sample.pos + dir)
-				local col = if sample.blocked
-					then Color3.fromRGB(255, 70, 70)
-					else Color3.fromRGB(90, 220, 100)
-				mkHitboxPart(
-					string.format("Probe_%02d", i),
-					sample.size,
-					cf,
-					col,
-					folder
-				)
 			end
+
+			-- Last hasClearWalk probe samples (green clear / red blocked)
+			for i, sample in ipairs(lastClearProbeSamples) do
+				if type(sample) == "table" and sample.pos and sample.size then
+					local dir = sample.dir
+					if typeof(dir) ~= "Vector3" or (dir :: Vector3).Magnitude < 1e-4 then
+						dir = Vector3.new(0, 0, -1)
+					else
+						dir = (dir :: Vector3).Unit
+					end
+					local sz = sample.size :: Vector3
+					sz = Vector3.new(math.max(sz.X, 1.2), math.max(sz.Y, 1.8), math.max(sz.Z, 1.2))
+					local pos = sample.pos :: Vector3
+					local cf = CFrame.lookAt(pos, pos + dir)
+					local col = if sample.blocked
+						then Color3.fromRGB(255, 60, 60)
+						else Color3.fromRGB(80, 255, 100)
+					mkHitboxPart(string.format("Probe_%02d", i), sz, cf, col, folder, 0.55)
+					mkWireBox(string.format("ProbeWire_%02d", i), sz, cf, col, folder)
+				end
+			end
+		end)
+		if not okAll and U and U.setStatus then
+			U.setStatus("Clear Hitbox draw error: " .. tostring(errAll))
 		end
 	end
 
@@ -1245,9 +1331,16 @@ return function(S)
 			end
 			return
 		end
+		local sz = M.playerHitboxSize()
 		if U and U.setStatus then
-			U.setStatus("Clear Hitbox ON — cyan=player, green/red=path probes")
+			U.setStatus(string.format(
+				"Clear Hitbox ON — cyan wire=clearance %.1f×%.1f×%.1f (amber=HRP) probes after path",
+				sz.X,
+				sz.Y,
+				sz.Z
+			))
 		end
+		-- Immediate draw (do not wait for pathing)
 		M.refreshHitboxViz()
 		if S.hitboxVizThread then
 			pcall(task.cancel, S.hitboxVizThread)
@@ -1255,7 +1348,7 @@ return function(S)
 		S.hitboxVizThread = task.spawn(function()
 			while S.hitboxVizEnabled do
 				M.refreshHitboxViz()
-				task.wait(0.12)
+				task.wait(0.08)
 			end
 		end)
 	end

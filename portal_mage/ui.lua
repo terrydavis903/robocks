@@ -558,9 +558,17 @@ return function(S)
 		end)
 		hitboxVizBtn.MouseButton1Click:Connect(function()
 			if S.Nav and S.Nav.toggleHitboxViz then
-				S.Nav.toggleHitboxViz()
+				local ok, err = pcall(function()
+					S.Nav.toggleHitboxViz()
+				end)
+				if not ok then
+					S.Util.setStatus("Clear Hitbox error: " .. tostring(err))
+				end
 			else
-				S.Util.setStatus("Clear Hitbox not loaded — reload script")
+				S.Util.setStatus(string.format(
+					"Clear Hitbox not loaded (Nav=%s) — reload script",
+					tostring(S.Nav ~= nil)
+				))
 			end
 		end)
 		pathRecBtn.MouseButton1Click:Connect(function()
