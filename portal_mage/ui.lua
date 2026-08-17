@@ -472,7 +472,7 @@ return function(S)
 			by += 20
 		end
 
-		-- 1) Dump
+		-- 1) Dump (+ A* Rec: records a walk path into dumps/)
 		botSection("— Dump —")
 		local dumpBtn = mkButton(bot, "Dump World", by, Color3.fromRGB(50, 120, 70))
 		by += 34
@@ -481,6 +481,8 @@ return function(S)
 		local dumpAstarBtn = mkButton(bot, "Dump A* path", by, Color3.fromRGB(35, 100, 140))
 		by += 34
 		local dumpGuiBtn = mkButton(bot, "Dump GUI", by, Color3.fromRGB(40, 130, 90))
+		by += 34
+		local pathRecBtn = mkButton(bot, "A* Rec: OFF", by, Color3.fromRGB(70, 70, 80))
 		by += 38
 
 		-- 2) ESP / visualization
@@ -490,8 +492,6 @@ return function(S)
 		local pathVizBtn = mkButton(bot, "Path Viz (A*): OFF", by, Color3.fromRGB(70, 70, 80))
 		by += 34
 		local hitboxVizBtn = mkButton(bot, "Clear Hitbox: OFF", by, Color3.fromRGB(70, 70, 80))
-		by += 34
-		local pathRecBtn = mkButton(bot, "A* Rec: OFF", by, Color3.fromRGB(70, 70, 80))
 		by += 34
 		local oreEspBtn = mkButton(bot, "Ore ESP: OFF", by, Color3.fromRGB(70, 70, 80))
 		by += 34
