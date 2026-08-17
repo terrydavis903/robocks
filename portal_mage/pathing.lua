@@ -66,7 +66,7 @@ return function(S)
 			if U.ensureDir then
 				U.ensureDir(dir)
 			end
-			writefile(logFile, "# portal_mage kill aura v7 face→check→W along A*\n# " .. stamp .. "\n")
+			writefile(logFile, "# portal_mage kill aura v7.1 face→check→W (wide keep, stable seg)\n# " .. stamp .. "\n")
 		end)
 	end
 
@@ -333,14 +333,14 @@ return function(S)
 	-- Gate on HRP look (not cam lag). No Left/Right arrows (permanent spin).
 	---------------------------------------------------------------------------
 
-	local faceAlign = C.KILL_AURA_FACE_ALIGN or 0.78 -- start W when aimed at path
-	-- Prefer explicit KEEP / STOP; WALK_ALIGN is the drift threshold while walking
-	local faceKeep = C.KILL_AURA_FACE_KEEP or C.KILL_AURA_FACE_STOP or C.KILL_AURA_FACE_WALK_ALIGN or 0.55
-	if faceKeep > faceAlign then
-		faceKeep = faceAlign * 0.7
+	local faceAlign = C.KILL_AURA_FACE_ALIGN or 0.72 -- start W when aimed at path
+	-- Wide hysteresis: only re-face when badly off (0.55 keep caused settle↔reface thrash)
+	local faceKeep = C.KILL_AURA_FACE_KEEP or C.KILL_AURA_FACE_STOP or 0.25
+	if faceKeep > faceAlign - 0.15 then
+		faceKeep = math.max(0.2, faceAlign - 0.4)
 	end
-	local faceSettle = C.KILL_AURA_FACE_SETTLE or 0.05
-	local faceStuckT = C.KILL_AURA_FACE_STUCK or 0.55
+	local faceSettle = C.KILL_AURA_FACE_SETTLE or 0.0
+	local faceStuckT = C.KILL_AURA_FACE_STUCK or 0.4
 	-- Last face decision (for status)
 	local lastFaceDot = 0
 	local lastYawErr = 0
@@ -787,33 +787,25 @@ return function(S)
 	end
 
 	-- Next world point to face/walk toward.
-	-- Path owns facing until true stand range. Do NOT face the enemy while mid-path
-	-- (log 03-12-21: seg…>en at d=37.7 walked W into wall while path went around).
+	-- Stable aim: current waypoint only (no blend — blend made face thrash every tick).
+	-- Advance to next when close; never face enemy mid-path through walls.
 	local function segmentTarget(playerPos: Vector3, epos: Vector3, range: number): (Vector3, string)
 		local distEnemy = flatDist(playerPos, epos)
-		-- Only aim at enemy when already in cast range (combat owns this band)
 		if distEnemy <= range then
 			return epos, "enemy"
 		end
 		if #pathPts >= 1 and pathIdx >= 1 and pathIdx <= #pathPts then
-			local wp = pathPts[pathIdx]
-			local label = string.format("seg%d/%d", pathIdx, #pathPts)
-			local look = wp
-			if pathIdx < #pathPts then
-				local nxt = pathPts[pathIdx + 1]
-				local toWp = Vector3.new(wp.X - playerPos.X, 0, wp.Z - playerPos.Z)
-				if toWp.Magnitude < (C.KILL_AURA_SEG_ARRIVE or 4) * 1.5 then
-					look = nxt
-					label = string.format("seg%d/%d+", pathIdx, #pathPts)
-				else
-					look = Vector3.new(
-						wp.X * 0.65 + nxt.X * 0.35,
-						wp.Y,
-						wp.Z * 0.65 + nxt.Z * 0.35
-					)
-				end
+			local arrive = C.KILL_AURA_SEG_ARRIVE or 4
+			-- Prefer next node when we're already on this one
+			local idx = pathIdx
+			while idx < #pathPts and flatDist(playerPos, pathPts[idx]) <= arrive * 0.85 do
+				idx += 1
 			end
-			return look, label
+			if idx ~= pathIdx then
+				pathIdx = idx
+			end
+			local wp = pathPts[pathIdx]
+			return wp, string.format("seg%d/%d", pathIdx, #pathPts)
 		end
 		return standGoalNear(playerPos, epos, range), "stand"
 	end
@@ -983,14 +975,16 @@ return function(S)
 		faceDir = faceDir.Unit
 
 		---------------------------------------------------------------------------
-		-- 1) Rotate toward path (soft). 2) Check. 3) Move only if aimed.
+		-- 1) Face path. 2) Check HRP. 3) W only if aimed.
+		-- Log 13-08-26: settle→W→reface every tick was the stuck loop.
 		---------------------------------------------------------------------------
-		local d = softFace(target)
 		local now = os.clock()
+		local d: number
 
 		if not walkingFacing then
-			-- Establishing face — do not move
+			-- Establishing face — soft turn, no W
 			driveStop()
+			d = softFace(target)
 			if d >= faceAlign then
 				if faceOkSince <= 0 then
 					faceOkSince = now
@@ -999,31 +993,54 @@ return function(S)
 					walkingFacing = true
 					faceStuckSince = 0
 					faceStuckBest = -2
+					progressPos = playerPos
+					progressAt = now
+					-- fall through to walk this tick
 				else
 					return string.format("settle %.2f %s", d, segLabel)
 				end
 			else
 				faceOkSince = 0
-				-- Face stuck escape: one hard snap, still no W until re-check next ticks
 				if faceStuckSince <= 0 then
 					faceStuckSince = now
 					faceStuckBest = d
-				else
-					if d > faceStuckBest then
-						faceStuckBest = d
-						faceStuckSince = now
-					elseif (now - faceStuckSince) >= faceStuckT then
-						hardFace(target)
-						d = softFace(target) -- refresh dots
-						faceStuckSince = now
-						faceStuckBest = d
-						log(string.format("FACE_SNAP d=%.2f %s", d, segLabel))
+					return string.format("face %.2f %s", d, segLabel)
+				elseif d > faceStuckBest + 0.02 then
+					faceStuckBest = d
+					faceStuckSince = now
+					return string.format("face %.2f %s", d, segLabel)
+				elseif (now - faceStuckSince) >= faceStuckT then
+					-- Hard snap and walk same tick if aimed (no FACE_SNAP infinite loop)
+					hardFace(target)
+					d = select(1, facingQuality(target))
+					lastFaceDot = d
+					lastHrpDot = d
+					log(string.format("FACE_SNAP d=%.2f %s", d, segLabel))
+					faceStuckSince = 0
+					faceStuckBest = -2
+					if d >= faceAlign * 0.9 then
+						walkingFacing = true
+						faceOkSince = now
+						progressPos = playerPos
+						progressAt = now
+						-- fall through to walk
+					else
+						return string.format("face %.2f %s", d, segLabel)
 					end
+				else
+					return string.format("face %.2f %s", d, segLabel)
 				end
-				return string.format("face %.2f %s", d, segLabel)
 			end
 		else
-			-- Walking: stop W if we drift off the path segment
+			-- Walking: measure only; reface only if badly wrong (wide hysteresis)
+			local yawErr, measured, hrpDot, camDot
+			d, yawErr, measured, hrpDot, camDot = facingQuality(target)
+			lastFaceDot = d
+			lastYawErr = yawErr
+			lastHrpDot = hrpDot
+			lastCamDot = camDot
+			updateFaceViz(getHrp(), target, measured, yawErr, nil)
+
 			if d < faceKeep then
 				walkingFacing = false
 				faceOkSince = 0
@@ -1031,14 +1048,17 @@ return function(S)
 				driveStop()
 				return string.format("reface %.2f %s", d, segLabel)
 			end
-			-- Gentle keep-aligned only (softFace already did mild lerp)
+			-- Mild keep-aligned only when slightly off — never hardFace mid-walk
+			if d < faceAlign then
+				softFace(target)
+			end
 		end
 
 		-- Aimed at path → walk
 		local jump = needJumpUp(playerPos, target, faceDir)
 		driveForward(faceDir, jump)
 
-		-- Progress watchdog
+		-- Progress watchdog (also escapes face thrash if XZ frozen)
 		if not progressPos or flatDist(playerPos, progressPos) > 1.0 then
 			progressPos = playerPos
 			progressAt = now
@@ -1080,7 +1100,7 @@ return function(S)
 
 	local function runWalker()
 		logOpen()
-		log("walker start v7 face→check→W along A*")
+		log("walker start v7.1 face→check→W (wide keep, stable seg)")
 
 		while S.walking do
 			local ok, err = pcall(function()

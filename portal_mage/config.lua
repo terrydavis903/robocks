@@ -75,16 +75,17 @@ return {
 	PATH_TURN_YAW_DEADZONE = 0.08,
 	PATH_CAMERA_YAW_DEG = 5, -- camera yaw nudge per poll (path face uses this always)
 	-- face → check → W along A*. Soft turn only; no arrow spin; gate on HRP.
-	KILL_AURA_FACE_ALIGN = 0.78, -- start W when aimed at path segment
-	KILL_AURA_FACE_WALK_ALIGN = 0.55, -- stop W + re-face if HRP drifts below this
-	KILL_AURA_FACE_STOP = 0.55, -- alias of WALK_ALIGN
-	KILL_AURA_FACE_TURN_RATE = 6.5, -- soft HRP yaw while establishing face
-	KILL_AURA_FACE_WALK_RATE = 4.0, -- mild correction while walking
-	KILL_AURA_FACE_SETTLE = 0.05, -- hold aimed briefly before first W
-	KILL_AURA_FACE_STUCK = 0.55, -- no face progress → one hardFace (still no W until check)
-	KILL_AURA_FORCE_WALK = 0, -- unused (never walk while misaligned)
-	KILL_AURA_NO_PROGRESS = 2.0, -- XZ stall → skip / repath
-	KILL_AURA_FACE_KEEP = 0.55, -- alias of WALK_ALIGN
+	-- Log 13-08-26: keep=0.55 caused settle→W→reface thrash every ~0.2s.
+	KILL_AURA_FACE_ALIGN = 0.72, -- start W when aimed at path segment
+	KILL_AURA_FACE_KEEP = 0.25, -- only re-face if almost sideways / wrong way
+	KILL_AURA_FACE_WALK_ALIGN = 0.25, -- alias of KEEP
+	KILL_AURA_FACE_STOP = 0.25, -- alias of KEEP
+	KILL_AURA_FACE_TURN_RATE = 7.0, -- soft HRP yaw while establishing face
+	KILL_AURA_FACE_WALK_RATE = 2.5, -- tiny correction while walking (don't fight W)
+	KILL_AURA_FACE_SETTLE = 0.0, -- no multi-tick settle (was face thrash delay)
+	KILL_AURA_FACE_STUCK = 0.4, -- no face progress → hardFace then W same tick
+	KILL_AURA_FORCE_WALK = 0,
+	KILL_AURA_NO_PROGRESS = 2.0,
 	KILL_AURA_SEG_ARRIVE = 4.0, -- studs: advance to next path segment
 	KILL_AURA_PROBE = 4.5, -- wall probe studs
 	-- Jump: path ledge / short step only — NOT "enemy is higher" (flat-ground spam)
