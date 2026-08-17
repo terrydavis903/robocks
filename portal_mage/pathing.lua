@@ -1149,19 +1149,23 @@ return function(S)
 		end
 		lastPos = playerPos
 
-		-- Jump only for climb-ups — never for drops (walk off ledge)
+		-- Jump only for climb-ups. Drops: still hold W, but only if hop is clear
+		-- (hasClearWalk now requires floor + respects InvisibleWall — no walk off map).
 		local dropping = isElevationDrop(playerPos, target)
+		local hopClear = true
+		local nav = Nav()
+		if nav and nav.hasClearWalk then
+			hopClear = nav.hasClearWalk(playerPos, target) == true
+		end
 		local jump = (not dropping) and needJumpUp(playerPos, target, faceDir)
 		if U.holdJump then
 			U.holdJump(jump)
 		end
 
-		-- Dropping: hold W only; cliff edge is not a wall (do not strafe on ledge)
-		local blocked = false
-		if dropping then
-			blocked = false
-		else
-			blocked = stuck or segBlocked or wallAhead(playerPos, faceDir, probe)
+		-- Drop only when the hop still has ground / does not clip map walls
+		local blocked = stuck or segBlocked or (not hopClear) or ((not dropping) and wallAhead(playerPos, faceDir, probe))
+		if dropping and hopClear then
+			blocked = stuck -- allow walk-off when floor continues; never ignore map barriers
 		end
 		if not blocked then
 			lastSlide = nil

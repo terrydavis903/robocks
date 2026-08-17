@@ -625,6 +625,8 @@ return function(S)
 		return Vector3.new(r, h, r)
 	end
 
+	-- Exclude self/mobs/viz only — NEVER exclude InvisibleWall (map bounds).
+	-- Log 03-20-46: clearance skipped barriers → grid path walked past map edge.
 	local function clearanceOverlapParams(): OverlapParams
 		local params = OverlapParams.new()
 		params.FilterType = Enum.RaycastFilterType.Exclude
@@ -633,13 +635,6 @@ return function(S)
 		if lp and lp.Character then
 			table.insert(exclude, lp.Character)
 		end
-		pcall(function()
-			local maps = workspace:FindFirstChild("Maps")
-			local inv = maps and maps:FindFirstChild("InvisibleWall")
-			if inv then
-				table.insert(exclude, inv)
-			end
-		end)
 		pcall(function()
 			local mobs = workspace:FindFirstChild("Mobs")
 			if mobs then
@@ -668,7 +663,16 @@ return function(S)
 		if not bp.CanCollide then
 			return false
 		end
+		-- Map bounds / zone shells always block (InvisibleWall, Zone_*, …)
 		if isBarrierInstance(bp) then
+			return true
+		end
+		local n = string.lower(bp.Name)
+		local path = string.lower(bp:GetFullName())
+		if string.find(path, "invisiblewall", 1, true)
+			or string.find(n, "invisible wall", 1, true)
+			or string.find(path, ".zones.", 1, true)
+		then
 			return true
 		end
 		if isNamedObstacle(bp) then
@@ -686,19 +690,16 @@ return function(S)
 		if isWalkFloorPart(bp) then
 			return false
 		end
-		-- Generic: any other collide part intersecting the hitbox blocks
 		return true
 	end
 
 	-- True if player hitbox can sweep from→to every NAV_CLEAR_STEP studs (default 0.5).
-	-- Downward path hops: clear (walk off ledge).
+	-- Requires ground under each sample (rejects void / out-of-map). Does NOT skip
+	-- checks on elevation drops — only walk-off is allowed when floor still exists.
 	function M.hasClearWalk(from: Vector3, to: Vector3): boolean
 		local flat = Vector3.new(to.X - from.X, 0, to.Z - from.Z)
 		local dist = flat.Magnitude
 		if dist < 0.25 then
-			return true
-		end
-		if M.isElevationDrop(from, to) then
 			return true
 		end
 		local dir = flat.Unit
@@ -707,19 +708,34 @@ return function(S)
 		if step < 0.25 then
 			step = 0.25
 		end
+		local maxSnap = cfg("NAV_MAX_SNAP_Y", 10)
+		local maxFall = cfg("NAV_MAX_DROP_Y", 40)
 		local overlap = clearanceOverlapParams()
 		local nSteps = math.max(1, math.ceil(dist / step))
 
 		for s = 0, nSteps do
 			local t = math.min(dist, s * step)
 			local alpha = if dist > 1e-4 then t / dist else 0
-			local pos = Vector3.new(
-				from.X + dir.X * t,
-				from.Y + (to.Y - from.Y) * alpha,
-				from.Z + dir.Z * t
-			)
-			-- Orient box along walk direction (player footprint)
-			local cf = CFrame.lookAt(pos, pos + dir)
+			local hintY = from.Y + (to.Y - from.Y) * alpha
+			local pos = Vector3.new(from.X + dir.X * t, hintY, from.Z + dir.Z * t)
+
+			-- Must have walkable floor under this sample (void / outside map = fail)
+			local floor = M.sampleFloor(pos.X, pos.Z, hintY, { requireClear = false })
+			if not floor or not floor.pos then
+				return false
+			end
+			local dyFloor = floor.pos.Y - hintY
+			-- Floor far above = ceiling/wrong hit; far below = void jump off map
+			if dyFloor > maxSnap then
+				return false
+			end
+			if dyFloor < -maxFall then
+				return false
+			end
+
+			-- Place hitbox standing on sampled floor
+			local standPos = Vector3.new(pos.X, floor.pos.Y + boxSize.Y * 0.5 + 0.05, pos.Z)
+			local cf = CFrame.lookAt(standPos, standPos + dir)
 			local hits: { Instance }
 			local ok, res = pcall(function()
 				return workspace:GetPartBoundsInBox(cf, boxSize, overlap)
@@ -730,7 +746,7 @@ return function(S)
 				hits = {}
 			end
 			for _, inst in ipairs(hits) do
-				if inst:IsA("BasePart") and partBlocksHitbox(inst :: BasePart, pos, boxSize) then
+				if inst:IsA("BasePart") and partBlocksHitbox(inst :: BasePart, standPos, boxSize) then
 					return false
 				end
 			end
