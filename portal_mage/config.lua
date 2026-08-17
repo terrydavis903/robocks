@@ -342,7 +342,7 @@ return {
 	-- Path: HUD.HealthManaContainer.StatusContainer.BuffIcon_BUFF_BLESS
 	COMBAT_BUFF_ENABLED = true,
 	COMBAT_BUFF_SLOT = 3,
-	COMBAT_BUFF_HOLD = 10, -- hold E seconds after arming QS3
+	COMBAT_BUFF_HOLD = 8, -- hold E seconds after arming QS3
 	COMBAT_BUFF_ICON_NAME = "BuffIcon_BUFF_BLESS",
 	COMBAT_BUFF_ICON_PREFIX = "BuffIcon_", -- any visible BuffIcon_* also counts as "has buff"
 	COMBAT_BUFF_RETRY_CD = 12, -- don't spam re-cast if icon still missing
@@ -367,8 +367,8 @@ return {
 			minCd = 0.5,
 		},
 		[3] = {
-			-- bless buff: hold E 10s (applied between fights when BuffIcon missing)
-			steps = { { hold = Enum.KeyCode.E, duration = 10 } },
+			-- bless buff: hold E 8s (applied between fights when BuffIcon missing)
+			steps = { { hold = Enum.KeyCode.E, duration = 8 } },
 			minCd = 1,
 			utility = true, -- not a combat damage slot
 		},
