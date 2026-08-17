@@ -270,21 +270,14 @@ return function(S)
 			end
 		end
 
-		-- Prefer facing the enemy before R (pathing owns arrows; light assist here)
+		-- Face enemy with hard snap only — never Left/Right arrows (permanent spin).
 		local epos = U.getCharacterLikePosition(hold)
-		if epos and U.facingDotTo then
-			local fd = U.facingDotTo(epos.X, epos.Z)
-			local need = C.KILL_AURA_FACE_ALIGN or 0.85
-			if fd ~= nil and fd < need * 0.9 then
-				U.setStatus(string.format("[fight] face first d=%.1f face=%.2f", dist, fd))
-				if U.holdTurnKey and U.turnKeyToward then
-					U.holdTurnKey(U.turnKeyToward(epos.X, epos.Z, need))
-				end
-				task.wait(0.1)
-				return
-			end
+		if epos then
 			if U.holdTurnKey then
 				U.holdTurnKey(nil)
+			end
+			if U.faceToward then
+				U.faceToward(epos.X, epos.Y, epos.Z, false, 0.05)
 			end
 		end
 

@@ -1,11 +1,10 @@
 -- portal_mage/pathing.lua — Kill Aura movement
 --
--- Strict loop (no teleport, no S, no MoveTo spam):
---   1) Compute A*/PFS path to stand ring (same segments Path Viz draws)
---   2) Face current segment end (soft turn + arrows) until aligned + settle
---   3) Walk W along segment; A/D only on walls; Space+W for height
---   4) Advance waypoint when close; re-face next segment
---   5) Within fightRange → stop; face enemy; combat does R + cast
+-- v6 loop (no face-gate, no A/D strafe, no arrow spin):
+--   1) A*/PFS path to stand ring (Path Viz segments)
+--   2) hardFace segment + hold W + Humanoid:Move every tick
+--   3) Space when hop needs height
+--   4) Within fightRange → stop; hardFace enemy; combat R/cast
 return function(S)
 	local C = S.Config
 	local U = S.Util
@@ -67,7 +66,7 @@ return function(S)
 			if U.ensureDir then
 				U.ensureDir(dir)
 			end
-			writefile(logFile, "# portal_mage kill aura v5 face-seg→W|A|D (+Space) stand@30\n# " .. stamp .. "\n")
+			writefile(logFile, "# portal_mage kill aura v6 hardFace+W+Move (no face-gate/strafe/arrows)\n# " .. stamp .. "\n")
 		end)
 	end
 
@@ -649,96 +648,56 @@ return function(S)
 		end
 	end
 
-	-- Rebuild path: prefer straight line to player-side stand, then one PFS/A* try.
-	-- Never "nudge 8 studs" in random directions — that was the circle (log 03-36-20).
+	-- Always produce a walkable polyline to player-side stand (or enemy).
+	-- Never leave empty/blocked with nudge — that froze movement (log 03-38-54).
 	local function rebuildPath(playerPos: Vector3, epos: Vector3, enemy: Model, range: number)
 		local nav = Nav()
-		local pts: { Vector3 }? = nil
-		local kind = "blocked"
 		local goal = standGoalNear(playerPos, epos, range, 0)
+		local pts: { Vector3 } = { playerPos, goal }
+		local kind = "line"
 
-		local function acceptRoute(tryPts: { Vector3 }?, tryKind: string): boolean
-			if not tryPts or #tryPts < 2 then
-				return false
-			end
-			if tryKind == "blocked" or (string.sub(tryKind, 1, 7) == "blocked") then
-				return false
-			end
-			local straight = flatDist(playerPos, tryPts[#tryPts])
-			local plen = pathFlatLength(tryPts)
-			if straight > 4 and plen > straight * (C.KILL_AURA_MAX_PATH_DETOR or 1.8) then
-				log(string.format("path REJECT detour plen=%.0f straight=%.0f", plen, straight))
-				return false
-			end
-			-- Full path must be clear (no partial/prefix orbits)
-			if nav and nav.pathSegmentsClear and not nav.pathSegmentsClear(tryPts) then
-				return false
-			end
-			pts = tryPts
-			kind = tryKind
-			return true
-		end
-
-		-- 1) Direct line to stand (most common, no circles)
-		if nav and nav.hasClearWalk and nav.hasClearWalk(playerPos, goal) then
-			pts = { playerPos, goal }
-			kind = "line"
-		elseif nav and nav.computePath then
-			local tryPts, tryKind = nav.computePath(playerPos, goal, {
-				maxGoals = 1, -- primary goal only — no ring orbit
-			})
-			if not acceptRoute(tryPts, tryKind or "blocked") then
-				pts = nil
-				kind = "blocked"
+		if nav and nav.computePath then
+			local tryPts, tryKind = nav.computePath(playerPos, goal, { maxGoals = 1 })
+			if tryPts and #tryPts >= 2 and tryKind ~= "blocked" and string.sub(tryKind, 1, 7) ~= "blocked" then
+				local straight = flatDist(playerPos, tryPts[#tryPts])
+				local plen = pathFlatLength(tryPts)
+				local maxDet = C.KILL_AURA_MAX_PATH_DETOR or 1.8
+				if straight < 4 or plen <= straight * maxDet then
+					-- Prefer computed path if not a long detour; skip full pathSegmentsClear
+					-- gate (that was rejecting every route → permanent BLOCKED).
+					pts = tryPts
+					kind = tryKind
+				end
 			end
 		end
-
-		if not pts or #pts < 2 then
-			blockedRouteFails += 1
-			log(string.format("path BLOCKED n=%d → %s (drop hold)", blockedRouteFails, enemy.Name))
-			-- Immediately drop hold — do not nudge/strafe around the same unreachable mob
-			local Targets = T()
-			if Targets and Targets.clearHold then
-				Targets.clearHold("path_blocked")
-			end
-			blockedRouteFails = 0
-			pathPts = { playerPos }
-			pathEnemy = nil
-			pathIdx = 1
-			segBlocked = false
-			pathBuiltAt = os.clock()
-			lastRepathAt = pathBuiltAt
-			lastVizKind = "blocked"
-			return
-		end
-		blockedRouteFails = 0
 
 		pathPts = pts
 		pathEnemy = enemy
 		pathBuiltAt = os.clock()
 		lastRepathAt = pathBuiltAt
-		lastVizKind = kind or "path"
+		lastVizKind = kind
 		pathIdx = 1
 		segBlocked = false
+		blockedRouteFails = 0
 		advancePathIndex(playerPos)
-		if pathIdx < #pathPts and flatDist(playerPos, pathPts[pathIdx]) < 1.0 and pathIdx < #pathPts then
+		if pathIdx < #pathPts and flatDist(playerPos, pathPts[pathIdx]) < 1.0 then
 			pathIdx = math.min(pathIdx + 1, #pathPts)
 		end
-		-- Keep last route for Dump A* path (even after stop)
+
 		local recPts = {}
 		for _, p in ipairs(pathPts) do
 			table.insert(recPts, { x = p.X, y = p.Y, z = p.Z })
 		end
 		S.lastKillAuraPath = {
 			source = "kill_aura",
-			kind = lastVizKind,
+			kind = kind,
 			points = recPts,
 			waypointCount = #pathPts,
 			idx = pathIdx,
 			goal = { x = goal.X, y = goal.Y, z = goal.Z },
 			from = { x = playerPos.X, y = playerPos.Y, z = playerPos.Z },
 			enemy = enemy and enemy.Name or nil,
-			segBlocked = segBlocked,
+			segBlocked = false,
 			at = os.clock(),
 		}
 		S.lastBotPath = S.lastKillAuraPath
@@ -748,7 +707,7 @@ return function(S)
 		end
 		log(string.format(
 			"path %s wps=%d idx=%d goal=(%.1f,%.1f,%.1f) → %s",
-			lastVizKind,
+			kind,
 			#pathPts,
 			pathIdx,
 			goal.X,
@@ -784,38 +743,9 @@ return function(S)
 				why = "drift"
 			end
 		end
-		-- Blocked hop: skip ahead if possible; NEVER repath every tick (log 19-27-02 thrash)
-		-- Elevation drops are NOT blocked — walk W and fall (astar dump 02-55-10).
+		-- Do not gate movement on hasClearWalk mid-run (was permanent BLOCKED).
+		-- Only advance index / rebuild on timer / enemy change / empty path.
 		segBlocked = false
-		if #pathPts >= 2 and pathIdx <= #pathPts then
-			local nav = Nav()
-			local wp = pathPts[pathIdx]
-			if isElevationDrop(playerPos, wp) then
-				segBlocked = false
-			elseif nav and nav.hasClearWalk then
-				if not nav.hasClearWalk(playerPos, wp) then
-					segBlocked = true
-					if nav.nextClearWaypoint then
-						local j = nav.nextClearWaypoint(playerPos, pathPts, pathIdx + 1)
-						if j and j ~= pathIdx then
-							log(string.format("SEG_SKIP %d→%d (blocked hop)", pathIdx, j))
-							pathIdx = j
-							local nwp = pathPts[pathIdx]
-							if isElevationDrop(playerPos, nwp) then
-								segBlocked = false
-							else
-								segBlocked = not nav.hasClearWalk(playerPos, nwp)
-							end
-						end
-					end
-					-- Only repath if still blocked AND cooldown elapsed (not every poll)
-					if segBlocked and (now - lastRepathAt) >= repathCd then
-						need = true
-						why = "blocked"
-					end
-				end
-			end
-		end
 		if need then
 			if force or pathEnemy ~= enemy or #pathPts < 2 or (now - lastRepathAt) >= repathCd then
 				log(string.format("PATH_NEED %s", why))
@@ -936,219 +866,140 @@ return function(S)
 		end
 	end
 
+	-- Drive body toward a flat world direction (keys + engine Move).
+	-- Keys alone fail when AutoRotate is off or the game ignores key spoof mid-face.
+	local function driveForward(faceDir: Vector3, jump: boolean)
+		if U.holdTurnKey then
+			U.holdTurnKey(nil)
+		end
+		setMoveKey("W")
+		if U.holdJump then
+			U.holdJump(jump)
+		end
+		local hum = getHum()
+		if hum and faceDir.Magnitude > 1e-4 then
+			pcall(function()
+				hum.AutoRotate = false
+				hum.PlatformStand = false
+				-- world-space Move: works with AutoRotate off (WASD alone often does not)
+				hum:Move(faceDir.Unit, false)
+			end)
+		end
+	end
+
+	local function driveStop()
+		if U.holdTurnKey then
+			U.holdTurnKey(nil)
+		end
+		setMoveKey(nil)
+		if U.holdJump then
+			U.holdJump(false)
+		end
+		local hum = getHum()
+		if hum then
+			pcall(function()
+				hum:Move(Vector3.zero)
+				hum.PlatformStand = false
+			end)
+		end
+	end
+
+	-- Simple approach: hardFace path node + W + Humanoid:Move every tick.
+	-- No face-gate (permanent rotate), no A/D, no 8-stud nudge, no turn arrows.
 	local function approachStep(playerPos: Vector3, epos: Vector3, range: number): string
 		local hum = getHum()
 		if hum then
 			pcall(function()
 				hum.AutoRotate = false
 				hum.PlatformStand = false
-				-- never touch Humanoid.WalkSpeed
 			end)
 		end
 
 		local dist = flatDist(playerPos, epos)
-		local now = os.clock()
-		local forceWalk = now < forceWalkUntil
-
-		-- Always face/walk path nodes until dist <= range (no >en override through walls)
-		local target, segLabel = segmentTarget(playerPos, epos, range)
-		lastSegLabel = segLabel
-		local faceDot = facePoint(target)
-
 		if dist <= range then
-			setMoveKey(nil)
-			if U.holdJump then
-				U.holdJump(false)
-			end
-			-- Face enemy only once inside cast range
-			facePoint(epos)
-			faceOkSince = 0
+			hardFace(epos)
+			driveStop()
 			walkingFacing = false
-			forceWalkUntil = 0
 			return "stand"
 		end
 
-		-- No XZ progress for too long → force repath + walk grace (log: strafe forever @51)
-		if not progressPos or flatDist(playerPos, progressPos) > 1.25 then
+		local target, segLabel = segmentTarget(playerPos, epos, range)
+		lastSegLabel = segLabel
+
+		-- Never hold arrow keys (they spin forever when face never settles)
+		if U.holdTurnKey then
+			U.holdTurnKey(nil)
+		end
+		walkingFacing = true
+		lastTurnName = "-"
+
+		local faceDir = Vector3.new(target.X - playerPos.X, 0, target.Z - playerPos.Z)
+		if faceDir.Magnitude < 0.5 then
+			advancePathIndex(playerPos)
+			-- Past last node / on node: aim at enemy or next segment
+			if pathIdx >= #pathPts and dist > range then
+				target = epos
+				segLabel = "enemy"
+				faceDir = Vector3.new(epos.X - playerPos.X, 0, epos.Z - playerPos.Z)
+			else
+				target, segLabel = segmentTarget(playerPos, epos, range)
+				faceDir = Vector3.new(target.X - playerPos.X, 0, target.Z - playerPos.Z)
+			end
+			lastSegLabel = segLabel
+		end
+
+		if faceDir.Magnitude < 0.15 then
+			-- Degenerate aim (on top of target) — hardFace enemy, still try W
+			hardFace(epos)
+			driveForward(Vector3.new(epos.X - playerPos.X, 0, epos.Z - playerPos.Z), false)
+			lastFaceDot = 1
+			lastHrpDot = 1
+			lastCamDot = 1
+			return string.format("W pin d=%.0f", dist)
+		end
+		faceDir = faceDir.Unit
+
+		-- Only hard-snap when off-axis; constant CFrame writes kill velocity.
+		local d, yawErr, _m, hrpDot, camDot = facingQuality(target)
+		lastFaceDot = d
+		lastYawErr = yawErr
+		lastHrpDot = hrpDot
+		lastCamDot = camDot
+		if d < 0.92 then
+			hardFace(target)
+			d, yawErr, _m, hrpDot, camDot = facingQuality(target)
+			lastFaceDot = d
+			lastYawErr = yawErr
+			lastHrpDot = hrpDot
+			lastCamDot = camDot
+		end
+
+		local jump = needJumpUp(playerPos, target, faceDir)
+		driveForward(faceDir, jump)
+
+		-- Progress watchdog: if XZ not moving, repath or drop hold
+		local now = os.clock()
+		if not progressPos or flatDist(playerPos, progressPos) > 1.0 then
 			progressPos = playerPos
 			progressAt = now
 			noProgressRepaths = 0
-		elseif (now - progressAt) >= (C.KILL_AURA_NO_PROGRESS or 2.4) then
-			hardFace(epos)
-			forceWalkUntil = now + (C.KILL_AURA_FORCE_WALK or 1.4)
-			forceWalk = true
-			walkingFacing = true
-			faceStuckSince = 0
-			progressAt = now
+		elseif (now - progressAt) >= (C.KILL_AURA_NO_PROGRESS or 2.5) then
 			noProgressRepaths += 1
-			pathBuiltAt = 0 -- allow ensurePath rebuild next tick
+			progressAt = now
+			pathBuiltAt = 0
 			lastRepathAt = 0
-			log(string.format(
-				"NO_PROGRESS_ESCAPE n=%d dist=%.1f face=%.2f hrp=%.2f cam=%.2f %s",
-				noProgressRepaths,
-				dist,
-				faceDot,
-				lastHrpDot,
-				lastCamDot,
-				segLabel
-			))
+			log(string.format("NO_PROGRESS n=%d d=%.1f %s", noProgressRepaths, dist, segLabel))
 			if noProgressRepaths >= 3 then
-				-- Drop sticky hold so we can pick a different mob / approach angle
 				local Targets = T()
 				if Targets and Targets.clearHold then
 					Targets.clearHold("no_progress")
 				end
 				noProgressRepaths = 0
-				return "no-progress-drop"
-			end
-		end
-
-		-- Walk when facing is good enough, or during force-walk grace after face stuck.
-		-- Use HRP-only for stop while walking — min(hrp,cam) was thrashing reface
-		-- (log 03-30-02: W → reface d=-0.98 → face spin = walk in circles).
-		if walkingFacing or forceWalk then
-			local stopDot = if lastHrpDot ~= 0 then lastHrpDot else faceDot
-			if not forceWalk and stopDot < faceStop then
-				walkingFacing = false
-				faceOkSince = 0
-				faceStuckSince = 0
-				setMoveKey(nil)
-				if U.holdJump then
-					U.holdJump(false)
-				end
-				return string.format("reface %s d=%.2f", segLabel, faceDot)
-			end
-			if forceWalk then
-				walkingFacing = true
-			end
-			faceStuckSince = 0
-			-- keep W; facePoint continues soft-aiming at path
-		else
-			if faceDot < faceAlign then
-				setMoveKey(nil)
-				if U.holdJump then
-					U.holdJump(false)
-				end
-				faceOkSince = 0
-				local nowF = now
-				if faceStuckSince <= 0 then
-					faceStuckSince = nowF
-					faceStuckBest = faceDot
-				else
-					if faceDot > faceStuckBest + 0.05 then
-						faceStuckBest = faceDot
-						faceStuckSince = nowF
-					elseif (nowF - faceStuckSince) >= (C.KILL_AURA_FACE_STUCK or 0.7) then
-						-- hardFace + walk grace — previous escape only lasted 1 tick
-						-- because faceStop reface fired immediately (log FACE_STUCK loop)
-						hardFace(target)
-						walkingFacing = true
-						forceWalkUntil = nowF + (C.KILL_AURA_FORCE_WALK or 1.4)
-						faceStuckSince = 0
-						log(string.format(
-							"FACE_STUCK_ESCAPE d=%.2f hrp=%.2f cam=%.2f → hardFace+walk %.1fs %s",
-							faceDot,
-							lastHrpDot,
-							lastCamDot,
-							C.KILL_AURA_FORCE_WALK or 1.4,
-							segLabel
-						))
-					end
-				end
-				if not walkingFacing then
-					return string.format("face %s d=%.2f", segLabel, faceDot)
-				end
-			else
-				faceStuckSince = 0
-				if faceOkSince <= 0 then
-					faceOkSince = now
-				end
-				if (now - faceOkSince) < faceSettle then
-					setMoveKey(nil)
-					if U.holdJump then
-						U.holdJump(false)
-					end
-					return string.format("settle %s d=%.2f", segLabel, faceDot)
-				end
-				hardFace(target)
-				walkingFacing = true
-			end
-		end
-
-		-- Walk toward path target (look is continuously corrected above)
-		local faceDir = Vector3.new(target.X - playerPos.X, 0, target.Z - playerPos.Z)
-		if faceDir.Magnitude < 0.2 then
-			advancePathIndex(playerPos)
-			setMoveKey(nil)
-			if U.holdJump then
-				U.holdJump(false)
-			end
-			return "seg-next"
-		end
-		faceDir = faceDir.Unit
-		local probe = C.KILL_AURA_PROBE or 4.5
-
-		local stuck = false
-		if lastPos then
-			local moved = flatDist(playerPos, lastPos)
-			if moved < 0.35 then
-				if stuckSince == 0 then
-					stuckSince = os.clock()
-				elseif os.clock() - stuckSince > 0.9 then
-					stuck = true
-				end
-			else
-				stuckSince = 0
-			end
-		end
-		lastPos = playerPos
-
-		-- Jump only for climb-ups. Drops: still hold W, but only if hop is clear
-		-- (hasClearWalk now requires floor + respects InvisibleWall — no walk off map).
-		local dropping = isElevationDrop(playerPos, target)
-		local hopClear = true
-		local nav = Nav()
-		if nav and nav.hasClearWalk then
-			hopClear = nav.hasClearWalk(playerPos, target) == true
-		end
-		local jump = (not dropping) and needJumpUp(playerPos, target, faceDir)
-		if U.holdJump then
-			U.holdJump(jump)
-		end
-
-		-- W only. No A/D strafe — that was the circle (log 03-36-20 line:nudge + WA/WD).
-		local blocked = stuck or segBlocked or (not hopClear) or ((not dropping) and wallAhead(playerPos, faceDir, probe))
-		if dropping and hopClear then
-			blocked = stuck
-		end
-		if not blocked then
-			lastSlide = nil
-			setMoveKey("W")
-			if dropping then
-				return string.format("W drop %s dy=%+.0f", segLabel, target.Y - playerPos.Y)
-			end
-			return string.format("%s %s", if jump then "W+Space" else "W", segLabel)
-		end
-
-		-- Blocked: force repath next tick or drop hold — never orbit with strafe
-		pathBuiltAt = 0
-		lastRepathAt = 0
-		if stuck then
-			stuckSince = 0
-			noProgressRepaths += 1
-			if noProgressRepaths >= 2 then
-				local Targets = T()
-				if Targets and Targets.clearHold then
-					Targets.clearHold("stuck_blocked")
-				end
-				noProgressRepaths = 0
-				setMoveKey(nil)
 				return "drop-stuck"
 			end
 		end
-		-- Keep holding W briefly (might slide along) but no A/D
-		setMoveKey("W")
-		return string.format("W blocked %s", segLabel)
+
+		return string.format("%s %s", if jump then "W+Space" else "W", segLabel)
 	end
 
 	---------------------------------------------------------------------------
@@ -1157,7 +1008,7 @@ return function(S)
 
 	local function runWalker()
 		logOpen()
-		log("walker start v5 face-seg→W|A|D(+Space) stand@30")
+		log("walker start v6 hardFace+W+Move (no face-gate/strafe/arrows)")
 
 		while S.walking do
 			local ok, err = pcall(function()
@@ -1205,13 +1056,8 @@ return function(S)
 				end
 
 				if S.combatBusy then
-					-- Keep facing but no move keys mid-cast
-					if U.holdMoveKeys then
-						U.holdMoveKeys(nil)
-					end
-					if U.holdJump then
-						U.holdJump(false)
-					end
+					-- Keep facing but no move mid-cast
+					driveStop()
 					task.wait(0.05)
 					return
 				end
@@ -1241,35 +1087,38 @@ return function(S)
 				-- A*/PFS path = movement segments (+ Path Viz when ON)
 				ensurePath(playerPos, epos, model, range)
 
-						-- No route: hold already dropped in rebuildPath — scan next enemy, don't nudge
-				if lastVizKind == "blocked" or #pathPts < 2 then
-					stopMove()
-					U.setStatus(string.format(
-						"[path] no route d=%.1f → pick next | %s",
-						dist,
-						cds()
-					))
-					task.wait(0.15)
-					return
+						-- Always have at least a line path after rebuildPath
+				if #pathPts < 2 then
+					rebuildPath(playerPos, epos, model, range)
+				end
+				if #pathPts < 2 then
+					-- Absolute fallback: walk at enemy
+					pathPts = { playerPos, epos }
+					pathIdx = 2
+					pathEnemy = model
+					lastVizKind = "line:enemy"
 				end
 
 				-- Stand band only with clear walk to enemy (else keep pathing around wall).
-				-- Log stuck: d=37.7 with >en faced goblin through geometry while path went around.
+				-- hardFace only — never facePoint/arrows (that was permanent spin at stand).
 				if canStandForCombat(playerPos, epos, range, sticky) then
-					local fd = faceEnemy(epos)
-					setMoveKey(nil)
-					if U.holdJump then
-						U.holdJump(false)
-					end
+					hardFace(epos)
+					driveStop()
+					walkingFacing = false
+					local fd, yawErr, _m, hrpDot, camDot = facingQuality(epos)
+					lastFaceDot = fd
+					lastYawErr = yawErr
+					lastHrpDot = hrpDot
+					lastCamDot = camDot
+					lastTurnName = "-"
 					local pathInfo = string.format(" %s#%d", lastVizKind, #pathPts)
 					U.setStatus(string.format(
-						"[stand] d=%.1f face=%.2f h/c=%.2f/%.2f yaw=%+.2f turn=%s %s%s | %s",
+						"[stand] d=%.1f face=%.2f h/c=%.2f/%.2f yaw=%+.2f %s%s | %s",
 						dist,
 						fd,
-						lastHrpDot,
-						lastCamDot,
-						lastYawErr,
-						lastTurnName,
+						hrpDot,
+						camDot,
+						yawErr,
 						model.Name,
 						pathInfo,
 						cds()
@@ -1524,7 +1373,7 @@ return function(S)
 		clearPathState()
 
 		U.setStatus(string.format(
-			"Kill Aura ON — face segment→W/A/D(+Space)→stand@%d→R/cast%s",
+			"Kill Aura ON — hardFace+W+Move→stand@%d→R/cast%s",
 			T().fightRange(),
 			opts.fromRespawn and " (post-respawn)" or ""
 		))
