@@ -334,6 +334,7 @@ return {
 		"Musmeed",
 		"toyy",
 		"batagorsomay",
+		"ChronoArray",
 	},
 	PLAYER_BLACKLIST_LOCK_SECONDS = 30 * 60, -- 30 minutes
 
