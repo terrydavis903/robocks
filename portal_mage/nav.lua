@@ -677,14 +677,12 @@ return function(S)
 		if isCollideProp(bp) then
 			return true
 		end
-		-- Floor under feet: ignore (box sits on ground)
+		-- Floor under feet / walk slabs: ignore (box sits on ground)
 		local footY = samplePos.Y - boxSize.Y * 0.5
 		local topY = bp.Position.Y + bp.Size.Y * 0.5
 		if isWalkFloorPart(bp) and topY <= footY + 0.75 then
 			return false
 		end
-		-- Large thin floor slabs under the probe
-		local minNy = cfg("NAV_MIN_NORMAL_Y", 0.45)
 		if isWalkFloorPart(bp) then
 			return false
 		end
