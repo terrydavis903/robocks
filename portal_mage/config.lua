@@ -127,6 +127,36 @@ return {
 	NAV_WALL_PROBE = 8,
 	NAV_WALL_DIRS = 8,
 	NAV_BODY_HEIGHTS = { 1.2, 2.5, 4.5 },
+	-- World props that must NEVER be treated as walk floors (mesh dump 2026-08-16):
+	-- Buildings.Stalls, Buildings.Tents, Modular_Standalone_Roof_*, Mech_Sail_ClothMesh
+	NAV_OBSTACLE_PATH_KEYWORDS = {
+		".stalls.",
+		".tents.",
+		"modular_standalone_roof",
+		"standalone_roof",
+		"goblin_stall",
+		"goblin_tent",
+		"mech_sail",
+		".v_sail",
+		".sail.",
+		"junk_longtable",
+		"planks_group",
+	},
+	NAV_OBSTACLE_NAME_KEYWORDS = {
+		"stall",
+		"tent",
+		"tarp",
+		"awning",
+		"canopy",
+		"clothmesh",
+		"sail_cloth",
+		"mech_sail",
+		"cloth",
+		"standalone_roof",
+	},
+	-- Slab floor heuristic (was minA<=4 / horiz>=8 → stall plates & sail cloth counted as floors)
+	NAV_FLOOR_SLAB_MAX_THICK = 1.25,
+	NAV_FLOOR_SLAB_MIN_HORIZ = 12,
 	TARGET_CYCLE_DELAY = 0.12,
 	RETICLE_PATH = "TargetLockReticle",
 

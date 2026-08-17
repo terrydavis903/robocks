@@ -73,13 +73,64 @@ return function(S)
 		return false
 	end
 
+	-- Market stands / tarps / tents / sails from mesh dump must never count as floors.
+	-- Dump 2026-08-16_23-17-38: Buildings.Stalls (1072), Tents, Modular_Standalone_Roof_*,
+	-- Mech_Sail_ClothMesh — old slab heuristic (minA<=4,horiz>=8) treated stall plates + sail
+	-- cloth as walk floors so hasClearWalk returned clear on upward-ish hits.
+	local function matchesKeywordList(hay: string, list: any): boolean
+		if type(list) ~= "table" then
+			return false
+		end
+		for _, kw in ipairs(list) do
+			if type(kw) == "string" and kw ~= "" and string.find(hay, string.lower(kw), 1, true) then
+				return true
+			end
+		end
+		return false
+	end
+
+	local function isNamedObstacle(inst: Instance): boolean
+		local path = string.lower(inst:GetFullName())
+		local n = string.lower(inst.Name)
+		if matchesKeywordList(path, C.NAV_OBSTACLE_PATH_KEYWORDS) then
+			return true
+		end
+		if matchesKeywordList(n, C.NAV_OBSTACLE_NAME_KEYWORDS) then
+			return true
+		end
+		-- Hardcoded fallbacks if config is stale/offline
+		if string.find(path, ".stalls.", 1, true)
+			or string.find(path, ".tents.", 1, true)
+			or string.find(path, "modular_standalone_roof", 1, true)
+			or string.find(path, "standalone_roof", 1, true)
+			or string.find(path, "goblin_stall", 1, true)
+			or string.find(path, "goblin_tent", 1, true)
+			or string.find(path, "mech_sail", 1, true)
+			or string.find(path, "junk_longtable", 1, true)
+			or string.find(n, "clothmesh", 1, true)
+			or string.find(n, "sail_cloth", 1, true)
+			or (string.find(n, "tent", 1, true) and not string.find(n, "content", 1, true))
+			or string.find(n, "tarp", 1, true)
+			or string.find(n, "awning", 1, true)
+		then
+			return true
+		end
+		return false
+	end
+
 	-- Large thin slabs / named ground = walkable floor (not props).
 	local function isWalkFloorPart(bp: BasePart): boolean
+		-- Never treat market stands / tarps / tents as floor
+		if isNamedObstacle(bp) then
+			return false
+		end
 		local s = bp.Size
 		local minA = math.min(s.X, s.Y, s.Z)
 		local horiz = math.sqrt(s.X * s.X + s.Z * s.Z)
-		-- Flat slab
-		if minA <= 4 and horiz >= 8 then
+		-- Flat slab only — keep tight so stall "plates" (Y~3–4) are NOT floors
+		local maxThick = cfg("NAV_FLOOR_SLAB_MAX_THICK", 1.25)
+		local minHoriz = cfg("NAV_FLOOR_SLAB_MIN_HORIZ", 12)
+		if minA <= maxThick and horiz >= minHoriz then
 			return true
 		end
 		local n = string.lower(bp.Name)
@@ -89,7 +140,9 @@ return function(S)
 			or string.find(n, "road", 1, true)
 			or string.find(n, "path", 1, true) == 1
 			or string.find(n, "bridge", 1, true)
+			or string.find(n, "pebble", 1, true)
 			or string.find(path, "terrain", 1, true)
+			or string.find(path, "landscape", 1, true)
 		then
 			return true
 		end
@@ -107,6 +160,10 @@ return function(S)
 		if not bp.CanCollide then
 			return false
 		end
+		-- Named market / tent / tarp / sail structures always block (before floor check)
+		if isNamedObstacle(bp) then
+			return true
+		end
 		if isWalkFloorPart(bp) then
 			return false
 		end
@@ -122,14 +179,14 @@ return function(S)
 		then
 			return true
 		end
-		-- Compact / tall collide meshes (furniture, machines, statues, crates…)
+		-- Compact / tall collide meshes (furniture, machines, statues, crates, thin planks…)
 		local s = bp.Size
 		local maxd = math.max(s.X, s.Y, s.Z)
 		local mind = math.min(s.X, s.Y, s.Z)
 		local horiz = math.sqrt(s.X * s.X + s.Z * s.Z)
-		if maxd < 100 and mind > 0.35 then
-			-- Not a floor slab: has volume / height
-			if s.Y >= 1.2 or (horiz < 24 and maxd >= 1.5) then
+		-- mind > 0.12 catches thin planks/boards that still block the body (was 0.35)
+		if maxd < 100 and mind > 0.12 then
+			if s.Y >= 1.0 or (horiz < 28 and maxd >= 1.2) then
 				return true
 			end
 		end
@@ -143,6 +200,10 @@ return function(S)
 
 	function M.isWalkFloorPart(bp: BasePart): boolean
 		return isWalkFloorPart(bp)
+	end
+
+	function M.isNamedObstacle(inst: Instance): boolean
+		return isNamedObstacle(inst)
 	end
 
 	-- Horizontal free distance to the nearest *wall-like* surface (not floor).
@@ -559,6 +620,10 @@ return function(S)
 				return false
 			end
 			if isBarrierInstance(inst) then
+				return true
+			end
+			-- Stalls / tents / tarps / sails / named props always block (even "floor-like" tops)
+			if isNamedObstacle(inst) and inst:IsA("BasePart") and (inst :: BasePart).CanCollide then
 				return true
 			end
 			-- Props with CanCollide (horses, mounts, crates…) block even if top normal faces up
