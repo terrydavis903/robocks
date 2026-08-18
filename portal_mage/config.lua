@@ -224,6 +224,7 @@ return {
 	KILL_AURA_MAX_PATH_DETOR = 2.2, -- reject paths longer than this × straight (anti-circle)
 	KILL_AURA_LOG = true, -- dumps/killaura_*.log (appendfile only; capped)
 	KILL_AURA_LOG_MAX_KB = 512, -- stop appending after this many KB per session log
+	KILL_AURA_PATH_BLOCKED_IGNORE = 18, -- seconds to skip a mob after stone path fails
 	-- Optional name priority (first match wins). Empty = nearest schema mob only.
 	-- Example: { "ScarecrowGoblin", "PatchHound", "CritterGoblin" }
 	KILL_AURA_PRIORITY = {},

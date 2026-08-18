@@ -968,6 +968,9 @@ return function(S)
 			log(string.format("path BLOCKED n=%d → %s", blockedRouteFails, enemy.Name))
 			if blockedRouteFails >= 3 then
 				local Targets = T()
+				if Targets and Targets.markPathBlockedIgnore then
+					Targets.markPathBlockedIgnore(enemy)
+				end
 				if Targets and Targets.clearHold then
 					Targets.clearHold("path_blocked")
 				end
@@ -977,7 +980,7 @@ return function(S)
 					ringPhase = 0
 					lastPathSig = ""
 					log(string.format(
-						"path BLOCKED_ESCAPE angle reset dist=%.1f → clearHold",
+						"path BLOCKED_ESCAPE angle reset dist=%.1f → clearHold+ignore",
 						flatDist(playerPos, epos)
 					))
 				end
@@ -1070,15 +1073,22 @@ return function(S)
 		local now = os.clock()
 		local sticky = C.KILL_AURA_STICKY or 4
 		local arrive = C.KILL_AURA_SEG_ARRIVE or 3.5
+		-- Blocked park is pathPts={player} (#=1). Treating that as "empty" forced a
+		-- rebuild EVERY tick (log 13-46-15: 1500+ BLOCKED while standing still).
+		local blockedPark = lastVizKind == "blocked" and #pathPts == 1
 		local need = force == true
 			or pathEnemy ~= enemy
-			or #pathPts < 2
+			or (#pathPts < 1)
+			or (#pathPts < 2 and not blockedPark)
 			or (now - pathBuiltAt) >= interval
 		local why = "timer"
 		if force then
 			why = "force"
 		elseif pathEnemy ~= enemy then
 			why = "enemy"
+		elseif blockedPark then
+			need = true
+			why = "blocked"
 		elseif #pathPts < 2 then
 			why = "empty"
 		end
@@ -1126,9 +1136,9 @@ return function(S)
 		-- Do NOT mid-run hasClearWalk repath (false clear/blocked thrash). Stuck → NO_PROGRESS.
 
 		if need then
-			local canRebuild = force
+			-- Always honor repathCd for blocked/empty parks — never rebuild every poll.
+			local canRebuild = force == true
 				or pathEnemy ~= enemy
-				or #pathPts < 2
 				or why == "short_path"
 				or (now - lastRepathAt) >= repathCd
 			if canRebuild then

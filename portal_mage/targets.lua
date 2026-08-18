@@ -202,6 +202,29 @@ return function(S)
 	---------------------------------------------------------------------------
 
 	local tooHighIgnore: { [Model]: number } = {} -- model → os.clock until
+	local pathBlockedIgnore: { [Model]: number } = {} -- unreachable on stone → skip awhile
+
+	function M.markPathBlockedIgnore(model: Model?, sec: number?)
+		if not model then
+			return
+		end
+		pathBlockedIgnore[model] = os.clock() + (sec or C.KILL_AURA_PATH_BLOCKED_IGNORE or 18)
+	end
+
+	function M.isPathBlockedIgnored(model: Model?): boolean
+		if not model then
+			return false
+		end
+		local untilT = pathBlockedIgnore[model]
+		if not untilT then
+			return false
+		end
+		if os.clock() >= untilT then
+			pathBlockedIgnore[model] = nil
+			return false
+		end
+		return true
+	end
 
 	function M.clearHitboxFloorHeight(): number
 		local fallback = C.KILL_AURA_HITBOX_HEIGHT_FALLBACK or 3.0
@@ -475,10 +498,13 @@ return function(S)
 			return nil, nil, nil
 		end
 
-		-- Drop ignored / too-high (above) targets before ranking
+		-- Drop ignored / too-high / stone-unreachable targets before ranking
 		local filtered = {}
 		for _, e in ipairs(snaps) do
-			if not M.isTooHighIgnored(e.model) and not M.isTooHigh(e.model, origin) then
+			if not M.isTooHighIgnored(e.model)
+				and not M.isPathBlockedIgnored(e.model)
+				and not M.isTooHigh(e.model, origin)
+			then
 				table.insert(filtered, e)
 			end
 		end
