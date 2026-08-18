@@ -233,8 +233,6 @@ return {
 
 	RESPAWN_CLICK_COOLDOWN = 2.0,
 	RESPAWN_POST_CLICK_WAIT = 2.0, -- after Respawn click, before first Z
-	-- Drop stuck zRegenBusy/spawnEgressBusy after this many seconds while alive
-	RESPAWN_BUSY_STALE_SECONDS = 75,
 	-- After character is alive, hold S briefly before Z-sit regen (push off pad/spawn lock)
 	RESPAWN_POST_S_HOLD = 1.0,
 	RESPAWN_Z_POLL_INTERVAL = 0.35, -- poll HP/MP while recovering (no extra Z spam)

@@ -8,9 +8,6 @@ return function(S)
 	local M = {}
 
 	local lastRespawnClickAt = 0
-	local busyArmedAt = 0 -- when zRegenBusy/spawnEgressBusy last became true
-	local deadNoButtonSince = 0 -- dead / no character while Respawn button missing
-	local postRespawnWithoutClick = false -- game auto-respawned; we still owe S/Z/egress/KA
 
 	-- True only when a Humanoid exists and is dead. Nil character during the
 	-- post-click swap is NOT death (that false-positive aborted regen forever:
@@ -18,50 +15,6 @@ return function(S)
 	local function isDefinitelyDead(): boolean
 		local hum = U.getHumanoid and U.getHumanoid()
 		return hum ~= nil and hum.Health <= 0
-	end
-
-	local function isAliveHumanoid(): boolean
-		local hum = U.getHumanoid and U.getHumanoid()
-		return hum ~= nil and hum.Health > 0
-	end
-
-	local function armBusyClock()
-		if busyArmedAt <= 0 then
-			busyArmedAt = os.clock()
-		end
-	end
-
-	local function clearBusyClock()
-		if not S.zRegenBusy and not S.spawnEgressBusy then
-			busyArmedAt = 0
-		end
-	end
-
-	-- Force-clear stuck regen/egress locks so KA is not bricked forever.
-	local function clearStaleRespawnBusy(reason: string): boolean
-		if not S.zRegenBusy and not S.spawnEgressBusy then
-			busyArmedAt = 0
-			return false
-		end
-		local age = if busyArmedAt > 0 then os.clock() - busyArmedAt else 0
-		local cap = C.RESPAWN_BUSY_STALE_SECONDS or 75
-		if age < cap and isDefinitelyDead() then
-			return false
-		end
-		if age < cap and not isAliveHumanoid() then
-			return false -- character swap / loading
-		end
-		S.zRegenBusy = false
-		S.spawnEgressBusy = false
-		S.resourceRecoverPhase = nil
-		S.respawnRegenAbort = true
-		busyArmedAt = 0
-		U.setStatus(string.format(
-			"Auto-respawn: cleared stale busy (%s age=%.0fs)",
-			reason,
-			age
-		))
-		return true
 	end
 
 	-- True if this post-respawn generation was superseded (died again / new click).
@@ -106,49 +59,12 @@ return function(S)
 		if label and (label:IsA("TextLabel") or label:IsA("TextButton")) then
 			return label.Text
 		end
-		-- Nested text common on custom buttons
-		for _, d in ipairs(btn:GetDescendants()) do
-			if d:IsA("TextLabel") or d:IsA("TextButton") then
-				local t = (d :: TextLabel).Text
-				if type(t) == "string" and string.find(string.lower(t), "respawn", 1, true) then
-					return t
-				end
-			end
-		end
 		if btn:IsA("TextButton") then
 			return btn.Text
 		end
 		return nil
 	end
 
-	local function guiAncestryShown(inst: Instance): boolean
-		local p: Instance? = inst
-		while p do
-			if p:IsA("ScreenGui") and not p.Enabled then
-				return false
-			end
-			if p:IsA("GuiObject") and not (p :: GuiObject).Visible then
-				-- DeathFrame sometimes hides the leaf button while the frame is up;
-				-- allow AbsoluteSize check at call site. Strict ancestry only for ScreenGui.
-				if p ~= inst then
-					return false
-				end
-			end
-			p = p.Parent
-		end
-		return true
-	end
-
-	local function textLooksLikeRespawn(text: string?): boolean
-		if type(text) ~= "string" or text == "" then
-			return false
-		end
-		local t = string.lower(string.gsub(text, "^%s*(.-)%s*$", "%1"))
-		return t == "respawn" or string.find(t, "respawn", 1, true) ~= nil
-	end
-
-	-- Prefer a clearly visible Respawn control; fall back to on-screen AbsoluteSize
-	-- even when leaf Visible=false (game often toggles the label, not the frame).
 	local function findReadyRespawnButton(): GuiButton?
 		local lp = Players.LocalPlayer
 		if not lp then
@@ -159,72 +75,53 @@ return function(S)
 			return nil
 		end
 
-		local candidates: { GuiButton } = {}
-		local seen: { [Instance]: boolean } = {}
-		local function addCand(inst: Instance?)
-			if inst and inst:IsA("GuiButton") and not seen[inst] then
-				seen[inst] = true
-				table.insert(candidates, inst :: GuiButton)
-			end
-		end
-
+		local candidates = {}
 		local portal = pg:FindFirstChild("ThePortalUI")
 		if portal then
 			local death = portal:FindFirstChild("DeathFrame")
 			if death then
 				local content = death:FindFirstChild("ContentFrame")
-				addCand(content and content:FindFirstChild("RespawnButton"))
-				addCand(death:FindFirstChild("RespawnButton", true))
-			end
-		end
-		for _, inst in ipairs(pg:GetDescendants()) do
-			if inst.Name == "RespawnButton" and inst:IsA("GuiButton") then
-				addCand(inst)
-			elseif inst:IsA("GuiButton") then
-				local text = getRespawnButtonText(inst)
-				if textLooksLikeRespawn(text) then
-					addCand(inst)
+				local btn = content and content:FindFirstChild("RespawnButton")
+				if btn and btn:IsA("GuiButton") then
+					table.insert(candidates, btn)
 				end
 			end
 		end
 
-		local function scoreButton(btn: GuiButton): number
-			local text = getRespawnButtonText(btn)
-			if not textLooksLikeRespawn(text) and btn.Name ~= "RespawnButton" then
-				return -1
+		if #candidates == 0 then
+			for _, inst in ipairs(pg:GetDescendants()) do
+				if inst.Name == "RespawnButton" and inst:IsA("GuiButton") then
+					table.insert(candidates, inst)
+				end
 			end
-			local sz = btn.AbsoluteSize
-			local onScreen = sz.X >= 2 and sz.Y >= 2
-			if not onScreen then
-				return -1
-			end
-			local s = 0
-			if btn.Visible then
-				s += 50
-			end
-			if guiAncestryShown(btn) then
-				s += 30
-			end
-			if btn.Active then
-				s += 10
-			end
-			if btn.Name == "RespawnButton" then
-				s += 5
-			end
-			s += math.min(sz.X * sz.Y, 20000) / 2000
-			return s
 		end
 
-		local best: GuiButton? = nil
-		local bestScore = 0
 		for _, btn in ipairs(candidates) do
-			local sc = scoreButton(btn)
-			if sc > bestScore then
-				bestScore = sc
-				best = btn
+			if not btn.Visible then
+				continue
+			end
+			local ancestorOk = true
+			local p: Instance? = btn.Parent
+			while p do
+				if p:IsA("GuiObject") and not p.Visible then
+					ancestorOk = false
+					break
+				end
+				if p:IsA("ScreenGui") and not p.Enabled then
+					ancestorOk = false
+					break
+				end
+				p = p.Parent
+			end
+			if not ancestorOk then
+				continue
+			end
+			local text = getRespawnButtonText(btn)
+			if text and string.lower(string.gsub(text, "^%s*(.-)%s*$", "%1")) == "respawn" then
+				return btn
 			end
 		end
-		return best
+		return nil
 	end
 
 	local function parseCurMax(text: string?): (number?, number?)
@@ -769,87 +666,18 @@ return function(S)
 		end
 	end
 
-	local function beginPostRespawn(gen: number, statusMsg: string)
-		-- Arm busy BEFORE spawn so the 0.2s poll cannot start a second sequence
-		S.zRegenBusy = true
-		S.resourceRecoverPhase = "regen"
-		armBusyClock()
-		U.setStatus(statusMsg)
-		task.spawn(function()
-			runPostRespawnSequence(gen)
-		end)
-	end
-
 	local function tryAutoRespawn()
-		-- Watchdog: busy flags left on too long while alive
-		if S.zRegenBusy or S.spawnEgressBusy then
-			armBusyClock()
-			if isAliveHumanoid() then
-				local age = if busyArmedAt > 0 then os.clock() - busyArmedAt else 0
-				local cap = C.RESPAWN_BUSY_STALE_SECONDS or 75
-				if age >= cap then
-					clearStaleRespawnBusy("watchdog")
-				end
-			end
-		else
-			clearBusyClock()
-		end
-
 		local btn = findReadyRespawnButton()
-		local alive = isAliveHumanoid()
-		local dead = isDefinitelyDead()
-
-		-- Game respawned us without a clickable button (button vanished / auto-respawn).
-		-- Still run S → Z regen → egress → KA instead of waiting forever.
-		if alive and not S.zRegenBusy and not S.spawnEgressBusy and not S.walking then
-			local wantResume = S.respawnResumeWalk == true or S.proximityResumeWalk == true
-			if wantResume or postRespawnWithoutClick then
-				postRespawnWithoutClick = false
-				deadNoButtonSince = 0
-				S.respawnResumeWalk = true
-				S.postRespawnGen = (S.postRespawnGen or 0) + 1
-				local gen = S.postRespawnGen
-				S.respawnRegenAbort = false
-				beginPostRespawn(gen, "Auto-respawn: alive without Respawn click — recovering…")
-				return
-			end
-		end
-
-		-- Dead / no living hum, but Respawn control not found
 		if not btn then
-			if dead or (not alive and (S.respawnResumeWalk or S.walking)) then
-				if deadNoButtonSince <= 0 then
-					deadNoButtonSince = os.clock()
-				end
-				local waited = os.clock() - deadNoButtonSince
-				if waited >= 1.5 then
-					U.setStatus(string.format(
-						"Auto-respawn: waiting for Respawn button… (%.0fs)",
-						waited
-					))
-				end
-				-- Arm resume so if the server brings us back without UI we recover
-				if S.walking or S.respawnResumeWalk or S.proximityResumeWalk then
-					S.respawnResumeWalk = true
-					S.walking = false
-					postRespawnWithoutClick = true
-				end
-			else
-				deadNoButtonSince = 0
-			end
-			return
-		end
-		deadNoButtonSince = 0
-
-		-- Lingering DeathFrame while Health>0: do not re-click Respawn
-		if alive then
 			return
 		end
 
 		-- Only interrupt an in-flight post-respawn if we are *actually* dead again.
+		-- Respawn UI can linger after our own click while zRegenBusy=true — aborting
+		-- that killed the new loop and stuck status on "died mid-regen".
 		if S.zRegenBusy or S.spawnEgressBusy then
 			if not isDefinitelyDead() then
-				return
+				return -- legitimate regen / egress still running
 			end
 			S.respawnRegenAbort = true
 			S.spawnEgressBusy = false
@@ -859,7 +687,6 @@ return function(S)
 			U.setStatus("Auto-respawn: died mid-regen — re-clicking Respawn")
 			task.wait(0.05)
 			S.zRegenBusy = false
-			busyArmedAt = 0
 		end
 
 		local now = os.clock()
@@ -868,6 +695,9 @@ return function(S)
 		end
 		lastRespawnClickAt = now
 
+		-- Resume intent: KA was on, OR prox already froze it, OR a prior death
+		-- already armed respawnResumeWalk. Prox often clears S.walking before the
+		-- Respawn button appears — without this, neither egress nor KA restart.
 		local wantResume = S.walking == true
 			or S.proximityResumeWalk == true
 			or S.respawnResumeWalk == true
@@ -885,27 +715,26 @@ return function(S)
 			if S.ui and S.ui.setWalkLabel then
 				S.ui.setWalkLabel(false)
 			end
+			U.setStatus("Auto-respawn: Kill Aura paused — clicking Respawn")
 		else
 			S.waitAllCds = false
+			U.setStatus("Auto-respawn: clicking Respawn")
 		end
 		if S.Abilities and S.Abilities.clearSyntheticCds then
 			S.Abilities.clearSyntheticCds()
 		end
 
+		-- New generation invalidates any in-flight post-respawn / regen wait
 		S.postRespawnGen = (S.postRespawnGen or 0) + 1
 		local gen = S.postRespawnGen
 		S.respawnRegenAbort = false
-		postRespawnWithoutClick = false
 
 		pcall(function()
 			clickGuiButton(btn)
 		end)
-		beginPostRespawn(
-			gen,
-			if wantResume
-				then "Auto-respawn: Kill Aura paused — clicking Respawn"
-				else "Auto-respawn: clicking Respawn"
-		)
+		task.spawn(function()
+			runPostRespawnSequence(gen)
+		end)
 	end
 
 	function M.start()
