@@ -166,8 +166,21 @@ return function(S)
 
 	function M.clearSyntheticCds()
 		S.slotCdUntil = {}
+		S.slotLastArmAt = {}
+		S.slotArmPendingUntil = {}
 		S.lastCastAt = 0
 		S.lastCastSlot = nil
+	end
+
+	-- Short synthetic CD so combat doesn't retry-arm every 50ms (QS4 flicker).
+	local function noteArmFailBackoff(slot: number)
+		S.slotCdUntil = S.slotCdUntil or {}
+		local failCd = C.SLOT_ARM_FAIL_CD or 1.25
+		local untilT = os.clock() + failCd
+		local cur = S.slotCdUntil[slot]
+		if type(cur) ~= "number" or cur < untilT then
+			S.slotCdUntil[slot] = untilT
+		end
 	end
 
 	function M.isSlotReady(slot: number): boolean
@@ -377,27 +390,56 @@ return function(S)
 
 	function M.ensureSlotOn(slot: number): boolean
 		if M.isSlotOn(slot) then
+			-- Armed — clear pending latch
+			if S.slotArmPendingUntil then
+				S.slotArmPendingUntil[slot] = nil
+			end
 			return true
 		end
 		local key = SLOT_KEY[slot]
 		if not key then
 			return false
 		end
+
+		local now = os.clock()
+		S.slotLastArmAt = S.slotLastArmAt or {}
+		S.slotArmPendingUntil = S.slotArmPendingUntil or {}
+		local armCd = C.SLOT_ARM_COOLDOWN or 1.6
+		local lastArm = S.slotLastArmAt[slot] or 0
+		local pendingUntil = S.slotArmPendingUntil[slot] or 0
+
+		-- Already pressed recently: ONLY poll. Never second-press (that toggles OFF
+		-- and causes the QS4 diamond flicker / "toggling aim" loop).
+		if now < pendingUntil or (now - lastArm) < armCd then
+			local waitLeft = math.max(pendingUntil - now, armCd - (now - lastArm), 0.15)
+			local t0 = os.clock()
+			while isWalking() and (os.clock() - t0) < math.min(waitLeft, C.SLOT_SELECT_WAIT or 0.75) do
+				if M.isSlotOn(slot) then
+					S.slotArmPendingUntil[slot] = nil
+					return true
+				end
+				task.wait(0.04)
+			end
+			return M.isSlotOn(slot)
+		end
+
 		if U.releaseMoveKeys then
 			U.releaseMoveKeys()
 		end
 		U.setStatus(string.format("[cast] toggle-arm slot %d (%s)…", slot, key.Name))
 		U.pressKey(key)
-		local waitFor = C.SLOT_SELECT_WAIT or 0.55
-		local t0 = os.clock()
-		while os.clock() - t0 < waitFor and isWalking() do
+		S.slotLastArmAt[slot] = now
+		S.slotArmPendingUntil[slot] = now + armCd
+
+		local waitFor = C.SLOT_SELECT_WAIT or 0.75
+		local t1 = os.clock()
+		while os.clock() - t1 < waitFor and isWalking() do
 			if M.isSlotOn(slot) then
 				return true
 			end
 			task.wait(0.04)
 		end
-		-- Still dark: do NOT second-toggle (UI lag → off→on→off). Caller must
-		-- re-check isSlotOn before holding E / firing.
+		-- Still dark: do NOT second-toggle. Caller backs off via noteArmFailBackoff.
 		return M.isSlotOn(slot)
 	end
 
@@ -405,11 +447,11 @@ return function(S)
 
 	-- After ensureSlotOn, poll Slot_Select a bit longer. Never fire while dark.
 	local function requireSlotSelected(slot: number, tag: string): boolean
-		task.wait(C.SLOT_FIRE_SETTLE or 0.12)
+		task.wait(C.SLOT_FIRE_SETTLE or 0.18)
 		if M.isSlotOn(slot) then
 			return true
 		end
-		local extra = C.SLOT_SELECT_WAIT or 0.55
+		local extra = C.SLOT_SELECT_WAIT or 0.75
 		local t1 = os.clock()
 		while isWalking() and (os.clock() - t1) < extra do
 			if M.isSlotOn(slot) then
@@ -421,10 +463,11 @@ return function(S)
 			return true
 		end
 		U.setStatus(string.format(
-			"[%s] QS%d diamond not selected — skip E",
+			"[%s] QS%d diamond not selected — skip E (arm backoff)",
 			tag or "cast",
 			slot
 		))
+		noteArmFailBackoff(slot)
 		return false
 	end
 
@@ -453,23 +496,16 @@ return function(S)
 		if U.releaseMoveKeys then
 			U.releaseMoveKeys()
 		end
-		-- 2) Fire / channel only — never hotbar (would toggle OFF)
+		-- 2) Fire / channel only — never hotbar (would toggle OFF).
+		-- Do NOT re-check Slot_Select mid-hold: QS4 aim/channel often hides or
+		-- flickers the diamond, which aborted E and re-pressed 4 (toggle spam).
 		for _, step in ipairs(handler.steps or {}) do
 			if not isWalking() then
 				return false
 			end
-			-- Re-check before each hold: diamond can drop mid-sequence
-			if step.hold and handler.slot and not M.isSlotOn(handler.slot) then
-				U.setStatus(string.format(
-					"[cast] QS%d diamond dropped — abort HOLD %s",
-					handler.slot,
-					tostring(step.hold.Name)
-				))
-				return false
-			end
 			if step.hold then
 				U.setStatus(string.format(
-					"[cast] HOLD %s %.1fs (s%d diamond=on)",
+					"[cast] HOLD %s %.1fs (s%d)",
 					tostring(step.hold.Name),
 					step.duration or C.HOLD_DURATION or 5,
 					handler.slot or 0
