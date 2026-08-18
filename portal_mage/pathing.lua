@@ -671,7 +671,7 @@ return function(S)
 			local PR = S.PathRecord
 			if PR and PR.buildCorridorToward then
 				local corridor = PR.buildCorridorToward(epos, C.RESPAWN_PATH_MATCH_STUDS or 64)
-				if type(corridor) == "table" and #corridor >= 3 then
+				if type(corridor) == "table" and #corridor >= 2 then
 					local endP = corridor[#corridor]
 					local joinDist = flatDist(playerPos, corridor[1])
 					local joinLim = C.RESPAWN_CORRIDOR_JOIN_STUDS or 10
@@ -679,7 +679,7 @@ return function(S)
 					if joinOk and nav and nav.hasClearWalk and joinDist > 2 then
 						joinOk = nav.hasClearWalk(playerPos, corridor[1]) == true
 					end
-					if joinOk and flatDist(endP, epos) < flatDist(playerPos, epos) - 3 then
+					if joinOk and flatDist(endP, epos) < flatDist(playerPos, epos) - 1.0 then
 						pts = corridor
 						kind = "spawn_corridor"
 						goal = endP
@@ -700,7 +700,19 @@ return function(S)
 			end
 		end
 
-		if #pts < 2 and nav and nav.computePath then
+		-- While standing on a recorded spawn path, do not invent free A* — that is
+		-- how we "don't respect the respawn walk" (log 11-52-42: corridor REJECT → grid).
+		local nearRecordedSpawn = false
+		do
+			local PR = S.PathRecord
+			local joinLim = C.RESPAWN_CORRIDOR_JOIN_STUDS or 10
+			if PR and PR.findClosestSpawnPath then
+				local entry, dist = PR.findClosestSpawnPath(joinLim)
+				nearRecordedSpawn = entry ~= nil and type(dist) == "number" and dist <= joinLim
+			end
+		end
+
+		if #pts < 2 and not nearRecordedSpawn and nav and nav.computePath then
 			local tryPts, tryKind = nav.computePath(playerPos, goal, {
 				maxGoals = maxGoals,
 				ringN = 6,
@@ -732,6 +744,11 @@ return function(S)
 					end
 				end
 			end
+		elseif #pts < 2 and nearRecordedSpawn then
+			log(string.format(
+				"path hold spawn_corridor (no free A* on recorded path) → %s",
+				enemy.Name
+			))
 		end
 
 		-- Drop routes whose end does not approach the enemy (stone-snap false paths)
@@ -740,20 +757,9 @@ return function(S)
 				return false
 			end
 			local endP = tryPts[#tryPts]
-			if not goalApproachesEnemy(endP, playerPos, epos, range)
-				and not goalApproachesEnemy(tryGoal, playerPos, epos, range)
-			then
-				log(string.format(
-					"path REJECT %s end=(%.0f,%.0f) dEnemy=%.1f (no approach)",
-					tryKind,
-					endP.X,
-					endP.Z,
-					flatDist(endP, epos)
-				))
-				return false
-			end
-			-- Recorded corridor mid-segments are trusted, but the join from the live
-			-- player onto wp1 must stay on stone (dump 02-24-48 off-path cut).
+			-- Recorded respawn corridor: human stone route. Do NOT require stand-band
+			-- (range+10). Log 11-52-42: prefer wps=7 then REJECT no approach dEnemy=169
+			-- → free A* invents a wall-clip instead of following the recording.
 			if tryKind == "spawn_corridor" then
 				local joinDist = flatDist(playerPos, tryPts[1])
 				local joinLim = C.RESPAWN_CORRIDOR_JOIN_STUDS or 10
@@ -770,7 +776,29 @@ return function(S)
 					log("path REJECT spawn_corridor (off-stone join)")
 					return false
 				end
+				-- Only require progress toward the enemy along the recording
+				if flatDist(endP, epos) >= flatDist(playerPos, epos) - 1.0 then
+					log(string.format(
+						"path REJECT spawn_corridor end=(%.0f,%.0f) dEnemy=%.1f (no progress)",
+						endP.X,
+						endP.Z,
+						flatDist(endP, epos)
+					))
+					return false
+				end
 				return true
+			end
+			if not goalApproachesEnemy(endP, playerPos, epos, range)
+				and not goalApproachesEnemy(tryGoal, playerPos, epos, range)
+			then
+				log(string.format(
+					"path REJECT %s end=(%.0f,%.0f) dEnemy=%.1f (no approach)",
+					tryKind,
+					endP.X,
+					endP.Z,
+					flatDist(endP, epos)
+				))
+				return false
 			end
 			if nav and nav.pathSegmentsClear and not nav.pathSegmentsClear(tryPts) then
 				log(string.format("path REJECT %s (wall/clearance)", tryKind))
@@ -784,7 +812,8 @@ return function(S)
 			kind = "none"
 		end
 
-		if #pts < 2 then
+		-- Free A* / line invent skipped while on a recorded spawn path — corridor only.
+		if #pts < 2 and not nearRecordedSpawn then
 			-- Prefer snap to stone path then straight line on stone
 			local fromP, goalP = playerPos, goal
 			if nav and nav.snapToStonePath then
@@ -844,7 +873,8 @@ return function(S)
 			kind = "none"
 		end
 
-		-- Free A* failed: follow recorded corridor only if already on/near it.
+		-- Follow recorded corridor (prefer already tried; this is the retry / only path
+		-- while nearRecordedSpawn suppresses free A*).
 		if #pts < 2 then
 			local PR = S.PathRecord
 			if PR and PR.buildCorridorToward then
@@ -874,8 +904,8 @@ return function(S)
 		end
 
 		-- Stand-band unreachable (enemy off stone): still walk stone that closes
-		-- distance — but only if full segments stay clear (stone + walls).
-		if #pts < 2 and nav and nav.computePath then
+		-- distance — but never while standing on a recorded respawn path.
+		if #pts < 2 and not nearRecordedSpawn and nav and nav.computePath then
 			local progressGoal = epos
 			if nav.snapToStonePath then
 				local gs = nav.snapToStonePath(epos, 28)
@@ -1052,7 +1082,11 @@ return function(S)
 			if flatDist(playerPos, last) <= arrive * 1.25 and flatDist(playerPos, epos) > range + sticky then
 				need = true
 				why = "short_path"
-				bumpPathVariety("short_path")
+				-- Don't rotate stand angles while following a recorded corridor —
+				-- variety was pushing free A* over the human respawn walk.
+				if lastVizKind ~= "spawn_corridor" then
+					bumpPathVariety("short_path")
+				end
 				-- Dump 20-46-03: short_path/same_path spun for 7+ min at dist=34.5 with
 				-- almost no W. After enough variety, drop hold and pick another mob.
 				if standAngleIdx >= 12 then
