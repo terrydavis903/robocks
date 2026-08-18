@@ -236,6 +236,8 @@ return {
 
 	RESPAWN_CLICK_COOLDOWN = 2.0,
 	RESPAWN_POST_CLICK_WAIT = 2.0, -- after Respawn click, before first Z
+	-- After character is alive, hold S briefly before Z-sit regen (push off pad/spawn lock)
+	RESPAWN_POST_S_HOLD = 1.0,
 	RESPAWN_Z_POLL_INTERVAL = 0.35, -- poll HP/MP while recovering (no extra Z spam)
 	RESPAWN_Z_MAX_SECONDS = 90, -- safety cap waiting for full HP/MP
 	RESPAWN_AFTER_MAX_WAIT = 0.5, -- after second Z, before Q

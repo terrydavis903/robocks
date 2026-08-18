@@ -9,6 +9,25 @@ return function(S)
 
 	local lastRespawnClickAt = 0
 
+	local function isDeadOrDying(): boolean
+		local hum = U.getHumanoid and U.getHumanoid()
+		if not hum then
+			return true
+		end
+		return hum.Health <= 0
+	end
+
+	-- True if this post-respawn generation was superseded (died again / new click).
+	local function regenAborted(gen: number?): boolean
+		if S.respawnRegenAbort == true then
+			return true
+		end
+		if type(gen) == "number" and type(S.postRespawnGen) == "number" and gen ~= S.postRespawnGen then
+			return true
+		end
+		return false
+	end
+
 	local function clickGuiButton(btn: GuiButton)
 		pcall(function()
 			if typeof(firesignal) == "function" then
@@ -180,14 +199,21 @@ return function(S)
 	end
 
 	-- Wait until HP/MP full (poll only — do NOT spam Z).
-	function M.waitUntilVitalsMaxed(statusPrefix: string?): boolean
+	-- opts.gen: post-respawn generation; abort if we die again mid-wait.
+	function M.waitUntilVitalsMaxed(statusPrefix: string?, opts: any?): boolean
+		opts = opts or {}
+		local gen = opts.gen
 		local prefix = statusPrefix or "Recover"
 		local interval = C.RESPAWN_Z_POLL_INTERVAL or 0.35
 		local cap = C.RESPAWN_Z_MAX_SECONDS or 90
 		local deadline = os.clock() + cap
 
 		while os.clock() < deadline do
-			-- Abort if walk stopped mid-regen (except respawn may run without walking)
+			if regenAborted(gen) or isDeadOrDying() then
+				U.setStatus(prefix .. ": died mid-regen — abort for re-respawn")
+				S.respawnRegenAbort = true
+				return false
+			end
 			local full, hp, maxHp, mp, maxMp = M.readVitals()
 			if full then
 				U.setStatus(string.format(
@@ -211,6 +237,10 @@ return function(S)
 			task.wait(interval)
 		end
 
+		if regenAborted(gen) or isDeadOrDying() then
+			S.respawnRegenAbort = true
+			return false
+		end
 		local full = M.readVitals()
 		return full
 	end
@@ -220,8 +250,11 @@ return function(S)
 	--   sheathe/draw = Q toggle (observe isWeaponDrawn: Tool on character)
 	--   HP/MP from HUD; only sit-recover when not full.
 	-- While zRegenBusy, Kill Aura hard-idles.
-	function M.runZRegenSequence(statusPrefix: string?): boolean
-		if S.zRegenBusy then
+	-- opts.gen / opts.allowBusy: post-respawn may already hold zRegenBusy.
+	function M.runZRegenSequence(statusPrefix: string?, opts: any?): boolean
+		opts = opts or {}
+		local gen = opts.gen
+		if S.zRegenBusy and not opts.allowBusy then
 			return false
 		end
 		S.zRegenBusy = true
@@ -229,7 +262,12 @@ return function(S)
 			U.releaseMoveKeys()
 		end
 		local prefix = statusPrefix or "recover"
+		local aborted = false
 		local ok, err = pcall(function()
+			if regenAborted(gen) or isDeadOrDying() then
+				aborted = true
+				return
+			end
 			local full = M.readVitals()
 
 			-- 1) Need vitals → enter sit-recover if not already seated
@@ -240,9 +278,17 @@ return function(S)
 				else
 					U.setStatus(prefix .. ": already sitting — recover")
 				end
-				M.waitUntilVitalsMaxed(prefix)
+				if not M.waitUntilVitalsMaxed(prefix, { gen = gen }) then
+					aborted = true
+					return
+				end
 			else
 				U.setStatus(prefix .. ": vitals already full")
+			end
+
+			if regenAborted(gen) or isDeadOrDying() then
+				aborted = true
+				return
 			end
 
 			-- 2) Must stand before drawing / fighting
@@ -257,6 +303,11 @@ return function(S)
 				if U.markWeaponSheathed then
 					U.markWeaponSheathed()
 				end
+			end
+
+			if regenAborted(gen) or isDeadOrDying() then
+				aborted = true
+				return
 			end
 
 			-- 3) Draw when we know sheathed (post-sit) or hard-negative
@@ -312,14 +363,14 @@ return function(S)
 			U.setStatus(prefix .. " error: " .. tostring(err))
 		end
 		S.zRegenBusy = false
+		if aborted or regenAborted(gen) then
+			return false
+		end
 		return ok and (not U.isSeated()) and U.isWeaponDrawn()
 	end
 
-	-- After death: wait for character → recover → spawn egress → resume Kill Aura
-	local function runPostRespawnSequence()
-		if S.zRegenBusy then
-			return
-		end
+	-- After death: wait for character → S nudge → recover → spawn egress → resume KA
+	local function runPostRespawnSequence(gen: number)
 		-- Capture before any flag churn; keep respawnResumeWalk until startWalk succeeds
 		local shouldResumeWalk = S.respawnResumeWalk == true
 			or S.proximityResumeWalk == true
@@ -336,10 +387,20 @@ return function(S)
 			S.respawnResumeWalk = true
 		end
 		task.wait(waitAfterClick)
+		if regenAborted(gen) then
+			S.zRegenBusy = false
+			S.resourceRecoverPhase = nil
+			return
+		end
 
 		-- Wait until we have a living humanoid before stance actions
 		local tChar = os.clock()
 		while os.clock() - tChar < 8 do
+			if regenAborted(gen) then
+				S.zRegenBusy = false
+				S.resourceRecoverPhase = nil
+				return
+			end
 			local hum = U.getHumanoid and U.getHumanoid()
 			if hum and hum.Health > 0 then
 				break
@@ -347,8 +408,51 @@ return function(S)
 			task.wait(0.2)
 		end
 
-		S.zRegenBusy = false
-		local ready = M.runZRegenSequence("Auto-respawn")
+		if regenAborted(gen) or isDeadOrDying() then
+			S.zRegenBusy = false
+			S.resourceRecoverPhase = nil
+			U.setStatus("Auto-respawn: dead again before regen — waiting for Respawn UI")
+			return
+		end
+
+		-- Immediately after spawn, before Z-sit: hold S for 1s (nudge off pad)
+		do
+			local holdS = C.RESPAWN_POST_S_HOLD or 1.0
+			U.setStatus(string.format("Auto-respawn: hold S %.1fs…", holdS))
+			if U.releaseMoveKeys then
+				U.releaseMoveKeys()
+			end
+			if U.holdMoveKeys then
+				U.holdMoveKeys({ Enum.KeyCode.S })
+			end
+			local tS = os.clock()
+			while os.clock() - tS < holdS do
+				if regenAborted(gen) or isDeadOrDying() then
+					break
+				end
+				task.wait(0.05)
+			end
+			if U.releaseMoveKeys then
+				U.releaseMoveKeys()
+			end
+		end
+
+		if regenAborted(gen) or isDeadOrDying() then
+			S.zRegenBusy = false
+			S.resourceRecoverPhase = nil
+			U.setStatus("Auto-respawn: died during S-hold — re-respawn")
+			return
+		end
+
+		-- allowBusy: we already own zRegenBusy for this generation
+		local ready = M.runZRegenSequence("Auto-respawn", { gen = gen, allowBusy = true })
+
+		if regenAborted(gen) or isDeadOrDying() then
+			S.zRegenBusy = false
+			S.resourceRecoverPhase = nil
+			U.setStatus("Auto-respawn: died mid-regen — will click Respawn again")
+			return
+		end
 
 		S.resourceRecoverPhase = nil
 		S.holdTarget = nil
@@ -365,12 +469,14 @@ return function(S)
 
 		if not shouldResumeWalk then
 			S.respawnResumeWalk = false
+			S.zRegenBusy = false
 			return
 		end
 
 		if S.walking then
 			S.respawnResumeWalk = false
 			S.proximityResumeWalk = false
+			S.zRegenBusy = false
 			U.setStatus("Auto-respawn: Kill Aura already running")
 			return
 		end
@@ -390,6 +496,11 @@ return function(S)
 			U.ensureWeaponDrawn(C.WEAPON_EQUIP_WAIT or 1.5, true)
 		end
 
+		if regenAborted(gen) or isDeadOrDying() then
+			S.zRegenBusy = false
+			return
+		end
+
 		U.setStatus(string.format(
 			"Auto-respawn ready (regen=%s) — checking spawn egress…",
 			tostring(ready)
@@ -403,6 +514,9 @@ return function(S)
 		if S.PathRecord and S.PathRecord.tryPlayClosestSpawnPath then
 			local matchStuds = C.RESPAWN_PATH_MATCH_STUDS or 64
 			local used = S.PathRecord.tryPlayClosestSpawnPath(matchStuds)
+			if regenAborted(gen) or isDeadOrDying() then
+				return
+			end
 			if not used then
 				U.setStatus(string.format(
 					"Auto-respawn: no spawn path ≤%.0fst — resume KA (no egress)",
@@ -418,6 +532,10 @@ return function(S)
 			if U.ensureWeaponDrawn then
 				U.ensureWeaponDrawn(C.WEAPON_EQUIP_WAIT or 1.5, true)
 			end
+		end
+
+		if regenAborted(gen) or isDeadOrDying() then
+			return
 		end
 
 		-- If prox still blocks KA start, hand off to prox resume (path already done).
@@ -447,6 +565,9 @@ return function(S)
 
 		if not started and not S.walking then
 			for attempt = 1, 6 do
+				if regenAborted(gen) or isDeadOrDying() then
+					return
+				end
 				if S.walking then
 					started = true
 					break
@@ -474,6 +595,10 @@ return function(S)
 			end
 		end
 
+		if regenAborted(gen) then
+			return
+		end
+
 		if S.walking then
 			S.respawnResumeWalk = false
 			S.proximityResumeWalk = false
@@ -498,14 +623,26 @@ return function(S)
 	end
 
 	local function tryAutoRespawn()
-		-- Don't re-click while post-respawn / Z sequence / spawn egress is running
-		if S.zRegenBusy or S.spawnEgressBusy then
-			return
-		end
 		local btn = findReadyRespawnButton()
 		if not btn then
 			return
 		end
+
+		-- Died mid-regen / mid-egress: Respawn UI is up again. Abort the stale
+		-- loop so we keep auto-respawning instead of sitting stuck on zRegenBusy.
+		if S.zRegenBusy or S.spawnEgressBusy then
+			S.respawnRegenAbort = true
+			S.spawnEgressBusy = false
+			-- Preserve KA resume intent across the re-death
+			if S.respawnResumeWalk or S.proximityResumeWalk then
+				S.respawnResumeWalk = true
+			end
+			U.setStatus("Auto-respawn: died mid-regen — aborting old loop")
+			-- Fall through after brief yield so wait loops see abort
+			task.wait(0.05)
+			S.zRegenBusy = false
+		end
+
 		local now = os.clock()
 		if now - lastRespawnClickAt < C.RESPAWN_CLICK_COOLDOWN then
 			return
@@ -541,10 +678,17 @@ return function(S)
 			S.Abilities.clearSyntheticCds()
 		end
 
+		-- New generation invalidates any in-flight post-respawn / regen wait
+		S.postRespawnGen = (S.postRespawnGen or 0) + 1
+		local gen = S.postRespawnGen
+		S.respawnRegenAbort = false
+
 		pcall(function()
 			clickGuiButton(btn)
 		end)
-		task.spawn(runPostRespawnSequence)
+		task.spawn(function()
+			runPostRespawnSequence(gen)
+		end)
 	end
 
 	function M.start()

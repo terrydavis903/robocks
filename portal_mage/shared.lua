@@ -65,6 +65,8 @@ S.resourceRecoverPhase = nil :: string?
 S.Targets = nil :: any
 S.Abilities = nil :: any
 S.zRegenBusy = false
+S.postRespawnGen = 0 -- bumps on each Respawn click; aborts stale regen if we die mid-loop
+S.respawnRegenAbort = false -- set when dying during wait-for-vitals / post-respawn
 -- After death: if Kill Aura was running, resume only when standing + weapon drawn
 S.respawnResumeWalk = false
 S.lastSitToggleAt = 0 -- Z sit/stand toggle cooldown
