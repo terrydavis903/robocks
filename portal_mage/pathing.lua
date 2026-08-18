@@ -578,16 +578,44 @@ return function(S)
 		return true
 	end
 
-	local function triggerStonePathEscape(why: string)
-		local sec = C.NAV_STONE_ESCAPE_SEC or 10
-		S.stonePathEscapeUntil = os.clock() + sec
+	local function triggerStonePathEscape(why: string, enemyDist: number?)
+		local now = os.clock()
+		local sec = C.NAV_STONE_ESCAPE_SEC or 20
+		local maxSec = C.NAV_STONE_ESCAPE_MAX_SEC or 45
+		if type(S.stonePathEscapeStarted) ~= "number" or S.stonePathEscapeStarted <= 0 or now > (S.stonePathEscapeUntil or 0) then
+			S.stonePathEscapeStarted = now
+			if type(enemyDist) == "number" then
+				S.stonePathEscapeEnemyDist = enemyDist
+			end
+		end
+		local untilT = now + sec
+		local cap = (S.stonePathEscapeStarted or now) + maxSec
+		if untilT > cap then
+			untilT = cap
+		end
+		-- Refresh while still stranded (dump 01-26-46: escape expired → BLOCKED again)
+		if type(S.stonePathEscapeUntil) == "number" and S.stonePathEscapeUntil > now then
+			untilT = math.max(S.stonePathEscapeUntil, untilT)
+			untilT = math.min(untilT, cap)
+		end
+		S.stonePathEscapeUntil = untilT
 		standAngleIdx = 0
 		ringPhase = 0
 		lastPathSig = ""
 		blockedRouteFails = 0
 		pathBuiltAt = 0
-		log(string.format("path STRANDED (%s) — any-floor escape %.0fs", why, sec))
-		U.setStatus(string.format("[path] stranded — soft escape %.0fs (%s)", sec, why))
+		local left = math.max(0, untilT - now)
+		log(string.format("path STRANDED (%s) — any-floor escape %.0fs left", why, left))
+		U.setStatus(string.format("[path] stranded — soft escape %.0fs (%s)", left, why))
+	end
+
+	local function clearStonePathEscape(why: string?)
+		S.stonePathEscapeUntil = 0
+		S.stonePathEscapeStarted = 0
+		S.stonePathEscapeEnemyDist = nil
+		if why then
+			log(string.format("path escape clear (%s)", why))
+		end
 	end
 
 	-- Stand on the player-side of the enemy only (small ±yaw). Never opposite-side
@@ -835,10 +863,12 @@ return function(S)
 					Targets.clearHold("path_blocked")
 				end
 				blockedRouteFails = 0
-				-- Dump 00-10-44 / astar 00-12-47: stone island at 1089,-545 — every
-				-- angle BLOCKED while cycling mobs. Soft-escape off stone-only.
-				if standAngleIdx >= 8 then
-					triggerStonePathEscape(string.format("blocked angle=%d", standAngleIdx))
+				-- Dump 00-10-44 / 01-26-46: stone island — BLOCKED spiral. Soft-escape.
+				if standAngleIdx >= 6 then
+					triggerStonePathEscape(
+						string.format("blocked angle=%d", standAngleIdx),
+						flatDist(playerPos, epos)
+					)
 				end
 			end
 		else
@@ -966,7 +996,10 @@ return function(S)
 					if Targets and Targets.clearHold then
 						Targets.clearHold("path_stuck_escape")
 					end
-					triggerStonePathEscape(string.format("short_path angle=%d", standAngleIdx))
+					triggerStonePathEscape(
+						string.format("short_path angle=%d", standAngleIdx),
+						flatDist(playerPos, epos)
+					)
 					pathPts = {}
 					pathEnemy = nil
 					return
@@ -1413,14 +1446,16 @@ return function(S)
 				return string.format("face %.2f %s t=%s", d, segLabel, lastTurnName)
 			end
 		else
-			-- Walking: re-face only if cam badly off; micro-pulse if slightly off
+			-- Walking: re-face only if BOTH cam and HRP are badly off.
+			-- Dump 01-26-46: cam=0.27 hrp=0.52 → full stop mid-escape (reface thrash).
 			d = select(1, facingQuality(target))
 			local _, yawErr, measured, hrpDot, camDot = facingQuality(target)
 			lastFaceDot = d
 			lastYawErr = yawErr
 			lastHrpDot = hrpDot
 			lastCamDot = camDot
-			if d < faceKeep then
+			local keepDot = math.max(d, hrpDot)
+			if keepDot < faceKeep then
 				walkingFacing = false
 				faceOkSince = 0
 				faceStuckSince = 0
@@ -1585,6 +1620,23 @@ return function(S)
 				-- Always use flat XZ for stand/approach (matches approachStep; avoids
 				-- height-delta deadlock where path "stands" but combat waits).
 				local dist = flatDist(playerPos, epos)
+
+				-- Soft-escape progress: closed enough on enemy → back to stone-only
+				if type(S.stonePathEscapeUntil) == "number" and os.clock() < S.stonePathEscapeUntil then
+					local anchor = S.stonePathEscapeEnemyDist
+					local need = C.NAV_STONE_ESCAPE_PROGRESS or 12
+					if type(anchor) == "number" and dist <= anchor - need then
+						clearStonePathEscape("closed gap")
+					elseif type(S.stonePathEscapeStarted) == "number"
+						and (os.clock() - S.stonePathEscapeStarted) >= (C.NAV_STONE_ESCAPE_MAX_SEC or 45)
+					then
+						clearStonePathEscape("max time")
+					end
+				elseif type(S.stonePathEscapeUntil) == "number" and S.stonePathEscapeUntil > 0
+					and os.clock() >= S.stonePathEscapeUntil
+				then
+					clearStonePathEscape("expired")
+				end
 
 				-- A*/PFS path = movement segments (+ Path Viz when ON)
 				ensurePath(playerPos, epos, model, range)

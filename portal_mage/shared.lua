@@ -52,7 +52,9 @@ S.slotLastArmAt = {} :: { [number]: number } -- last hotbar arm key press (anti-
 S.armedCombatSlot = nil :: number? -- sticky: last slot we pressed to arm (UI diamond is unreliable)
 S.holdTarget = nil :: Model? -- single shared focus (targets + pathing + combat)
 S.stoneRecoverBusy = false -- between fights: walking back onto Cobblestone before next mob
-S.stonePathEscapeUntil = 0 -- os.clock(): briefly allow non-stone floors when stranded
+S.stonePathEscapeUntil = 0 -- os.clock(): allow non-stone floors when stranded
+S.stonePathEscapeStarted = 0 -- first trigger time (hard cap)
+S.stonePathEscapeEnemyDist = nil :: number? -- dist at trigger; clear escape after closing
 S.combatPhase = "fight" :: string
 -- After a kill: wait until combat-schema CDs are ready before picking next enemy.
 -- Player death/respawn clears this (death resets CDs).

@@ -173,8 +173,10 @@ return {
 	NAV_STONE_RECOVER_MAX_SEC = 8, -- hard abort → resume mob scan
 	NAV_STONE_RECOVER_MAX_RESNAPS = 3,
 	NAV_STONE_RECOVER_GIVEUP_CD = 20, -- seconds before trying recover again after abort
-	-- Stranded on disconnected stone: briefly allow sand/any floor to rejoin roads
-	NAV_STONE_ESCAPE_SEC = 10,
+	-- Stranded on disconnected stone: allow sand/any floor until progress or cap
+	NAV_STONE_ESCAPE_SEC = 20, -- base window; refreshes while still blocked
+	NAV_STONE_ESCAPE_MAX_SEC = 45, -- hard cap from first trigger
+	NAV_STONE_ESCAPE_PROGRESS = 12, -- studs closer to enemy = escape success
 	NAV_CLEAR_STEP = 2.5, -- stone continuity samples along hop
 	NAV_HITBOX_PAD = 0.05,
 	NAV_HITBOX_SCALE = 0.9,
