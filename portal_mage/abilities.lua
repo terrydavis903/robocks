@@ -396,14 +396,41 @@ return function(S)
 			end
 			task.wait(0.04)
 		end
-		-- Still dark: do NOT second-toggle. Fire E anyway; diamond can lag.
+		-- Still dark: do NOT second-toggle (UI lag → off→on→off). Caller must
+		-- re-check isSlotOn before holding E / firing.
 		return M.isSlotOn(slot)
 	end
 
 	M.selectAbilitySlot = M.ensureSlotOn
 
+	-- After ensureSlotOn, poll Slot_Select a bit longer. Never fire while dark.
+	local function requireSlotSelected(slot: number, tag: string): boolean
+		task.wait(C.SLOT_FIRE_SETTLE or 0.12)
+		if M.isSlotOn(slot) then
+			return true
+		end
+		local extra = C.SLOT_SELECT_WAIT or 0.55
+		local t1 = os.clock()
+		while isWalking() and (os.clock() - t1) < extra do
+			if M.isSlotOn(slot) then
+				return true
+			end
+			task.wait(0.04)
+		end
+		if M.isSlotOn(slot) then
+			return true
+		end
+		U.setStatus(string.format(
+			"[%s] QS%d diamond not selected — skip E",
+			tag or "cast",
+			slot
+		))
+		return false
+	end
+
 	---------------------------------------------------------------------------
 	-- Fire steps only. Slot arming is exclusively ensureSlotOn(handler.slot).
+	-- Hold/tap E only when Slot_Select diamond is visible (QS4 channel included).
 	---------------------------------------------------------------------------
 
 	local function isHotbarKey(key: Enum.KeyCode): boolean
@@ -416,15 +443,11 @@ return function(S)
 	end
 
 	local function runSteps(handler): boolean
-		-- 1) Toggle-arm via handler.slot (all abilities)
+		-- 1) Toggle-arm via handler.slot (all abilities) — require diamond before E
 		if handler.slot then
-			local armed = M.ensureSlotOn(handler.slot)
-			task.wait(C.SLOT_FIRE_SETTLE or 0.12)
-			if not armed and not M.isSlotOn(handler.slot) then
-				U.setStatus(string.format(
-					"[cast] slot %d still off after arm — firing anyway",
-					handler.slot
-				))
+			M.ensureSlotOn(handler.slot)
+			if not requireSlotSelected(handler.slot, "cast") then
+				return false
 			end
 		end
 		if U.releaseMoveKeys then
@@ -435,11 +458,21 @@ return function(S)
 			if not isWalking() then
 				return false
 			end
+			-- Re-check before each hold: diamond can drop mid-sequence
+			if step.hold and handler.slot and not M.isSlotOn(handler.slot) then
+				U.setStatus(string.format(
+					"[cast] QS%d diamond dropped — abort HOLD %s",
+					handler.slot,
+					tostring(step.hold.Name)
+				))
+				return false
+			end
 			if step.hold then
 				U.setStatus(string.format(
-					"[cast] HOLD %s %.1fs",
+					"[cast] HOLD %s %.1fs (s%d diamond=on)",
 					tostring(step.hold.Name),
-					step.duration or C.HOLD_DURATION or 5
+					step.duration or C.HOLD_DURATION or 5,
+					handler.slot or 0
 				))
 				U.holdKeyCharge(step.hold, isWalking, step.duration or C.HOLD_DURATION or 5)
 			elseif step.key then
@@ -541,24 +574,8 @@ return function(S)
 				return
 			end
 			-- Arm QS3 and require Slot_Select diamond before holding E.
-			-- Never second-toggle; poll a bit longer if the indicator lags.
-			local armed = M.ensureSlotOn(slot)
-			task.wait(C.SLOT_FIRE_SETTLE or 0.12)
-			if not M.isSlotOn(slot) then
-				local extra = C.SLOT_SELECT_WAIT or 0.55
-				local t1 = os.clock()
-				while isWalking() and (os.clock() - t1) < extra do
-					if M.isSlotOn(slot) then
-						break
-					end
-					task.wait(0.04)
-				end
-			end
-			if not M.isSlotOn(slot) then
-				U.setStatus(string.format(
-					"[buff] QS%d diamond not selected — skip hold E",
-					slot
-				))
+			M.ensureSlotOn(slot)
+			if not requireSlotSelected(slot, "buff") then
 				-- Don't burn the full retry CD on a failed arm
 				S.lastBuffCastAt = os.clock() - math.max(0, (C.COMBAT_BUFF_RETRY_CD or 12) - 2)
 				return
@@ -567,10 +584,9 @@ return function(S)
 				U.releaseMoveKeys()
 			end
 			U.setStatus(string.format(
-				"[buff] HOLD E %.0fs (s%d diamond=%s)",
+				"[buff] HOLD E %.0fs (s%d diamond=on)",
 				holdFor,
-				slot,
-				armed and "on" or "on-late"
+				slot
 			))
 			U.holdKeyCharge(Enum.KeyCode.E, isWalking, holdFor)
 			-- Brief wait for icon to appear
@@ -624,6 +640,7 @@ return function(S)
 		local pos = U.getCharacterLikePosition(model)
 		local playerPos = U.getLivePlayerVector()
 		local dist = if pos and playerPos then (pos - playerPos).Magnitude else -1
+		local fired = false
 		local ok, err = pcall(function()
 			U.setStatus(string.format(
 				"CAST %s → %s %.1fst [%s]",
@@ -632,22 +649,23 @@ return function(S)
 				dist,
 				tag or ""
 			))
-			runSteps(handler)
+			fired = runSteps(handler) == true
 		end)
 		if not ok then
 			U.setStatus("Cast error: " .. tostring(err))
+			fired = false
 		end
 		if not Targets.isAlive(model) and Targets.clearHold then
 			Targets.clearHold("post_cast_dead")
 		end
-		-- Synthetic + UI CD so we never re-arm while timer is still catching up
-		if ok then
+		-- Only burn synthetic CD when E actually fired (diamond-gated)
+		if fired then
 			M.noteCastCooldown(handler.slot, handler)
 		else
 			S.lastCastAt = os.clock()
 		end
 		S.combatBusy = false
-		return ok == true
+		return fired
 	end
 
 	return M
