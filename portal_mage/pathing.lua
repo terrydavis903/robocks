@@ -700,19 +700,11 @@ return function(S)
 			end
 		end
 
-		-- While standing on a recorded spawn path, do not invent free A* — that is
-		-- how we "don't respect the respawn walk" (log 11-52-42: corridor REJECT → grid).
-		local nearRecordedSpawn = false
-		do
-			local PR = S.PathRecord
-			local joinLim = C.RESPAWN_CORRIDOR_JOIN_STUDS or 10
-			if PR and PR.findClosestSpawnPath then
-				local entry, dist = PR.findClosestSpawnPath(joinLim)
-				nearRecordedSpawn = entry ~= nil and type(dist) == "number" and dist <= joinLim
-			end
-		end
-
-		if #pts < 2 and not nearRecordedSpawn and nav and nav.computePath then
+		-- Prefer already filled pts with spawn_corridor when the recording helps.
+		-- Log 12-15-11: forbidding free A* whenever near a recording caused
+		-- "hold spawn_corridor" + BLOCKED forever when the corridor had no progress
+		-- toward this enemy. Only skip inventing routes when we already have a corridor.
+		if #pts < 2 and nav and nav.computePath then
 			local tryPts, tryKind = nav.computePath(playerPos, goal, {
 				maxGoals = maxGoals,
 				ringN = 6,
@@ -744,11 +736,6 @@ return function(S)
 					end
 				end
 			end
-		elseif #pts < 2 and nearRecordedSpawn then
-			log(string.format(
-				"path hold spawn_corridor (no free A* on recorded path) → %s",
-				enemy.Name
-			))
 		end
 
 		-- Drop routes whose end does not approach the enemy (stone-snap false paths)
@@ -812,8 +799,7 @@ return function(S)
 			kind = "none"
 		end
 
-		-- Free A* / line invent skipped while on a recorded spawn path — corridor only.
-		if #pts < 2 and not nearRecordedSpawn then
+		if #pts < 2 then
 			-- Prefer snap to stone path then straight line on stone
 			local fromP, goalP = playerPos, goal
 			if nav and nav.snapToStonePath then
@@ -873,8 +859,7 @@ return function(S)
 			kind = "none"
 		end
 
-		-- Follow recorded corridor (prefer already tried; this is the retry / only path
-		-- while nearRecordedSpawn suppresses free A*).
+		-- Free A* failed: follow recorded corridor if on/near it and it progresses.
 		if #pts < 2 then
 			local PR = S.PathRecord
 			if PR and PR.buildCorridorToward then
@@ -903,9 +888,8 @@ return function(S)
 			end
 		end
 
-		-- Stand-band unreachable (enemy off stone): still walk stone that closes
-		-- distance — but never while standing on a recorded respawn path.
-		if #pts < 2 and not nearRecordedSpawn and nav and nav.computePath then
+		-- Stand-band unreachable (enemy off stone): still walk stone that closes distance.
+		if #pts < 2 and nav and nav.computePath then
 			local progressGoal = epos
 			if nav.snapToStonePath then
 				local gs = nav.snapToStonePath(epos, 28)
