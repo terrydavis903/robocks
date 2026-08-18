@@ -1214,7 +1214,26 @@ return function(S)
 		return true
 	end
 
-	-- Probe one hop. Stone-path mode: only stone continuity (no mesh collision).
+	-- Map-bound walls (InvisibleWall / barriers) — always block, even on stone roads.
+	local function hopHitsMapBarrier(centerPos: Vector3, boxSize: Vector3, dir: Vector3): boolean
+		local cf = CFrame.lookAt(centerPos, centerPos + dir)
+		local ok, res = pcall(function()
+			return workspace:GetPartBoundsInBox(cf, boxSize, clearanceOverlapParams())
+		end)
+		if not ok or type(res) ~= "table" then
+			return false
+		end
+		for _, inst in ipairs(res) do
+			if inst:IsA("BasePart") and isBarrierInstance(inst :: BasePart) then
+				return true
+			end
+		end
+		return false
+	end
+
+	-- Probe one hop.
+	-- Stone-path mode: stone continuity + map barriers (NOT stall/prop clutter).
+	-- Escape / any-floor: full body hitbox vs collide meshes.
 	-- Returns clear?, samples (for Clear Hitbox viz).
 	local function sampleHopProbes(from: Vector3, to: Vector3): (boolean, { any })
 		local flat = Vector3.new(to.X - from.X, 0, to.Z - from.Z)
@@ -1234,7 +1253,7 @@ return function(S)
 		local hopClear = true
 		local stoneOnly = M.stonePathOnly()
 
-		-- Stone roads are player-safe: no GetPartBoundsInBox / obstacle probes.
+		-- Stone roads: continuity + InvisibleWall/barriers (never clip map bounds).
 		if stoneOnly then
 			for s = 0, nSteps do
 				local t = math.min(dist, s * step)
@@ -1247,15 +1266,16 @@ return function(S)
 				local centerPos = if floor and floor.pos
 					then Vector3.new(x, floor.pos.Y + centerH, z)
 					else Vector3.new(x, hintY + centerH, z)
-				if not onStone then
+				local hitWall = hopHitsMapBarrier(centerPos, boxSize, dir)
+				if not onStone or hitWall then
 					hopClear = false
 				end
 				table.insert(samples, {
 					pos = centerPos,
 					size = boxSize,
 					dir = dir,
-					blocked = not onStone,
-					note = if onStone then "stone" else "off_stone",
+					blocked = (not onStone) or hitWall,
+					note = if hitWall then "map_wall" elseif onStone then "stone" else "off_stone",
 					material = floor and floor.material or nil,
 					floorY = floor and floor.pos.Y or hintY,
 					centerH = centerH,
@@ -1591,14 +1611,16 @@ return function(S)
 			end
 		end
 
-		-- Grid first when stone-only (road network, not free space)
+		-- Grid A* (stone network, or any-floor during soft escape).
+		-- ALWAYS require hop clearance — escape used to return raw grids that clipped
+		-- through InvisibleWall / map bounds.
 		local dist = Vector3.new(goalSnap.X - fromSnap.X, 0, goalSnap.Z - fromSnap.Z).Magnitude
 		local cell = cfg("NAV_CELL", 4)
 		local maxCells = math.max(cfg("NAV_MAX_CELLS", 40), math.ceil(dist / cell) + 8)
 		local custom = M.findPath(fromSnap, goalSnap, { maxCells = maxCells, cell = cell })
 		if custom and #custom >= 1 then
 			local pts = if #custom == 1 then { fromSnap, custom[1] } else custom
-			if not stoneOnly or M.pathSegmentsClear(pts) then
+			if M.pathSegmentsClear(pts) then
 				return pts, "grid", jumpsFromPts(pts)
 			end
 			if #pts >= 3 then

@@ -747,10 +747,13 @@ return function(S)
 				or (type(tryKind) == "string" and string.sub(tryKind, 1, 7) == "blocked")
 				or tryKind == "line:soft"
 			if not blocked and tryPts then
-				-- Stone-path mode: hops already stone-validated (no obstacle collision)
-				local hopTo = tryPts[math.min(2, #tryPts)]
+				-- Full-path clearance (stone + map walls). Escape used to accept
+				-- first-hop-only and clip through InvisibleWall.
 				local hopOk = true
-				if nav.hasClearWalk then
+				if nav.pathSegmentsClear then
+					hopOk = nav.pathSegmentsClear(tryPts)
+				elseif nav.hasClearWalk then
+					local hopTo = tryPts[math.min(2, #tryPts)]
 					hopOk = nav.hasClearWalk(playerPos, hopTo)
 				end
 				if hopOk then
@@ -781,6 +784,11 @@ return function(S)
 					endP.Z,
 					flatDist(endP, epos)
 				))
+				return false
+			end
+			-- Never accept a wall-clipping polyline
+			if nav and nav.pathSegmentsClear and not nav.pathSegmentsClear(tryPts) then
+				log(string.format("path REJECT %s (wall/clearance)", tryKind))
 				return false
 			end
 			return true
