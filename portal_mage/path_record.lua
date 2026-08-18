@@ -321,17 +321,21 @@ return function(S)
 
 	-- Flat XZ distance to path start. Returns entry + dist, or nil if none within maxStuds.
 	function M.findClosestSpawnPath(maxStuds: number?): (any?, number?)
-		local lim = maxStuds or C.RESPAWN_PATH_MATCH_STUDS or 3
+		local lim = maxStuds or C.RESPAWN_PATH_MATCH_STUDS or 12
 		local pos = U.getLivePlayerVector and U.getLivePlayerVector()
 		if not pos then
 			return nil, nil
 		end
 		local best: any? = nil
 		local bestD = math.huge
+		local nearestD = math.huge
 		for _, p in ipairs(S.spawnPaths or {}) do
 			local st = spawnStartVec(p)
 			if st then
 				local d = Vector3.new(pos.X - st.X, 0, pos.Z - st.Z).Magnitude
+				if d < nearestD then
+					nearestD = d
+				end
 				if d <= lim and d < bestD then
 					best = p
 					bestD = d
@@ -340,6 +344,14 @@ return function(S)
 		end
 		if best then
 			return best, bestD
+		end
+		-- Expose nearest distance via status when nothing matched (debug pad jitter)
+		if nearestD < math.huge and nearestD > lim then
+			setStatus(string.format(
+				"Spawn egress: nearest start %.1fst > limit %.0fst",
+				nearestD,
+				lim
+			))
 		end
 		return nil, nil
 	end
@@ -458,7 +470,7 @@ return function(S)
 				M.loadSpawnPaths()
 			end
 		end
-		local lim = maxStuds or C.RESPAWN_PATH_MATCH_STUDS or 3
+		local lim = maxStuds or C.RESPAWN_PATH_MATCH_STUDS or 12
 		local entry, dist = M.findClosestSpawnPath(lim)
 		if not entry then
 			setStatus(string.format(

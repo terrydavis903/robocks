@@ -885,8 +885,9 @@ return function(S)
 		return out
 	end
 
-	-- Recover sit: Humanoid sit/seat, Seated state, or game freezes WalkSpeed at 0.
-	function M.isSeated(): boolean
+	-- Hard sit only (Sit / SeatPart / Seated). Ignores WalkSpeed≈0.
+	-- Use for Kill Aura start / post-respawn so spawn WS=0 doesn't look like a seat.
+	function M.isSeatedHard(): boolean
 		local hum = M.getHumanoid()
 		if not hum or hum.Health <= 0 then
 			return false
@@ -905,6 +906,18 @@ return function(S)
 		end)
 		if okSt and st == Enum.HumanoidStateType.Seated then
 			return true
+		end
+		return false
+	end
+
+	-- Recover sit: hard sit OR game freezes WalkSpeed at 0 (Z-regen signal).
+	function M.isSeated(): boolean
+		if M.isSeatedHard() then
+			return true
+		end
+		local hum = M.getHumanoid()
+		if not hum or hum.Health <= 0 then
+			return false
 		end
 		-- Dump signal: sit-recover sets WalkSpeed to 0 (don't treat our force-speed as sit)
 		if not S.walkSpeedEnabled and (hum.WalkSpeed or 0) <= 0.05 then

@@ -1469,12 +1469,14 @@ return function(S)
 			return false
 		end
 
-		if U.isSeated and U.isSeated() then
+		-- Post-respawn: ignore WalkSpeed≈0 false sit (spawn lag). Hard sit only.
+		local seatedCheck = if opts.fromRespawn and U.isSeatedHard then U.isSeatedHard else U.isSeated
+		if seatedCheck and seatedCheck() then
 			U.setStatus("Kill Aura: sitting — Z…")
 			if U.ensureStanding then
 				U.ensureStanding(3.0)
 			end
-			if U.isSeated() then
+			if seatedCheck() then
 				U.setStatus("Kill Aura blocked — still sitting")
 				return false
 			end

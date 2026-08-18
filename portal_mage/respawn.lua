@@ -315,13 +315,14 @@ return function(S)
 		return ok and (not U.isSeated()) and U.isWeaponDrawn()
 	end
 
-	-- After death: wait for character → state-driven recover → resume Kill Aura if needed
+	-- After death: wait for character → recover → spawn egress → resume Kill Aura
 	local function runPostRespawnSequence()
 		if S.zRegenBusy then
 			return
 		end
-		-- Capture before any flag churn; keep set until startWalk succeeds
+		-- Capture before any flag churn; keep respawnResumeWalk until startWalk succeeds
 		local shouldResumeWalk = S.respawnResumeWalk == true
+			or S.proximityResumeWalk == true
 
 		local waitAfterClick = C.RESPAWN_POST_CLICK_WAIT or 2
 		U.setStatus(string.format(
@@ -331,6 +332,9 @@ return function(S)
 		))
 		S.zRegenBusy = true
 		S.resourceRecoverPhase = "regen"
+		if shouldResumeWalk then
+			S.respawnResumeWalk = true
+		end
 		task.wait(waitAfterClick)
 
 		-- Wait until we have a living humanoid before stance actions
@@ -366,13 +370,14 @@ return function(S)
 
 		if S.walking then
 			S.respawnResumeWalk = false
+			S.proximityResumeWalk = false
 			U.setStatus("Auto-respawn: Kill Aura already running")
 			return
 		end
 
-		-- Best-effort stand + draw (do not abandon resume if soft weapon check fails —
-		-- startWalk forces Q unsheath. Old code cleared the flag and never retried.)
-		if U.isSeated and U.isSeated() then
+		-- Best-effort stand + draw (hard sit only — spawn WS=0 is not a seat)
+		local seatedNow = if U.isSeatedHard then U.isSeatedHard() else (U.isSeated and U.isSeated())
+		if seatedNow then
 			U.setStatus("Auto-respawn: still sitting — Z stand")
 			if U.ensureStanding then
 				U.ensureStanding(3.5)
@@ -385,36 +390,18 @@ return function(S)
 			U.ensureWeaponDrawn(C.WEAPON_EQUIP_WAIT or 1.5, true)
 		end
 
-		if S.proximityGuardEnabled and S.Proximity then
-			local threat, plr, dist = S.Proximity.isThreatNearby()
-			if threat then
-				-- Keep resume intent for prox clear; do not drop the post-respawn flag forever
-				S.proximityResumeWalk = true
-				S.respawnResumeWalk = false
-				U.setStatus(string.format(
-					"Auto-respawn ready — prox blocked (%s @ %.0f); will resume when clear",
-					plr and plr.Name or "?",
-					dist or -1
-				))
-				return
-			end
-		end
-
 		U.setStatus(string.format(
 			"Auto-respawn ready (regen=%s) — checking spawn egress…",
 			tostring(ready)
 		))
 
-		-- Clear busy flags so egress + startWalk are allowed.
+		-- Keep respawnResumeWalk set through egress; clear only after KA starts.
 		S.zRegenBusy = false
-		S.respawnResumeWalk = false
 		S.resourceRecoverPhase = nil
 
-		-- After regen: walk closest recorded spawn path if its start is within
-		-- RESPAWN_PATH_MATCH_STUDS (default 3). If none, skip egress pathing
-		-- and resume Kill Aura with normal A* to targets.
+		-- Spawn egress BEFORE prox gate — leave the pad even if players are nearby.
 		if S.PathRecord and S.PathRecord.tryPlayClosestSpawnPath then
-			local matchStuds = C.RESPAWN_PATH_MATCH_STUDS or 3
+			local matchStuds = C.RESPAWN_PATH_MATCH_STUDS or 12
 			local used = S.PathRecord.tryPlayClosestSpawnPath(matchStuds)
 			if not used then
 				U.setStatus(string.format(
@@ -424,8 +411,8 @@ return function(S)
 			else
 				U.setStatus("Auto-respawn: spawn egress finished — resuming Kill Aura…")
 			end
-			-- Best-effort re-stand / re-draw if egress left us seated or sheathed
-			if U.isSeated and U.isSeated() and U.ensureStanding then
+			local seatedAfter = if U.isSeatedHard then U.isSeatedHard() else (U.isSeated and U.isSeated())
+			if seatedAfter and U.ensureStanding then
 				U.ensureStanding(2.5)
 			end
 			if U.ensureWeaponDrawn then
@@ -433,8 +420,23 @@ return function(S)
 			end
 		end
 
-		-- Force start (not toggle — toggleWalk used to no-op if flags/weapon
-		-- checks failed after flag clear).
+		-- If prox still blocks KA start, hand off to prox resume (path already done).
+		if S.proximityGuardEnabled and S.Proximity then
+			local threat, plr, dist = S.Proximity.isThreatNearby()
+			if threat then
+				S.proximityResumeWalk = true
+				S.proximityPaused = true
+				S.respawnResumeWalk = false
+				U.setStatus(string.format(
+					"Auto-respawn: egress done — prox blocked (%s @ %.0f); KA when clear",
+					plr and plr.Name or "?",
+					dist or -1
+				))
+				return
+			end
+		end
+
+		-- Force start (not toggle). Keep resume flag until walking is true.
 		local started = false
 		if S.Pathing and S.Pathing.startWalk then
 			started = S.Pathing.startWalk({ fromRespawn = true }) == true
@@ -443,19 +445,22 @@ return function(S)
 			started = S.walking == true
 		end
 
-		-- Retry a few times if still sitting / not started (character settle lag)
 		if not started and not S.walking then
 			for attempt = 1, 6 do
 				if S.walking then
 					started = true
 					break
 				end
+				local sitStr = tostring(
+					if U.isSeatedHard then U.isSeatedHard() else (U.isSeated and U.isSeated())
+				)
 				U.setStatus(string.format(
 					"Auto-respawn: resume retry %d/6 (sit=%s)…",
 					attempt,
-					tostring(U.isSeated and U.isSeated())
+					sitStr
 				))
-				if U.isSeated and U.isSeated() and U.ensureStanding then
+				local stillSit = if U.isSeatedHard then U.isSeatedHard() else (U.isSeated and U.isSeated())
+				if stillSit and U.ensureStanding then
 					U.ensureStanding(2.5)
 				end
 				if U.ensureWeaponDrawn then
@@ -463,7 +468,6 @@ return function(S)
 				end
 				task.wait(0.45)
 				S.zRegenBusy = false
-				S.respawnResumeWalk = false
 				if S.Pathing and S.Pathing.startWalk then
 					started = S.Pathing.startWalk({ fromRespawn = true }) == true
 				end
@@ -472,21 +476,30 @@ return function(S)
 
 		if S.walking then
 			S.respawnResumeWalk = false
+			S.proximityResumeWalk = false
+			S.proximityPaused = false
 			U.setStatus("Auto-respawn: Kill Aura resumed")
 		else
-			-- Leave a sticky intent so user sees failure; allow manual toggle
-			S.respawnResumeWalk = false
-			U.setStatus(string.format(
-				"Auto-respawn: failed to resume Kill Aura (sit=%s drawn=%s) — toggle manually",
-				tostring(U.isSeated and U.isSeated()),
-				tostring(U.isWeaponDrawn and U.isWeaponDrawn())
-			))
+			-- Sticky prox handoff if a player appeared during retries
+			if S.proximityGuardEnabled and S.Proximity and select(1, S.Proximity.isThreatNearby()) then
+				S.proximityResumeWalk = true
+				S.proximityPaused = true
+				S.respawnResumeWalk = false
+				U.setStatus("Auto-respawn: KA deferred to prox clear")
+			else
+				S.respawnResumeWalk = false
+				U.setStatus(string.format(
+					"Auto-respawn: failed to resume Kill Aura (sit=%s drawn=%s) — toggle manually",
+					tostring(if U.isSeatedHard then U.isSeatedHard() else (U.isSeated and U.isSeated())),
+					tostring(U.isWeaponDrawn and U.isWeaponDrawn())
+				))
+			end
 		end
 	end
 
 	local function tryAutoRespawn()
-		-- Don't re-click while post-respawn / Z sequence is running
-		if S.zRegenBusy then
+		-- Don't re-click while post-respawn / Z sequence / spawn egress is running
+		if S.zRegenBusy or S.spawnEgressBusy then
 			return
 		end
 		local btn = findReadyRespawnButton()
@@ -499,9 +512,13 @@ return function(S)
 		end
 		lastRespawnClickAt = now
 
-		-- If Kill Aura was running, pause until Z sit-regen + stand + unsheath completes.
-		-- Death resets ability CDs — do not waitAllCds after respawn.
-		if S.walking then
+		-- Resume intent: KA was on, OR prox already froze it, OR a prior death
+		-- already armed respawnResumeWalk. Prox often clears S.walking before the
+		-- Respawn button appears — without this, neither egress nor KA restart.
+		local wantResume = S.walking == true
+			or S.proximityResumeWalk == true
+			or S.respawnResumeWalk == true
+		if wantResume then
 			S.respawnResumeWalk = true
 			S.walking = false
 			S.combatBusy = false
@@ -517,7 +534,6 @@ return function(S)
 			end
 			U.setStatus("Auto-respawn: Kill Aura paused — clicking Respawn")
 		else
-			-- Do not clear an in-flight resume from a previous death mid-sequence
 			S.waitAllCds = false
 			U.setStatus("Auto-respawn: clicking Respawn")
 		end

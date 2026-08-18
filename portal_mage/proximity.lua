@@ -98,32 +98,39 @@ return function(S)
 
 		-- Clear of other players
 		if S.proximityPaused then
-			S.proximityPaused = false
 			if S.proximityResumeWalk then
-				-- Never resume mid post-respawn Z sequence
-				if S.zRegenBusy or S.respawnResumeWalk then
-					U.setStatus("Prox clear — waiting for respawn Z→Z→Q before Walk+Atk")
+				-- Stay paused while post-respawn owns the resume (don't drop the flag).
+				if S.zRegenBusy or S.respawnResumeWalk or S.spawnEgressBusy then
+					U.setStatus("Prox clear — waiting for respawn egress/KA resume")
 					return
 				end
+				S.proximityPaused = false
 				S.proximityResumeWalk = false
-				U.setStatus("Prox clear — resuming Walk+Atk…")
+				U.setStatus("Prox clear — resuming Kill Aura…")
 				task.defer(function()
 					if S.walking or not S.proximityGuardEnabled then
 						return
 					end
-					if S.zRegenBusy or S.respawnResumeWalk then
+					if S.zRegenBusy or S.respawnResumeWalk or S.spawnEgressBusy then
 						S.proximityResumeWalk = true
+						S.proximityPaused = true
 						return
 					end
 					local stillThreat = M.isThreatNearby()
 					if stillThreat then
+						S.proximityResumeWalk = true
+						S.proximityPaused = true
 						return
 					end
-					if S.Pathing and S.Pathing.toggleWalk then
+					-- Prefer startWalk (not toggle) so we never accidentally turn OFF.
+					if S.Pathing and S.Pathing.startWalk then
+						S.Pathing.startWalk(nil)
+					elseif S.Pathing and S.Pathing.toggleWalk then
 						S.Pathing.toggleWalk()
 					end
 				end)
 			else
+				S.proximityPaused = false
 				U.setStatus("Prox clear — safe (Walk+Atk was off)")
 			end
 		end
