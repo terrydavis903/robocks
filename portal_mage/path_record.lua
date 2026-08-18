@@ -2,7 +2,7 @@
 --
 -- Waypoints tab "A* Rec": walk a route → OFF saves dumps/pathrec_*.json AND
 -- registers a spawn egress path (start = first sample) in waypoints/respawn_paths.json.
--- List/delete wrong recordings; "Respawn points" viz marks starts with recorded paths.
+-- List/delete wrong recordings; "Respawn points" viz draws start + full path polyline.
 return function(S)
 	local C = S.Config
 	local U = S.Util
@@ -42,7 +42,7 @@ return function(S)
 	}
 
 	local REC_FOLDER = "PortalMage_PathRecTrail"
-	local SPAWN_VIZ_FOLDER = "PortalMage_SpawnPathStarts"
+	local SPAWN_VIZ_FOLDER = "PortalMage_SpawnPathViz" -- starts + full recorded polylines
 
 	local function setStatus(t: string)
 		if U and U.setStatus then
@@ -228,17 +228,76 @@ return function(S)
 		return entry
 	end
 
+	local function samplesToWaypoints(samples: { any }, spacing: number): { Vector3 }
+		local out: { Vector3 } = {}
+		if type(samples) ~= "table" then
+			return out
+		end
+		local last: Vector3? = nil
+		for _, s in ipairs(samples) do
+			if type(s) == "table" and type(s.x) == "number" and type(s.z) == "number" then
+				local v = Vector3.new(s.x, s.y or 0, s.z)
+				if not last then
+					table.insert(out, v)
+					last = v
+				else
+					local flat = Vector3.new(v.X - last.X, 0, v.Z - last.Z).Magnitude
+					if flat >= spacing then
+						table.insert(out, v)
+						last = v
+					end
+				end
+			end
+		end
+		-- Always keep the final sample so we finish at the recorded end
+		local lastSamp = samples[#samples]
+		if type(lastSamp) == "table" and type(lastSamp.x) == "number" then
+			local endV = Vector3.new(lastSamp.x, lastSamp.y or 0, lastSamp.z)
+			local tip = out[#out]
+			if not tip or (endV - tip).Magnitude > 0.5 then
+				table.insert(out, endV)
+			end
+		end
+		return out
+	end
+
 	function M.clearSpawnPathViz()
 		pcall(function()
 			if S.spawnPathVizFolder and S.spawnPathVizFolder.Parent then
 				S.spawnPathVizFolder:Destroy()
 			end
-			local f = workspace:FindFirstChild(SPAWN_VIZ_FOLDER)
-			if f then
-				f:Destroy()
+			-- Legacy folder name + current
+			for _, name in ipairs({ SPAWN_VIZ_FOLDER, "PortalMage_SpawnPathStarts" }) do
+				local f = workspace:FindFirstChild(name)
+				if f then
+					f:Destroy()
+				end
 			end
 		end)
 		S.spawnPathVizFolder = nil
+	end
+
+	-- Distinct colors per registered spawn path (readable neon).
+	local SPAWN_PATH_COLORS = {
+		Color3.fromRGB(255, 200, 60),
+		Color3.fromRGB(80, 220, 255),
+		Color3.fromRGB(180, 120, 255),
+		Color3.fromRGB(255, 120, 180),
+		Color3.fromRGB(120, 255, 140),
+		Color3.fromRGB(255, 160, 80),
+		Color3.fromRGB(100, 180, 255),
+		Color3.fromRGB(220, 255, 100),
+	}
+
+	local function styleSpawnVizPart(p: BasePart, color: Color3, transparency: number?)
+		p.Anchored = true
+		p.CanCollide = false
+		p.CanQuery = false
+		p.CanTouch = false
+		p.CastShadow = false
+		p.Material = Enum.Material.Neon
+		p.Color = color
+		p.Transparency = transparency or 0.2
 	end
 
 	function M.refreshSpawnPathViz()
@@ -250,27 +309,34 @@ return function(S)
 		folder.Name = SPAWN_VIZ_FOLDER
 		folder.Parent = workspace
 		S.spawnPathVizFolder = folder
-		local n = 0
-		for _, p in ipairs(S.spawnPaths or {}) do
+
+		local spacing = C.RESPAWN_PATH_VIZ_SPACING or 5.0
+		local lift = 1.4
+		local nStarts = 0
+		local nPaths = 0
+		local nSegs = 0
+
+		for pi, p in ipairs(S.spawnPaths or {}) do
+			local color = SPAWN_PATH_COLORS[((pi - 1) % #SPAWN_PATH_COLORS) + 1]
+			local id = tostring(p.id or pi)
+			local label = tostring(p.name or id)
+			local group = Instance.new("Folder")
+			group.Name = "Path_" .. id
+			group.Parent = folder
+
+			-- Start marker
 			local st = p.start
 			if type(st) == "table" and type(st.x) == "number" then
-				n += 1
+				nStarts += 1
 				local part = Instance.new("Part")
-				part.Name = "Spawn_" .. tostring(p.id)
+				part.Name = "Start"
 				part.Shape = Enum.PartType.Ball
 				part.Size = Vector3.new(3.2, 3.2, 3.2)
-				part.Anchored = true
-				part.CanCollide = false
-				part.CanQuery = false
-				part.CanTouch = false
-				part.CastShadow = false
-				part.Material = Enum.Material.Neon
-				part.Color = Color3.fromRGB(255, 200, 60)
-				part.Transparency = 0.25
+				styleSpawnVizPart(part, color, 0.2)
 				part.CFrame = CFrame.new(st.x, (st.y or 0) + 2.2, st.z)
-				part.Parent = folder
+				part.Parent = group
 				local bb = Instance.new("BillboardGui")
-				bb.Size = UDim2.fromOffset(120, 28)
+				bb.Size = UDim2.fromOffset(140, 28)
 				bb.StudsOffset = Vector3.new(0, 2.5, 0)
 				bb.AlwaysOnTop = true
 				bb.Parent = part
@@ -280,13 +346,74 @@ return function(S)
 				lab.BackgroundColor3 = Color3.fromRGB(20, 20, 28)
 				lab.Font = Enum.Font.GothamBold
 				lab.TextSize = 11
-				lab.TextColor3 = Color3.fromRGB(255, 230, 120)
-				lab.Text = tostring(p.name or p.id)
+				lab.TextColor3 = color
+				lab.Text = label
 				lab.Parent = bb
 			end
+
+			-- Full recorded polyline (thinned samples)
+			local wps = samplesToWaypoints(p.samples, spacing)
+			if #wps >= 2 then
+				nPaths += 1
+				-- Finish marker
+				local fin = wps[#wps]
+				local endPart = Instance.new("Part")
+				endPart.Name = "Finish"
+				endPart.Shape = Enum.PartType.Ball
+				endPart.Size = Vector3.new(2.2, 2.2, 2.2)
+				styleSpawnVizPart(endPart, Color3.fromRGB(255, 80, 80), 0.25)
+				endPart.CFrame = CFrame.new(fin.X, fin.Y + 2.0, fin.Z)
+				endPart.Parent = group
+
+				for i = 1, #wps do
+					local pt = wps[i]
+					-- Mid nodes (skip start — already have big Start ball)
+					if i > 1 and i < #wps then
+						local node = Instance.new("Part")
+						node.Name = string.format("N%03d", i)
+						node.Shape = Enum.PartType.Ball
+						node.Size = Vector3.new(0.7, 0.7, 0.7)
+						styleSpawnVizPart(node, color, 0.35)
+						node.CFrame = CFrame.new(pt.X, pt.Y + lift, pt.Z)
+						node.Parent = group
+					end
+					if i < #wps then
+						local a = Vector3.new(pt.X, pt.Y + lift, pt.Z)
+						local b = Vector3.new(wps[i + 1].X, wps[i + 1].Y + lift, wps[i + 1].Z)
+						local delta = b - a
+						local dist = delta.Magnitude
+						if dist > 0.05 then
+							nSegs += 1
+							local seg = Instance.new("Part")
+							seg.Name = string.format("S%03d", i)
+							seg.Shape = Enum.PartType.Cylinder
+							seg.Size = Vector3.new(dist, 0.28, 0.28)
+							styleSpawnVizPart(seg, color, 0.25)
+							seg.CFrame = CFrame.lookAt(a + delta * 0.5, b) * CFrame.Angles(0, math.rad(90), 0)
+							seg.Parent = group
+						end
+					end
+				end
+			elseif type(p.finish) == "table" and type(p.finish.x) == "number" then
+				-- No samples — still mark finish if stored
+				local fin = p.finish
+				local endPart = Instance.new("Part")
+				endPart.Name = "Finish"
+				endPart.Shape = Enum.PartType.Ball
+				endPart.Size = Vector3.new(2.2, 2.2, 2.2)
+				styleSpawnVizPart(endPart, Color3.fromRGB(255, 80, 80), 0.25)
+				endPart.CFrame = CFrame.new(fin.x, (fin.y or 0) + 2.0, fin.z)
+				endPart.Parent = group
+			end
 		end
+
 		if U and U.setStatus then
-			U.setStatus(string.format("Respawn points ON — %d start marker(s)", n))
+			U.setStatus(string.format(
+				"Respawn points ON — %d start(s), %d path(s), %d seg(s)",
+				nStarts,
+				nPaths,
+				nSegs
+			))
 		end
 	end
 
@@ -354,39 +481,6 @@ return function(S)
 			))
 		end
 		return nil, nil
-	end
-
-	local function samplesToWaypoints(samples: { any }, spacing: number): { Vector3 }
-		local out: { Vector3 } = {}
-		if type(samples) ~= "table" then
-			return out
-		end
-		local last: Vector3? = nil
-		for _, s in ipairs(samples) do
-			if type(s) == "table" and type(s.x) == "number" and type(s.z) == "number" then
-				local v = Vector3.new(s.x, s.y or 0, s.z)
-				if not last then
-					table.insert(out, v)
-					last = v
-				else
-					local flat = Vector3.new(v.X - last.X, 0, v.Z - last.Z).Magnitude
-					if flat >= spacing then
-						table.insert(out, v)
-						last = v
-					end
-				end
-			end
-		end
-		-- Always keep the final sample so we finish at the recorded end
-		local lastSamp = samples[#samples]
-		if type(lastSamp) == "table" and type(lastSamp.x) == "number" then
-			local endV = Vector3.new(lastSamp.x, lastSamp.y or 0, lastSamp.z)
-			local tip = out[#out]
-			if not tip or (endV - tip).Magnitude > 0.5 then
-				table.insert(out, endV)
-			end
-		end
-		return out
 	end
 
 	-- Walk a recorded spawn egress path (samples). Does not start Kill Aura.

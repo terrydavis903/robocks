@@ -1157,6 +1157,8 @@ return function(S)
 				"PortalMage_TerrainFloorOutline",
 				"PortalMage_PathViz",
 				"PortalMage_FaceViz",
+				"PortalMage_SpawnPathViz",
+				"PortalMage_SpawnPathStarts",
 				HITBOX_VIZ_FOLDER,
 			}) do
 				local f = workspace:FindFirstChild(name)

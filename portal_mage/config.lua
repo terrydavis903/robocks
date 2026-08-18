@@ -28,6 +28,7 @@ return {
 	-- 3 was too tight (pad jitter / record offset) → missed egress entirely.
 	RESPAWN_PATH_MATCH_STUDS = 12,
 	RESPAWN_PATH_WP_SPACING = 3.5, -- thin recorded samples while following egress
+	RESPAWN_PATH_VIZ_SPACING = 5.0, -- studs between viz nodes when Respawn points ON
 	RESPAWN_PATH_ARRIVE = 2.8,
 	RESPAWN_PATH_SEG_TIMEOUT = 4.0,
 	-- World dump: non-combat workspace assets (ores, farms, NPCs, pickups, â€¦)
