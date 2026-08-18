@@ -1771,7 +1771,11 @@ return function(S)
 			-- post-respawn it used to brick manual KA ON with "finish respawn first"
 			-- forever even though nothing was still running.
 			if S.zRegenBusy or S.spawnEgressBusy then
-				U.setStatus("Kill Aura blocked — finish respawn first")
+				U.setStatus(string.format(
+					"Kill Aura blocked — finish respawn first (regen=%s egress=%s)",
+					tostring(S.zRegenBusy == true),
+					tostring(S.spawnEgressBusy == true)
+				))
 				return false
 			end
 			if S.respawnResumeWalk then
