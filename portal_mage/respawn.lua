@@ -770,6 +770,9 @@ return function(S)
 	end
 
 	local function beginPostRespawn(gen: number, statusMsg: string)
+		-- Arm busy BEFORE spawn so the 0.2s poll cannot start a second sequence
+		S.zRegenBusy = true
+		S.resourceRecoverPhase = "regen"
 		armBusyClock()
 		U.setStatus(statusMsg)
 		task.spawn(function()
