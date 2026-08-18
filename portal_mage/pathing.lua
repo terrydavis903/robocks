@@ -840,6 +840,52 @@ return function(S)
 			end
 		end
 
+		-- Stand-band unreachable (enemy off stone / lower terrace): still walk stone
+		-- that closes distance. Dump 02-15-11: only BLOCKED thrash at dist≈54 with
+		-- goals at y=106 while player on y=112 stone under tower AABB.
+		if #pts < 2 and nav and nav.computePath then
+			local progressGoal = epos
+			if nav.snapToStonePath then
+				local gs = nav.snapToStonePath(epos, 28)
+				if gs and gs.pos then
+					progressGoal = gs.pos
+				end
+			end
+			local dNow = flatDist(playerPos, epos)
+			local dProg = flatDist(progressGoal, epos)
+			if dProg < dNow - 2 then
+				local tryPts, tryKind = nav.computePath(playerPos, progressGoal, {
+					maxGoals = maxGoals,
+					ringN = 6,
+					ringR = { 10, 18, 28 },
+					ringPhase = ringPhase,
+				})
+				if tryPts and #tryPts >= 2 and tryKind ~= "blocked"
+					and not (type(tryKind) == "string" and string.sub(tryKind, 1, 7) == "blocked")
+				then
+					local endP = tryPts[#tryPts]
+					if flatDist(endP, epos) < dNow - 2 then
+						local hopOk = true
+						if nav.pathSegmentsClear then
+							hopOk = nav.pathSegmentsClear(tryPts)
+						end
+						if hopOk then
+							pts = tryPts
+							kind = "stone:progress"
+							goal = endP
+							log(string.format(
+								"path stone:progress wps=%d → %s dEnemy=%.1f→%.1f",
+								#pts,
+								enemy.Name,
+								dNow,
+								flatDist(endP, epos)
+							))
+						end
+					end
+				end
+			end
+		end
+
 		if #pts < 2 then
 			pts = { playerPos }
 			kind = "blocked"

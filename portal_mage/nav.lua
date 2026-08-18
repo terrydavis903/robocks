@@ -1200,6 +1200,57 @@ return function(S)
 		return false
 	end
 
+	-- True wall / door pieces (keep blocking). Mega tower/house hulls often share
+	-- Buildings.* but are decorative Box/Hull volumes over the stone road.
+	local function isExplicitWallPart(bp: BasePart): boolean
+		local path = string.lower(bp:GetFullName())
+		local n = string.lower(bp.Name)
+		if string.find(path, "invisiblewall", 1, true)
+			or string.find(n, "invisible wall", 1, true)
+		then
+			return true
+		end
+		if string.find(n, "secwall", 1, true)
+			or string.find(path, "secwall", 1, true)
+			or string.find(n, "door", 1, true)
+		then
+			return true
+		end
+		-- "wall" in the leaf name, not just ancestor folder (Buildings.Towers…)
+		if string.find(n, "wall", 1, true) then
+			return true
+		end
+		return false
+	end
+
+	-- Bloated Buildings.* MeshParts (pipes/shaft/barrel/whole-tower hulls).
+	-- Dump 02-15-11: player stood ON stone inside Goblin_Tower_Type3 AABB
+	-- (GJ_Tower3_Pipes ~65k stud³) → every Blockcast blocked → KA kind=blocked thrash.
+	local function isBloatedBuildingHull(bp: BasePart): boolean
+		if isBarrierInstance(bp) or isExplicitWallPart(bp) then
+			return false
+		end
+		if isNamedObstacle(bp) then
+			return false
+		end
+		local path = string.lower(bp:GetFullName())
+		if not string.find(path, ".buildings.", 1, true) then
+			return false
+		end
+		local s = bp.Size
+		local volume = s.X * s.Y * s.Z
+		-- Real thin walls are << this; tower/house LODs are tens of thousands.
+		return volume >= 1500
+	end
+
+	local function partContainsPoint(bp: BasePart, point: Vector3, margin: number): boolean
+		local localPoint = bp.CFrame:PointToObjectSpace(point)
+		local half = bp.Size * 0.5 + Vector3.new(margin, margin, margin)
+		return math.abs(localPoint.X) <= half.X
+			and math.abs(localPoint.Y) <= half.Y
+			and math.abs(localPoint.Z) <= half.Z
+	end
+
 	-- Does this part count as a body collision (not the floor under our feet)?
 	local function partBlocksBody(bp: BasePart, centerPos: Vector3, boxSize: Vector3): boolean
 		if not bp.CanCollide then
@@ -1215,7 +1266,7 @@ return function(S)
 		then
 			return true
 		end
-		if isPierceableOverhang(bp) then
+		if isPierceableOverhang(bp) or isBloatedBuildingHull(bp) then
 			return false
 		end
 		-- Vertical band first: floors under feet + pure overhangs above head are not walls.
@@ -1242,7 +1293,10 @@ return function(S)
 		if isCollideProp(bp) then
 			return true
 		end
-		-- Any other collide mesh intersecting the body band = wall / structure
+		-- Explicit walls still block; other collide meshes in body band too
+		if isExplicitWallPart(bp) then
+			return true
+		end
 		return true
 	end
 
@@ -1251,11 +1305,9 @@ return function(S)
 		if isBarrierInstance(bp) or string.find(path, "invisiblewall", 1, true) then
 			return "map_wall"
 		end
-		if string.find(path, ".buildings.", 1, true)
+		if isExplicitWallPart(bp)
 			or string.find(path, "house", 1, true)
 			or string.find(path, "tower", 1, true)
-			or string.find(path, "wall", 1, true)
-			or string.find(path, "gate", 1, true)
 		then
 			return "building"
 		end
@@ -1263,9 +1315,8 @@ return function(S)
 	end
 
 	-- Sweep player hitbox along the hop with Blockcast (real collision geometry).
-	-- GetPartBoundsInBox used MeshPart world AABBs — Goblin_Gate (~54-stud AABB) overlaps
-	-- the stone road under the arch and false-blocked every hop (dump 02-12-49).
-	-- Also ignore hits on overhang undersides (Normal.Y down) — same class sampleFloor pierces.
+	-- Multi-hit pierce: soffits, gate/roof overhangs, bloated Buildings hulls, and any
+	-- part that already contains the start (standing inside tower AABB on stone).
 	local function hopHitsStructure(fromCenter: Vector3, toCenter: Vector3, boxSize: Vector3): (boolean, string?)
 		local flat = Vector3.new(toCenter.X - fromCenter.X, 0, toCenter.Z - fromCenter.Z)
 		local dist = flat.Magnitude
@@ -1276,24 +1327,42 @@ return function(S)
 		local cf = CFrame.lookAt(fromCenter, fromCenter + dir)
 		-- Slightly shorter than full body so high arch lintels don't skim-block.
 		local probeSize = Vector3.new(boxSize.X, math.max(1.0, boxSize.Y * 0.82), boxSize.Z)
-		local ok, hit = pcall(function()
-			return workspace:Blockcast(cf, probeSize, dir * dist, clearanceRayParams())
-		end)
-		if not ok or not hit or not hit.Instance then
-			return false, nil
-		end
-		-- Soffit / roof underside: walk-under is valid (sampleFloor pierces Goblin_Gate etc.)
-		if hit.Normal.Y < -0.35 then
-			return false, nil
-		end
-		local inst = hit.Instance
-		if not inst:IsA("BasePart") then
-			return false, nil
-		end
-		local bp = inst :: BasePart
-		local hitCenter = Vector3.new(hit.Position.X, fromCenter.Y, hit.Position.Z)
-		if partBlocksBody(bp, hitCenter, boxSize) then
-			return true, structureHitNote(bp)
+		local exclude = clearanceExcludeList()
+		local castDir = dir * dist
+		for _ = 1, 10 do
+			local params = RaycastParams.new()
+			params.FilterType = Enum.RaycastFilterType.Exclude
+			params.FilterDescendantsInstances = exclude
+			params.RespectCanCollide = true
+			local ok, hit = pcall(function()
+				return workspace:Blockcast(cf, probeSize, castDir, params)
+			end)
+			if not ok or not hit or not hit.Instance then
+				return false, nil
+			end
+			local inst = hit.Instance
+			-- Soffit / roof underside: walk-under is valid
+			if hit.Normal.Y < -0.35 then
+				table.insert(exclude, inst)
+				continue
+			end
+			if not inst:IsA("BasePart") then
+				table.insert(exclude, inst)
+				continue
+			end
+			local bp = inst :: BasePart
+			if isPierceableOverhang(bp)
+				or isBloatedBuildingHull(bp)
+				or partContainsPoint(bp, fromCenter, 0.75)
+			then
+				table.insert(exclude, bp)
+				continue
+			end
+			local hitCenter = Vector3.new(hit.Position.X, fromCenter.Y, hit.Position.Z)
+			if partBlocksBody(bp, hitCenter, boxSize) then
+				return true, structureHitNote(bp)
+			end
+			table.insert(exclude, bp)
 		end
 		return false, nil
 	end
