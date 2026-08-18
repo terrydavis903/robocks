@@ -525,9 +525,12 @@ return function(S)
 	local blockedRouteFails = 0
 	local lastPathSig = "" -- detect identical repaths (logical loop)
 	local stoneRecoverGoal: Vector3? = nil
-	local stoneRecoverSince = 0
+	local stoneRecoverSince = 0 -- wall-clock when current recover attempt began
 	local stoneRecoverNoProgress = 0
 	local stoneRecoverProgressPos: Vector3? = nil
+	local stoneRecoverResnaps = 0
+	local stoneRecoverGiveUpUntil = 0 -- after abort, don't re-enter for a while
+	local stoneRecoverLastSnap: Vector3? = nil
 
 	-- Feet on walkable path texture (Cobblestone / Asphalt / path keywords)?
 	local function feetOnStone(pos: Vector3): boolean
@@ -1023,6 +1026,9 @@ return function(S)
 		stoneRecoverSince = 0
 		stoneRecoverNoProgress = 0
 		stoneRecoverProgressPos = nil
+		stoneRecoverResnaps = 0
+		stoneRecoverLastSnap = nil
+		-- keep stoneRecoverGiveUpUntil across clearPathState so abort cooldown survives
 		S.stoneRecoverBusy = false
 	end
 
@@ -1112,87 +1118,131 @@ return function(S)
 		end
 	end
 
+	local function clearStoneRecoverState()
+		stoneRecoverGoal = nil
+		stoneRecoverSince = 0
+		stoneRecoverNoProgress = 0
+		stoneRecoverProgressPos = nil
+		stoneRecoverResnaps = 0
+		stoneRecoverLastSnap = nil
+		S.stoneRecoverBusy = false
+	end
+
+	local function abortStoneRecover(why: string): boolean
+		log(string.format("STONE_RECOVER give up (%s) — resume scan", why))
+		U.setStatus(string.format("[path] stone recover aborted (%s) — finding mob", why))
+		driveStop()
+		clearStoneRecoverState()
+		-- Don't immediately re-enter recover next tick (dump 00-02-33: 3min loop)
+		stoneRecoverGiveUpUntil = os.clock() + (C.NAV_STONE_RECOVER_GIVEUP_CD or 20)
+		return false -- allow ensureEnemy this tick
+	end
+
 	-- Between fights: walk to nearest stone before ensureEnemy. Returns true if
 	-- this tick handled recover (caller must not pick/path to a mob yet).
 	tryStoneRecover = function(playerPos: Vector3): boolean
 		local nav = Nav()
 		if not nav or not nav.stonePathOnly or not nav.stonePathOnly() then
-			S.stoneRecoverBusy = false
-			stoneRecoverGoal = nil
+			clearStoneRecoverState()
 			return false
 		end
-		if feetOnStone(playerPos) then
+
+		local now = os.clock()
+		if now < stoneRecoverGiveUpUntil then
 			S.stoneRecoverBusy = false
-			stoneRecoverGoal = nil
-			stoneRecoverSince = 0
-			stoneRecoverNoProgress = 0
-			stoneRecoverProgressPos = nil
 			return false
+		end
+
+		if feetOnStone(playerPos) then
+			clearStoneRecoverState()
+			return false
+		end
+
+		local arrive = C.NAV_STONE_RECOVER_ARRIVE or 2.8
+		local snapR = C.NAV_STONE_RECOVER_SNAP_R or 40
+		local maxSec = C.NAV_STONE_RECOVER_MAX_SEC or 8
+		local maxResnaps = C.NAV_STONE_RECOVER_MAX_RESNAPS or 3
+
+		-- Hard timeout for the whole recover attempt
+		if stoneRecoverSince > 0 and (now - stoneRecoverSince) >= maxSec then
+			return abortStoneRecover(string.format("timeout %.0fs", maxSec))
+		end
+		if stoneRecoverResnaps >= maxResnaps then
+			return abortStoneRecover(string.format("%d re-snaps", stoneRecoverResnaps))
 		end
 
 		S.stoneRecoverBusy = true
-		local arrive = C.NAV_STONE_RECOVER_ARRIVE or 2.8
-		local snapR = C.NAV_STONE_RECOVER_SNAP_R or 40
-		local now = os.clock()
+		if stoneRecoverSince <= 0 then
+			stoneRecoverSince = now
+		end
 
-		-- Refresh snap if missing, reached old goal still off-stone, or timed out
+		-- Close enough to last snap → accept even if Material sample lags / false off-stone
+		if stoneRecoverGoal and flatDist(playerPos, stoneRecoverGoal) <= arrive * 1.15 then
+			log(string.format(
+				"STONE_RECOVER close enough d=%.1f — accept",
+				flatDist(playerPos, stoneRecoverGoal)
+			))
+			clearStoneRecoverState()
+			driveStop()
+			return false
+		end
+
 		local needSnap = stoneRecoverGoal == nil
-		if stoneRecoverGoal and flatDist(playerPos, stoneRecoverGoal) <= arrive then
-			-- Close to snap but still off-stone (bad sample) — re-snap
-			needSnap = true
-		end
-		if stoneRecoverSince > 0 and (now - stoneRecoverSince) > 12 then
-			needSnap = true
-			stoneRecoverNoProgress = 0
-		end
 		if needSnap then
 			local snap = nav.snapToStonePath and nav.snapToStonePath(playerPos, snapR)
+			-- Avoid picking the same unreachable cell again
+			if snap and snap.pos and stoneRecoverLastSnap then
+				if flatDist(snap.pos, stoneRecoverLastSnap) < 2.5 then
+					-- Spiral further: try a few offset probes
+					local found = nil
+					for _, ang in ipairs({ 0.8, 1.6, 2.4, 3.2, 4.0, 5.0 }) do
+						local r = 8 + stoneRecoverResnaps * 6
+						local cand = Vector3.new(
+							playerPos.X + math.cos(ang) * r,
+							playerPos.Y,
+							playerPos.Z + math.sin(ang) * r
+						)
+						local s2 = nav.snapToStonePath(cand, snapR)
+						if s2 and s2.pos and flatDist(s2.pos, stoneRecoverLastSnap) >= 4 then
+							found = s2
+							break
+						end
+					end
+					snap = found or snap
+				end
+			end
 			if not snap or not snap.pos then
-				U.setStatus(string.format(
-					"[path] off stone — no walkable path ≤%.0fst (scan paused)",
-					snapR
-				))
-				driveStop()
-				task.wait(0.25)
-				return true
+				return abortStoneRecover("no stone nearby")
 			end
 			stoneRecoverGoal = snap.pos
-			stoneRecoverSince = now
+			stoneRecoverLastSnap = snap.pos
 			stoneRecoverProgressPos = playerPos
+			stoneRecoverNoProgress = 0
 			pathPts = { playerPos, snap.pos }
 			pathIdx = 2
 			pathEnemy = nil
 			lastVizKind = "stone_recover"
 			pathBuiltAt = now
 			log(string.format(
-				"STONE_RECOVER → (%.0f,%.0f,%.0f) d=%.1f",
+				"STONE_RECOVER → (%.0f,%.0f,%.0f) d=%.1f (resnap=%d)",
 				snap.pos.X,
 				snap.pos.Y,
 				snap.pos.Z,
-				flatDist(playerPos, snap.pos)
+				flatDist(playerPos, snap.pos),
+				stoneRecoverResnaps
 			))
 		end
 
 		local goal = stoneRecoverGoal :: Vector3
 		local d = flatDist(playerPos, goal)
-		if d <= arrive then
-			-- Re-check feet; if still off, force new snap next tick
-			if feetOnStone(playerPos) then
-				S.stoneRecoverBusy = false
-				stoneRecoverGoal = nil
-				return false
-			end
-			stoneRecoverGoal = nil
-			driveStop()
-			return true
-		end
 
 		-- Face + W toward stone (no hasClearWalk — start is intentionally off-stone)
 		local faceDir = Vector3.new(goal.X - playerPos.X, 0, goal.Z - playerPos.Z)
 		if faceDir.Magnitude < 0.15 then
-			stoneRecoverGoal = nil
+			-- On top of snap xz — accept
+			clearStoneRecoverState()
 			driveStop()
-			return true
+			return false
 		end
 		faceDir = faceDir.Unit
 		local fd = faceWithArrows(goal)
@@ -1212,20 +1262,28 @@ return function(S)
 		end
 		driveForward(faceDir, false)
 
-		-- Progress watchdog — re-snap if stuck in sand (only while actually walking)
+		-- Progress watchdog — re-snap if stuck (wall / bad snap), then eventually give up
 		if not stoneRecoverProgressPos or flatDist(playerPos, stoneRecoverProgressPos) > 1.0 then
 			stoneRecoverProgressPos = playerPos
 			stoneRecoverNoProgress = 0
 		else
 			stoneRecoverNoProgress += 1
-			if stoneRecoverNoProgress >= 50 then -- ~2.5s of W with no XZ progress
+			if stoneRecoverNoProgress >= 40 then -- ~2s of W with no XZ progress
+				stoneRecoverResnaps += 1
 				stoneRecoverGoal = nil
 				stoneRecoverNoProgress = 0
-				log("STONE_RECOVER re-snap (no progress)")
+				log(string.format("STONE_RECOVER re-snap (no progress) n=%d", stoneRecoverResnaps))
+				if stoneRecoverResnaps >= maxResnaps then
+					return abortStoneRecover(string.format("%d re-snaps", stoneRecoverResnaps))
+				end
 			end
 		end
 
-		U.setStatus(string.format("[path] return to stone d=%.1f", d))
+		U.setStatus(string.format(
+			"[path] return to stone d=%.1f (%.0fs)",
+			d,
+			now - stoneRecoverSince
+		))
 		task.wait(0.05)
 		return true
 	end
