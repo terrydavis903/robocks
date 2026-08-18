@@ -542,123 +542,8 @@ return function(S)
 		return s ~= nil and s.isStonePath == true
 	end
 
-	-- Between fights: walk to nearest stone before ensureEnemy. Returns true if
-	-- this tick handled recover (caller must not pick/path to a mob yet).
-	local function tryStoneRecover(playerPos: Vector3): boolean
-		local nav = Nav()
-		if not nav or not nav.stonePathOnly or not nav.stonePathOnly() then
-			S.stoneRecoverBusy = false
-			stoneRecoverGoal = nil
-			return false
-		end
-		if feetOnStone(playerPos) then
-			S.stoneRecoverBusy = false
-			stoneRecoverGoal = nil
-			stoneRecoverSince = 0
-			stoneRecoverNoProgress = 0
-			stoneRecoverProgressPos = nil
-			return false
-		end
-
-		S.stoneRecoverBusy = true
-		local arrive = C.NAV_STONE_RECOVER_ARRIVE or 2.8
-		local snapR = C.NAV_STONE_RECOVER_SNAP_R or 40
-		local now = os.clock()
-
-		-- Refresh snap if missing, reached old goal still off-stone, or timed out
-		local needSnap = stoneRecoverGoal == nil
-		if stoneRecoverGoal and flatDist(playerPos, stoneRecoverGoal) <= arrive then
-			-- Close to snap but still off-stone (bad sample) — re-snap
-			needSnap = true
-		end
-		if stoneRecoverSince > 0 and (now - stoneRecoverSince) > 12 then
-			needSnap = true
-			stoneRecoverNoProgress = 0
-		end
-		if needSnap then
-			local snap = nav.snapToStonePath and nav.snapToStonePath(playerPos, snapR)
-			if not snap or not snap.pos then
-				U.setStatus(string.format(
-					"[path] off stone — no walkable path ≤%.0fst (scan paused)",
-					snapR
-				))
-				driveStop()
-				task.wait(0.25)
-				return true
-			end
-			stoneRecoverGoal = snap.pos
-			stoneRecoverSince = now
-			stoneRecoverProgressPos = playerPos
-			pathPts = { playerPos, snap.pos }
-			pathIdx = 2
-			pathEnemy = nil
-			lastVizKind = "stone_recover"
-			pathBuiltAt = now
-			log(string.format(
-				"STONE_RECOVER → (%.0f,%.0f,%.0f) d=%.1f",
-				snap.pos.X,
-				snap.pos.Y,
-				snap.pos.Z,
-				flatDist(playerPos, snap.pos)
-			))
-		end
-
-		local goal = stoneRecoverGoal :: Vector3
-		local d = flatDist(playerPos, goal)
-		if d <= arrive then
-			-- Re-check feet; if still off, force new snap next tick
-			if feetOnStone(playerPos) then
-				S.stoneRecoverBusy = false
-				stoneRecoverGoal = nil
-				return false
-			end
-			stoneRecoverGoal = nil
-			driveStop()
-			return true
-		end
-
-		-- Face + W toward stone (no hasClearWalk — start is intentionally off-stone)
-		local faceDir = Vector3.new(goal.X - playerPos.X, 0, goal.Z - playerPos.Z)
-		if faceDir.Magnitude < 0.15 then
-			stoneRecoverGoal = nil
-			driveStop()
-			return true
-		end
-		faceDir = faceDir.Unit
-		local fd = faceWithArrows(goal)
-		local align = C.PATH_WALK_ALIGN_DOT or 0.72
-		if fd < align then
-			setMoveKey(nil)
-			U.setStatus(string.format(
-				"[path] return to stone face=%.2f d=%.1f",
-				fd,
-				d
-			))
-			task.wait(0.05)
-			return true
-		end
-		if U.holdTurnKey then
-			U.holdTurnKey(nil)
-		end
-		driveForward(faceDir, false)
-
-		-- Progress watchdog — re-snap if stuck in sand (only while actually walking)
-		if not stoneRecoverProgressPos or flatDist(playerPos, stoneRecoverProgressPos) > 1.0 then
-			stoneRecoverProgressPos = playerPos
-			stoneRecoverNoProgress = 0
-		else
-			stoneRecoverNoProgress += 1
-			if stoneRecoverNoProgress >= 50 then -- ~2.5s of W with no XZ progress
-				stoneRecoverGoal = nil
-				stoneRecoverNoProgress = 0
-				log("STONE_RECOVER re-snap (no progress)")
-			end
-		end
-
-		U.setStatus(string.format("[path] return to stone d=%.1f", d))
-		task.wait(0.05)
-		return true
-	end
+	-- Defined after setMoveKey/driveForward/driveStop (Lua local scoping).
+	local tryStoneRecover: (playerPos: Vector3) -> boolean
 
 	-- True if candidate stand gets us meaningfully closer to the enemy.
 	-- Dump 20-55-42: stone-snap pulled goals onto cobble BEHIND the player → face
@@ -1197,6 +1082,124 @@ return function(S)
 				hum.PlatformStand = false
 			end)
 		end
+	end
+
+	-- Between fights: walk to nearest stone before ensureEnemy. Returns true if
+	-- this tick handled recover (caller must not pick/path to a mob yet).
+	tryStoneRecover = function(playerPos: Vector3): boolean
+		local nav = Nav()
+		if not nav or not nav.stonePathOnly or not nav.stonePathOnly() then
+			S.stoneRecoverBusy = false
+			stoneRecoverGoal = nil
+			return false
+		end
+		if feetOnStone(playerPos) then
+			S.stoneRecoverBusy = false
+			stoneRecoverGoal = nil
+			stoneRecoverSince = 0
+			stoneRecoverNoProgress = 0
+			stoneRecoverProgressPos = nil
+			return false
+		end
+
+		S.stoneRecoverBusy = true
+		local arrive = C.NAV_STONE_RECOVER_ARRIVE or 2.8
+		local snapR = C.NAV_STONE_RECOVER_SNAP_R or 40
+		local now = os.clock()
+
+		-- Refresh snap if missing, reached old goal still off-stone, or timed out
+		local needSnap = stoneRecoverGoal == nil
+		if stoneRecoverGoal and flatDist(playerPos, stoneRecoverGoal) <= arrive then
+			-- Close to snap but still off-stone (bad sample) — re-snap
+			needSnap = true
+		end
+		if stoneRecoverSince > 0 and (now - stoneRecoverSince) > 12 then
+			needSnap = true
+			stoneRecoverNoProgress = 0
+		end
+		if needSnap then
+			local snap = nav.snapToStonePath and nav.snapToStonePath(playerPos, snapR)
+			if not snap or not snap.pos then
+				U.setStatus(string.format(
+					"[path] off stone — no walkable path ≤%.0fst (scan paused)",
+					snapR
+				))
+				driveStop()
+				task.wait(0.25)
+				return true
+			end
+			stoneRecoverGoal = snap.pos
+			stoneRecoverSince = now
+			stoneRecoverProgressPos = playerPos
+			pathPts = { playerPos, snap.pos }
+			pathIdx = 2
+			pathEnemy = nil
+			lastVizKind = "stone_recover"
+			pathBuiltAt = now
+			log(string.format(
+				"STONE_RECOVER → (%.0f,%.0f,%.0f) d=%.1f",
+				snap.pos.X,
+				snap.pos.Y,
+				snap.pos.Z,
+				flatDist(playerPos, snap.pos)
+			))
+		end
+
+		local goal = stoneRecoverGoal :: Vector3
+		local d = flatDist(playerPos, goal)
+		if d <= arrive then
+			-- Re-check feet; if still off, force new snap next tick
+			if feetOnStone(playerPos) then
+				S.stoneRecoverBusy = false
+				stoneRecoverGoal = nil
+				return false
+			end
+			stoneRecoverGoal = nil
+			driveStop()
+			return true
+		end
+
+		-- Face + W toward stone (no hasClearWalk — start is intentionally off-stone)
+		local faceDir = Vector3.new(goal.X - playerPos.X, 0, goal.Z - playerPos.Z)
+		if faceDir.Magnitude < 0.15 then
+			stoneRecoverGoal = nil
+			driveStop()
+			return true
+		end
+		faceDir = faceDir.Unit
+		local fd = faceWithArrows(goal)
+		local align = C.PATH_WALK_ALIGN_DOT or 0.72
+		if fd < align then
+			setMoveKey(nil)
+			U.setStatus(string.format(
+				"[path] return to stone face=%.2f d=%.1f",
+				fd,
+				d
+			))
+			task.wait(0.05)
+			return true
+		end
+		if U.holdTurnKey then
+			U.holdTurnKey(nil)
+		end
+		driveForward(faceDir, false)
+
+		-- Progress watchdog — re-snap if stuck in sand (only while actually walking)
+		if not stoneRecoverProgressPos or flatDist(playerPos, stoneRecoverProgressPos) > 1.0 then
+			stoneRecoverProgressPos = playerPos
+			stoneRecoverNoProgress = 0
+		else
+			stoneRecoverNoProgress += 1
+			if stoneRecoverNoProgress >= 50 then -- ~2.5s of W with no XZ progress
+				stoneRecoverGoal = nil
+				stoneRecoverNoProgress = 0
+				log("STONE_RECOVER re-snap (no progress)")
+			end
+		end
+
+		U.setStatus(string.format("[path] return to stone d=%.1f", d))
+		task.wait(0.05)
+		return true
 	end
 
 	-- Approach: face A* segment → check HRP aim → only then W/Move.
