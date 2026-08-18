@@ -1139,10 +1139,8 @@ return function(S)
 	local HITBOX_VIZ_FOLDER = "PortalMage_HitboxViz"
 	local lastClearProbeSamples: { any } = {} -- for viz trail after hasClearWalk
 
-	-- Exclude self/mobs/viz only — NEVER exclude InvisibleWall (map bounds).
-	local function clearanceOverlapParams(): OverlapParams
-		local params = OverlapParams.new()
-		params.FilterType = Enum.RaycastFilterType.Exclude
+	-- Shared exclude list for clearance probes (self/mobs/viz). NEVER exclude InvisibleWall.
+	local function clearanceExcludeList(): { Instance }
 		local exclude: { Instance } = {}
 		local lp = Players.LocalPlayer
 		if lp and lp.Character then
@@ -1169,9 +1167,37 @@ return function(S)
 				end
 			end
 		end)
-		params.FilterDescendantsInstances = exclude
+		return exclude
+	end
+
+	local function clearanceRayParams(): RaycastParams
+		local params = RaycastParams.new()
+		params.FilterType = Enum.RaycastFilterType.Exclude
+		params.FilterDescendantsInstances = clearanceExcludeList()
 		params.RespectCanCollide = true
 		return params
+	end
+
+	-- Overhangs sampleFloor already pierces (gate arches, standalone roofs, sails).
+	-- Their MeshPart AABBs/Box collision fill the walk-under volume and must not
+	-- invalidate stone roads (dump 02-12-49: Goblin_Gate false-blocked hops 2–8).
+	local function isPierceableOverhang(bp: BasePart): boolean
+		local path = string.lower(bp:GetFullName())
+		local n = string.lower(bp.Name)
+		if string.find(path, ".gates.", 1, true)
+			or string.find(path, "goblin_gate", 1, true)
+			or string.find(path, "modular_standalone_roof", 1, true)
+			or string.find(path, "standalone_roof", 1, true)
+			or string.find(path, "mech_sail", 1, true)
+			or string.find(n, "awning", 1, true)
+			or string.find(n, "tarp", 1, true)
+			or string.find(n, "canopy", 1, true)
+			or string.find(n, "clothmesh", 1, true)
+			or string.find(n, "sail_cloth", 1, true)
+		then
+			return true
+		end
+		return false
 	end
 
 	-- Does this part count as a body collision (not the floor under our feet)?
@@ -1189,14 +1215,23 @@ return function(S)
 		then
 			return true
 		end
-		if isNamedObstacle(bp) then
-			return true
+		if isPierceableOverhang(bp) then
+			return false
 		end
-		-- Floor / terrain under feet: ignore (hitbox sits above walk surface)
+		-- Vertical band first: floors under feet + pure overhangs above head are not walls.
+		-- (Named stalls/awnings used to short-circuit before this and kill valid roads.)
 		local footY = centerPos.Y - boxSize.Y * 0.5
+		local headY = centerPos.Y + boxSize.Y * 0.5
 		local topY = bp.Position.Y + bp.Size.Y * 0.5
+		local botY = bp.Position.Y - bp.Size.Y * 0.5
 		if topY <= footY + 0.45 then
 			return false
+		end
+		if botY >= headY - 0.15 then
+			return false
+		end
+		if isNamedObstacle(bp) then
+			return true
 		end
 		if bp:IsA("Terrain") then
 			return false
@@ -1207,45 +1242,65 @@ return function(S)
 		if isCollideProp(bp) then
 			return true
 		end
-		-- Any other collide mesh in the body volume = wall / structure
+		-- Any other collide mesh intersecting the body band = wall / structure
 		return true
 	end
 
-	-- Body overlap vs structures (buildings / walls / barriers). Used on stone hops too —
-	-- Cobblestone under a house footprint used to count as "clear" and A* walked through.
-	local function hopHitsStructure(centerPos: Vector3, boxSize: Vector3, dir: Vector3): (boolean, string?)
-		local cf = CFrame.lookAt(centerPos, centerPos + dir)
-		local ok, res = pcall(function()
-			return workspace:GetPartBoundsInBox(cf, boxSize, clearanceOverlapParams())
-		end)
-		if not ok or type(res) ~= "table" then
+	local function structureHitNote(bp: BasePart): string
+		local path = string.lower(bp:GetFullName())
+		if isBarrierInstance(bp) or string.find(path, "invisiblewall", 1, true) then
+			return "map_wall"
+		end
+		if string.find(path, ".buildings.", 1, true)
+			or string.find(path, "house", 1, true)
+			or string.find(path, "tower", 1, true)
+			or string.find(path, "wall", 1, true)
+			or string.find(path, "gate", 1, true)
+		then
+			return "building"
+		end
+		return "structure"
+	end
+
+	-- Sweep player hitbox along the hop with Blockcast (real collision geometry).
+	-- GetPartBoundsInBox used MeshPart world AABBs — Goblin_Gate (~54-stud AABB) overlaps
+	-- the stone road under the arch and false-blocked every hop (dump 02-12-49).
+	-- Also ignore hits on overhang undersides (Normal.Y down) — same class sampleFloor pierces.
+	local function hopHitsStructure(fromCenter: Vector3, toCenter: Vector3, boxSize: Vector3): (boolean, string?)
+		local flat = Vector3.new(toCenter.X - fromCenter.X, 0, toCenter.Z - fromCenter.Z)
+		local dist = flat.Magnitude
+		if dist < 0.05 then
 			return false, nil
 		end
-		for _, inst in ipairs(res) do
-			if inst:IsA("BasePart") then
-				local bp = inst :: BasePart
-				if partBlocksBody(bp, centerPos, boxSize) then
-					local path = string.lower(bp:GetFullName())
-					local note = "structure"
-					if isBarrierInstance(bp) or string.find(path, "invisiblewall", 1, true) then
-						note = "map_wall"
-					elseif string.find(path, ".buildings.", 1, true)
-						or string.find(path, "house", 1, true)
-						or string.find(path, "tower", 1, true)
-						or string.find(path, "wall", 1, true)
-					then
-						note = "building"
-					end
-					return true, note
-				end
-			end
+		local dir = flat.Unit
+		local cf = CFrame.lookAt(fromCenter, fromCenter + dir)
+		-- Slightly shorter than full body so high arch lintels don't skim-block.
+		local probeSize = Vector3.new(boxSize.X, math.max(1.0, boxSize.Y * 0.82), boxSize.Z)
+		local ok, hit = pcall(function()
+			return workspace:Blockcast(cf, probeSize, dir * dist, clearanceRayParams())
+		end)
+		if not ok or not hit or not hit.Instance then
+			return false, nil
+		end
+		-- Soffit / roof underside: walk-under is valid (sampleFloor pierces Goblin_Gate etc.)
+		if hit.Normal.Y < -0.35 then
+			return false, nil
+		end
+		local inst = hit.Instance
+		if not inst:IsA("BasePart") then
+			return false, nil
+		end
+		local bp = inst :: BasePart
+		local hitCenter = Vector3.new(hit.Position.X, fromCenter.Y, hit.Position.Z)
+		if partBlocksBody(bp, hitCenter, boxSize) then
+			return true, structureHitNote(bp)
 		end
 		return false, nil
 	end
 
 	-- Probe one hop.
-	-- Stone-path mode: stone continuity + body vs buildings/walls (not "roads are always open").
-	-- Any-floor mode: same body hitbox probes.
+	-- Stone-path mode: stone continuity + Blockcast vs walls (AABB overlap false-blocks gates).
+	-- Any-floor mode: same Blockcast body sweep.
 	-- Returns clear?, samples (for Clear Hitbox viz).
 	local function sampleHopProbes(from: Vector3, to: Vector3): (boolean, { any })
 		local flat = Vector3.new(to.X - from.X, 0, to.Z - from.Z)
@@ -1265,8 +1320,10 @@ return function(S)
 		local hopClear = true
 		local stoneOnly = M.stonePathOnly()
 
-		-- Stone roads: must stay on stone AND not clip buildings / InvisibleWall.
+		-- Stone roads: stone continuity + Blockcast body sweep (not MeshPart AABB overlap).
 		if stoneOnly then
+			local firstCenter: Vector3? = nil
+			local lastCenter: Vector3? = nil
 			for s = 0, nSteps do
 				local t = math.min(dist, s * step)
 				local alpha = if dist > 1e-4 then t / dist else 0
@@ -1278,25 +1335,38 @@ return function(S)
 				local centerPos = if floor and floor.pos
 					then Vector3.new(x, floor.pos.Y + centerH, z)
 					else Vector3.new(x, hintY + centerH, z)
-				local hitStruct, structNote = hopHitsStructure(centerPos, boxSize, dir)
-				if not onStone or hitStruct then
+				if not firstCenter then
+					firstCenter = centerPos
+				end
+				lastCenter = centerPos
+				if not onStone then
 					hopClear = false
 				end
 				table.insert(samples, {
 					pos = centerPos,
 					size = boxSize,
 					dir = dir,
-					blocked = (not onStone) or hitStruct,
-					note = if hitStruct then (structNote or "structure") elseif onStone then "stone" else "off_stone",
+					blocked = not onStone,
+					note = if onStone then "stone" else "off_stone",
 					material = floor and floor.material or nil,
 					floorY = floor and floor.pos.Y or hintY,
 					centerH = centerH,
 				})
 			end
+			if firstCenter and lastCenter then
+				local hitStruct, structNote = hopHitsStructure(firstCenter, lastCenter, boxSize)
+				if hitStruct then
+					hopClear = false
+					for _, sample in ipairs(samples) do
+						sample.blocked = true
+						sample.note = structNote or "structure"
+					end
+				end
+			end
 			return hopClear, samples
 		end
 
-		-- Legacy: body hitbox collision probes
+		-- Any-floor: floor samples + Blockcast body sweep (same geometry as stone).
 		if M.isElevationDrop(from, to) then
 			table.insert(samples, {
 				pos = Vector3.new(from.X, from.Y - boxSize.Y * 0.5 + centerH, from.Z),
@@ -1308,7 +1378,8 @@ return function(S)
 			return true, samples
 		end
 		local maxFall = cfg("NAV_MAX_DROP_Y", 40)
-		local overlap = clearanceOverlapParams()
+		local firstCenter: Vector3? = nil
+		local lastCenter: Vector3? = nil
 		for s = 0, nSteps do
 			local t = math.min(dist, s * step)
 			local alpha = if dist > 1e-4 then t / dist else 0
@@ -1332,30 +1403,30 @@ return function(S)
 				floorY = floor.pos.Y
 			end
 			local centerPos = Vector3.new(x, floorY + centerH, z)
-			local cf = CFrame.lookAt(centerPos, centerPos + dir)
-			local hitBlock = false
-			local ok, res = pcall(function()
-				return workspace:GetPartBoundsInBox(cf, boxSize, overlap)
-			end)
-			if ok and type(res) == "table" then
-				for _, inst in ipairs(res) do
-					if inst:IsA("BasePart") and partBlocksBody(inst :: BasePart, centerPos, boxSize) then
-						hitBlock = true
-						break
-					end
-				end
+			if not firstCenter then
+				firstCenter = centerPos
 			end
-			if hitBlock then
-				hopClear = false
-			end
+			lastCenter = centerPos
 			table.insert(samples, {
 				pos = centerPos,
 				size = boxSize,
 				dir = dir,
-				blocked = hitBlock,
+				blocked = false,
 				floorY = floorY,
 				centerH = centerH,
 			})
+		end
+		if firstCenter and lastCenter then
+			local hitStruct, structNote = hopHitsStructure(firstCenter, lastCenter, boxSize)
+			if hitStruct then
+				hopClear = false
+				for _, sample in ipairs(samples) do
+					if sample.note ~= "void" then
+						sample.blocked = true
+						sample.note = structNote or "structure"
+					end
+				end
+			end
 		end
 		return hopClear, samples
 	end
