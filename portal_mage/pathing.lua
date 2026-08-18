@@ -665,7 +665,29 @@ return function(S)
 		local kind = "none"
 		local maxGoals = C.NAV_PATH_MAX_GOALS or 6
 
-		if nav and nav.computePath then
+		-- Prefer recorded spawn corridor when standing on/near one (human stone route).
+		-- Free A* from the pad often invents wall-clips; respawn_paths.json is the truth.
+		do
+			local PR = S.PathRecord
+			if PR and PR.buildCorridorToward then
+				local corridor = PR.buildCorridorToward(epos, C.RESPAWN_PATH_MATCH_STUDS or 64)
+				if type(corridor) == "table" and #corridor >= 3 then
+					local endP = corridor[#corridor]
+					if flatDist(endP, epos) < flatDist(playerPos, epos) - 3 then
+						pts = corridor
+						kind = "spawn_corridor"
+						goal = endP
+						log(string.format(
+							"path spawn_corridor (prefer) wps=%d → %s",
+							#pts,
+							enemy.Name
+						))
+					end
+				end
+			end
+		end
+
+		if #pts < 2 and nav and nav.computePath then
 			local tryPts, tryKind = nav.computePath(playerPos, goal, {
 				maxGoals = maxGoals,
 				ringN = 6,
@@ -717,8 +739,12 @@ return function(S)
 				))
 				return false
 			end
-			-- Never accept a wall-clipping polyline
-			if nav and nav.pathSegmentsClear and not nav.pathSegmentsClear(tryPts) then
+			-- Never accept a wall-clipping polyline (recorded spawn corridors are trusted)
+			if tryKind ~= "spawn_corridor"
+				and nav
+				and nav.pathSegmentsClear
+				and not nav.pathSegmentsClear(tryPts)
+			then
 				log(string.format("path REJECT %s (wall/clearance)", tryKind))
 				return false
 			end
@@ -790,6 +816,30 @@ return function(S)
 			kind = "none"
 		end
 
+		-- Free A* failed: follow recorded respawn corridor (human stone route) toward enemy
+		-- instead of inventing a wall-clip / sand cut. Dump 01-47-07: stood on spawn_1009
+		-- while A* stayed BLOCKED — corridor is the intended egress.
+		if #pts < 2 then
+			local PR = S.PathRecord
+			if PR and PR.buildCorridorToward then
+				local corridor = PR.buildCorridorToward(epos, C.RESPAWN_PATH_MATCH_STUDS or 64)
+				if type(corridor) == "table" and #corridor >= 2 then
+					local endP = corridor[#corridor]
+					if flatDist(endP, epos) < flatDist(playerPos, epos) - 2 then
+						pts = corridor
+						kind = "spawn_corridor"
+						goal = endP
+						log(string.format(
+							"path spawn_corridor wps=%d → %s dEnemy=%.1f",
+							#pts,
+							enemy.Name,
+							flatDist(endP, epos)
+						))
+					end
+				end
+			end
+		end
+
 		if #pts < 2 then
 			pts = { playerPos }
 			kind = "blocked"
@@ -802,7 +852,6 @@ return function(S)
 					Targets.clearHold("path_blocked")
 				end
 				blockedRouteFails = 0
-				-- Stay on stone. Soft any-floor escape removed (caused wall-clip stuck).
 				if standAngleIdx >= 8 then
 					standAngleIdx = 0
 					ringPhase = 0

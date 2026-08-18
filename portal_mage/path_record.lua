@@ -636,6 +636,87 @@ return function(S)
 		return true
 	end
 
+	-- Kill Aura: when free A* is blocked near a recorded spawn path, return a
+	-- waypoint slice along that human corridor toward `goal` (enemy). Stone-safe
+	-- by construction — dump 01-47-07 stood on spawn_1009 while A* spun BLOCKED
+	-- trying to invent a wall-clipping route.
+	function M.buildCorridorToward(goal: Vector3, maxStuds: number?): { Vector3 }?
+		if typeof(goal) ~= "Vector3" then
+			return nil
+		end
+		if (not S.spawnPaths or #S.spawnPaths == 0) and M.loadSpawnPaths then
+			M.loadSpawnPaths()
+		end
+		local lim = maxStuds or C.RESPAWN_PATH_MATCH_STUDS or 64
+		local pos = U.getLivePlayerVector and U.getLivePlayerVector()
+		if not pos then
+			return nil
+		end
+		local entry, score = M.findClosestSpawnPath(lim)
+		if not entry then
+			return nil
+		end
+		local spacing = C.RESPAWN_PATH_WP_SPACING or 3.5
+		local wps = samplesToWaypoints(entry.samples, spacing)
+		if #wps < 2 then
+			return nil
+		end
+
+		local function flat(a: Vector3, b: Vector3): number
+			return Vector3.new(a.X - b.X, 0, a.Z - b.Z).Magnitude
+		end
+
+		local iPlayer, dPlayer = 1, math.huge
+		for i, wp in ipairs(wps) do
+			local d = flat(pos, wp)
+			if d < dPlayer then
+				dPlayer = d
+				iPlayer = i
+			end
+		end
+
+		-- Among all samples, pick the one closest to the enemy goal
+		local iGoal, dGoal = iPlayer, flat(wps[iPlayer], goal)
+		for i, wp in ipairs(wps) do
+			local d = flat(wp, goal)
+			if d + 0.5 < dGoal then
+				dGoal = d
+				iGoal = i
+			end
+		end
+
+		-- Corridor must actually get us closer to the enemy than standing still
+		if flat(wps[iGoal], goal) >= flat(pos, goal) - 2 then
+			return nil
+		end
+		if iGoal == iPlayer then
+			return nil
+		end
+
+		local slice: { Vector3 } = {}
+		if iGoal > iPlayer then
+			for i = iPlayer, iGoal do
+				table.insert(slice, wps[i])
+			end
+		else
+			for i = iPlayer, iGoal, -1 do
+				table.insert(slice, wps[i])
+			end
+		end
+		if #slice < 2 then
+			return nil
+		end
+		setStatus(string.format(
+			"Spawn corridor: %s #%d→#%d (%d wps) @ %.1fst",
+			tostring(entry.name or entry.id),
+			iPlayer,
+			iGoal,
+			#slice,
+			score or -1
+		))
+		return slice
+	end
+
 	local function keyName(k: Enum.KeyCode): string
 		return KEY_NAME[k] or tostring(k)
 	end
