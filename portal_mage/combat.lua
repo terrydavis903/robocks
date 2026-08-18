@@ -32,6 +32,7 @@ return function(S)
 		S.proximityResumeWalk = false
 		S.respawnResumeWalk = false
 		S.resourceRecoverPhase = nil
+		S.armedCombatSlot = nil
 		if T() then
 			T().clearHold("stop")
 		end

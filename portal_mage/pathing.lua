@@ -1637,6 +1637,7 @@ return function(S)
 			S.waitAllCds = false
 			S.proximityResumeWalk = false
 			S.respawnResumeWalk = false
+			S.armedCombatSlot = nil
 			-- Manual off cancels scheduled blacklist resume
 			S.blacklistResumeKillAura = false
 			S.blacklistResumeAt = 0

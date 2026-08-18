@@ -2,13 +2,11 @@
 return {
 	SHORT_DELAY = 0.18, -- settle after fire key (E); slot select has its own wait
 	HOLD_DURATION = 5, -- QS4 channel default (hold E then release)
-	SLOT_SELECT_WAIT = 0.75, -- max wait for diamond after ONE arm press (never double-tap)
-	SLOT_FIRE_SETTLE = 0.18, -- pause after arm before E so toggle registers
-	-- After pressing a hotbar key, never press it again until this elapses.
-	-- Prevents QS4 diamond flicker when cast fails and combat retries every 50ms.
-	SLOT_ARM_COOLDOWN = 1.6,
-	-- Synthetic backoff when diamond never appears (failed arm / skip E)
-	SLOT_ARM_FAIL_CD = 1.25,
+	SLOT_SELECT_WAIT = 0.45, -- brief settle after ONE arm press (never double-tap)
+	SLOT_FIRE_SETTLE = 0.12, -- pause after arm before E so toggle registers
+	-- After pressing a hotbar key, never press it again until this elapses
+	-- (or until we switch to a different slot). Stops QS4 diamond flicker.
+	SLOT_ARM_COOLDOWN = 2.0,
 	-- Per-slot settle after cast (same slot only). No global lockout — switch slots immediately.
 	CAST_LOCKOUT = 0.15,
 	ABILITY_MIN_CD = 0.5, -- fallback synthetic floor when usage.minCd missing

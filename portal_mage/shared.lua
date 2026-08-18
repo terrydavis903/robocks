@@ -49,7 +49,7 @@ S.lastCastAt = 0 -- os.clock() of last cast
 S.lastCastSlot = nil :: number? -- slot used by last cast
 S.slotCdUntil = {} :: { [number]: number } -- synthetic CD end times (UI lag)
 S.slotLastArmAt = {} :: { [number]: number } -- last hotbar arm key press (anti-toggle spam)
-S.slotArmPendingUntil = {} :: { [number]: number } -- don't re-press while waiting for diamond
+S.armedCombatSlot = nil :: number? -- sticky: last slot we pressed to arm (UI diamond is unreliable)
 S.holdTarget = nil :: Model? -- single shared focus (targets + pathing + combat)
 S.combatPhase = "fight" :: string
 -- After a kill: wait until combat-schema CDs are ready before picking next enemy.

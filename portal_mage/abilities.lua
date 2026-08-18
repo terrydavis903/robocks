@@ -167,20 +167,13 @@ return function(S)
 	function M.clearSyntheticCds()
 		S.slotCdUntil = {}
 		S.slotLastArmAt = {}
-		S.slotArmPendingUntil = {}
+		S.armedCombatSlot = nil
 		S.lastCastAt = 0
 		S.lastCastSlot = nil
 	end
 
-	-- Short synthetic CD so combat doesn't retry-arm every 50ms (QS4 flicker).
-	local function noteArmFailBackoff(slot: number)
-		S.slotCdUntil = S.slotCdUntil or {}
-		local failCd = C.SLOT_ARM_FAIL_CD or 1.25
-		local untilT = os.clock() + failCd
-		local cur = S.slotCdUntil[slot]
-		if type(cur) ~= "number" or cur < untilT then
-			S.slotCdUntil[slot] = untilT
-		end
+	function M.clearArmedSlot()
+		S.armedCombatSlot = nil
 	end
 
 	function M.isSlotReady(slot: number): boolean
@@ -383,19 +376,14 @@ return function(S)
 	end
 
 	---------------------------------------------------------------------------
-	-- Arm toggle ON (key only — never mouse). Already ON → do nothing.
-	-- EVERY ability is a toggle: one press arms, a second press disarms.
-	-- Never press the slot key twice in one ensure (UI lag → off→on→off).
+	-- Arm toggle ON (key only — never mouse).
+	-- Hotbar is a TOGGLE: second press disarms. Slot_Select diamond is unreliable
+	-- (often missing/flickers during QS4 aim), so we keep a sticky latch:
+	--   press once per slot → S.armedCombatSlot = slot → fire E without re-pressing.
+	-- Only re-press when switching slots or latch was cleared.
 	---------------------------------------------------------------------------
 
 	function M.ensureSlotOn(slot: number): boolean
-		if M.isSlotOn(slot) then
-			-- Armed — clear pending latch
-			if S.slotArmPendingUntil then
-				S.slotArmPendingUntil[slot] = nil
-			end
-			return true
-		end
 		local key = SLOT_KEY[slot]
 		if not key then
 			return false
@@ -403,77 +391,52 @@ return function(S)
 
 		local now = os.clock()
 		S.slotLastArmAt = S.slotLastArmAt or {}
-		S.slotArmPendingUntil = S.slotArmPendingUntil or {}
-		local armCd = C.SLOT_ARM_COOLDOWN or 1.6
-		local lastArm = S.slotLastArmAt[slot] or 0
-		local pendingUntil = S.slotArmPendingUntil[slot] or 0
 
-		-- Already pressed recently: ONLY poll. Never second-press (that toggles OFF
-		-- and causes the QS4 diamond flicker / "toggling aim" loop).
-		if now < pendingUntil or (now - lastArm) < armCd then
-			local waitLeft = math.max(pendingUntil - now, armCd - (now - lastArm), 0.15)
-			local t0 = os.clock()
-			while isWalking() and (os.clock() - t0) < math.min(waitLeft, C.SLOT_SELECT_WAIT or 0.75) do
-				if M.isSlotOn(slot) then
-					S.slotArmPendingUntil[slot] = nil
-					return true
-				end
-				task.wait(0.04)
-			end
-			return M.isSlotOn(slot)
+		-- Diamond visible → trust UI and latch (no keypress)
+		if M.isSlotOn(slot) then
+			S.armedCombatSlot = slot
+			return true
 		end
 
+		-- Already latched this slot → never re-press (second press toggles OFF).
+		-- Cleared on KA off / stop / clearSyntheticCds / slot switch below.
+		if S.armedCombatSlot == slot then
+			return true
+		end
+
+		-- First arm or switching from another slot: exactly one press
 		if U.releaseMoveKeys then
 			U.releaseMoveKeys()
 		end
-		U.setStatus(string.format("[cast] toggle-arm slot %d (%s)…", slot, key.Name))
+		U.setStatus(string.format(
+			"[cast] arm slot %d (%s)%s",
+			slot,
+			key.Name,
+			if S.armedCombatSlot and S.armedCombatSlot ~= slot
+				then string.format(" from s%d", S.armedCombatSlot)
+				else ""
+		))
 		U.pressKey(key)
 		S.slotLastArmAt[slot] = now
-		S.slotArmPendingUntil[slot] = now + armCd
+		S.armedCombatSlot = slot -- latch immediately; diamond UI may lag/never show
 
-		local waitFor = C.SLOT_SELECT_WAIT or 0.75
-		local t1 = os.clock()
-		while os.clock() - t1 < waitFor and isWalking() do
+		local waitFor = C.SLOT_SELECT_WAIT or 0.45
+		local t0 = os.clock()
+		while os.clock() - t0 < waitFor and isWalking() do
 			if M.isSlotOn(slot) then
-				return true
+				break
 			end
 			task.wait(0.04)
 		end
-		-- Still dark: do NOT second-toggle. Caller backs off via noteArmFailBackoff.
-		return M.isSlotOn(slot)
+		task.wait(C.SLOT_FIRE_SETTLE or 0.12)
+		return true
 	end
 
 	M.selectAbilitySlot = M.ensureSlotOn
 
-	-- After ensureSlotOn, poll Slot_Select a bit longer. Never fire while dark.
-	local function requireSlotSelected(slot: number, tag: string): boolean
-		task.wait(C.SLOT_FIRE_SETTLE or 0.18)
-		if M.isSlotOn(slot) then
-			return true
-		end
-		local extra = C.SLOT_SELECT_WAIT or 0.75
-		local t1 = os.clock()
-		while isWalking() and (os.clock() - t1) < extra do
-			if M.isSlotOn(slot) then
-				return true
-			end
-			task.wait(0.04)
-		end
-		if M.isSlotOn(slot) then
-			return true
-		end
-		U.setStatus(string.format(
-			"[%s] QS%d diamond not selected — skip E (arm backoff)",
-			tag or "cast",
-			slot
-		))
-		noteArmFailBackoff(slot)
-		return false
-	end
-
 	---------------------------------------------------------------------------
 	-- Fire steps only. Slot arming is exclusively ensureSlotOn(handler.slot).
-	-- Hold/tap E only when Slot_Select diamond is visible (QS4 channel included).
+	-- Always fire E after a single arm attempt — do not block on diamond UI.
 	---------------------------------------------------------------------------
 
 	local function isHotbarKey(key: Enum.KeyCode): boolean
@@ -486,19 +449,13 @@ return function(S)
 	end
 
 	local function runSteps(handler): boolean
-		-- 1) Toggle-arm via handler.slot (all abilities) — require diamond before E
 		if handler.slot then
 			M.ensureSlotOn(handler.slot)
-			if not requireSlotSelected(handler.slot, "cast") then
-				return false
-			end
 		end
 		if U.releaseMoveKeys then
 			U.releaseMoveKeys()
 		end
-		-- 2) Fire / channel only — never hotbar (would toggle OFF).
-		-- Do NOT re-check Slot_Select mid-hold: QS4 aim/channel often hides or
-		-- flickers the diamond, which aborted E and re-pressed 4 (toggle spam).
+		-- Fire / channel only — never hotbar (would toggle OFF).
 		for _, step in ipairs(handler.steps or {}) do
 			if not isWalking() then
 				return false
@@ -513,7 +470,6 @@ return function(S)
 				U.holdKeyCharge(step.hold, isWalking, step.duration or C.HOLD_DURATION or 5)
 			elseif step.key then
 				if isHotbarKey(step.key) then
-					-- Legacy configs may still list One/Four in steps — skip always
 					continue
 				end
 				U.setStatus(string.format("[cast] press %s", tostring(step.key.Name)))
@@ -609,18 +565,13 @@ return function(S)
 			if not isWalking() then
 				return
 			end
-			-- Arm QS3 and require Slot_Select diamond before holding E.
+			-- Arm QS3 once (sticky latch) then hold E — same as combat, no diamond gate.
 			M.ensureSlotOn(slot)
-			if not requireSlotSelected(slot, "buff") then
-				-- Don't burn the full retry CD on a failed arm
-				S.lastBuffCastAt = os.clock() - math.max(0, (C.COMBAT_BUFF_RETRY_CD or 12) - 2)
-				return
-			end
 			if U.releaseMoveKeys then
 				U.releaseMoveKeys()
 			end
 			U.setStatus(string.format(
-				"[buff] HOLD E %.0fs (s%d diamond=on)",
+				"[buff] HOLD E %.0fs (s%d)",
 				holdFor,
 				slot
 			))
