@@ -51,6 +51,7 @@ S.slotCdUntil = {} :: { [number]: number } -- synthetic CD end times (UI lag)
 S.slotLastArmAt = {} :: { [number]: number } -- last hotbar arm key press (anti-toggle spam)
 S.armedCombatSlot = nil :: number? -- sticky: last slot we pressed to arm (UI diamond is unreliable)
 S.holdTarget = nil :: Model? -- single shared focus (targets + pathing + combat)
+S.stoneRecoverBusy = false -- between fights: walking back onto Cobblestone before next mob
 S.combatPhase = "fight" :: string
 -- After a kill: wait until combat-schema CDs are ready before picking next enemy.
 -- Player death/respawn clears this (death resets CDs).

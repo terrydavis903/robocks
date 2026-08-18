@@ -207,6 +207,12 @@ return function(S)
 			return
 		end
 
+		-- Pathing is walking back onto Cobblestone before the next pick
+		if S.stoneRecoverBusy then
+			task.wait(0.1)
+			return
+		end
+
 		local range = T().fightRange()
 		local sticky = C.KILL_AURA_STICKY or 5
 		local playerFlat = U.getLivePlayerVector()

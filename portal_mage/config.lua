@@ -164,6 +164,9 @@ return {
 	},
 	WALKABLE_MATERIALS_FILE = "waypoints/walkable_materials.json",
 	NAV_STONE_PATH_SNAP_R = 24, -- studs: snap start/goal to nearest stone if off-path
+	-- Between fights: if feet aren't on walkable path, walk here before next mob.
+	NAV_STONE_RECOVER_SNAP_R = 40, -- wider search than path snap (pad / sand pockets)
+	NAV_STONE_RECOVER_ARRIVE = 2.8,
 	NAV_CLEAR_STEP = 2.5, -- stone continuity samples along hop
 	NAV_HITBOX_PAD = 0.05,
 	NAV_HITBOX_SCALE = 0.9,
