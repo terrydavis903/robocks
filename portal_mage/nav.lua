@@ -245,22 +245,224 @@ return function(S)
 		return M.wallClearance(pos) + 1e-3 >= need
 	end
 
-	-- Stone path materials (mesh dump: Cobblestone under stone roads; Sandstone = sand).
-	function M.isStonePathMaterial(mat: any): boolean
+	-- Defaults for stone/walkable materials (config + Waypoints "Add walkable tile").
+	local DEFAULT_WALKABLE_MATERIALS = { "Cobblestone", "Asphalt" }
+
+	local function walkableFilePath(): string
+		return C.WALKABLE_MATERIALS_FILE or "waypoints/walkable_materials.json"
+	end
+
+	function M.normalizeMaterialName(mat: any): string?
 		if mat == nil then
-			return false
+			return nil
 		end
 		local s = tostring(mat)
-		local list = C.NAV_STONE_PATH_MATERIALS
-		if type(list) ~= "table" or #list == 0 then
-			list = { "Cobblestone", "Asphalt" }
+		s = string.gsub(s, "^Enum%.Material%.", "")
+		s = string.gsub(s, "^Material%.", "")
+		s = string.gsub(s, "^%s+", "")
+		s = string.gsub(s, "%s+$", "")
+		if s == "" or s == "nil" or s == "Air" then
+			return nil
 		end
+		return s
+	end
+
+	local function ensureWalkableList(): { string }
+		if type(C.NAV_STONE_PATH_MATERIALS) ~= "table" then
+			C.NAV_STONE_PATH_MATERIALS = {}
+		end
+		if #C.NAV_STONE_PATH_MATERIALS == 0 then
+			for _, name in ipairs(DEFAULT_WALKABLE_MATERIALS) do
+				table.insert(C.NAV_STONE_PATH_MATERIALS, name)
+			end
+		end
+		return C.NAV_STONE_PATH_MATERIALS
+	end
+
+	-- Stone path materials (mesh dump: Cobblestone under stone roads; Sandstone = sand).
+	function M.isStonePathMaterial(mat: any): boolean
+		local s = M.normalizeMaterialName(mat)
+		if not s then
+			return false
+		end
+		local list = ensureWalkableList()
 		for _, name in ipairs(list) do
 			if type(name) == "string" and name ~= "" and string.find(s, name, 1, true) then
 				return true
 			end
 		end
+		-- Also allow list entries that include Enum.Material. prefix
+		local full = tostring(mat)
+		for _, name in ipairs(list) do
+			if type(name) == "string" and name ~= "" and string.find(full, name, 1, true) then
+				return true
+			end
+		end
 		return false
+	end
+
+	function M.listWalkableMaterials(): { string }
+		local out = {}
+		for _, name in ipairs(ensureWalkableList()) do
+			if type(name) == "string" and name ~= "" then
+				table.insert(out, name)
+			end
+		end
+		return out
+	end
+
+	function M.saveWalkableMaterials(): boolean
+		local HttpService = S.Services.HttpService
+		local path = walkableFilePath()
+		local dir = C.WAYPOINT_DIR or "waypoints"
+		local payload = {
+			version = 1,
+			updated = os.date("%Y-%m-%d_%H-%M-%S"),
+			materials = M.listWalkableMaterials(),
+		}
+		local ok, err = pcall(function()
+			if U and U.ensureDir then
+				U.ensureDir(dir)
+			end
+			writefile(path, HttpService:JSONEncode(payload))
+		end)
+		if not ok then
+			if U and U.setStatus then
+				U.setStatus("Walkable save failed: " .. tostring(err))
+			end
+			return false
+		end
+		return true
+	end
+
+	function M.loadWalkableMaterials(): number
+		local HttpService = S.Services.HttpService
+		local path = walkableFilePath()
+		local ok, data = pcall(function()
+			if not isfile or not isfile(path) then
+				return nil
+			end
+			return HttpService:JSONDecode(readfile(path))
+		end)
+		if ok and type(data) == "table" and type(data.materials) == "table" and #data.materials > 0 then
+			local merged = {}
+			local seen: { [string]: boolean } = {}
+			local function add(name: any)
+				local n = M.normalizeMaterialName(name)
+				if n and not seen[n] then
+					seen[n] = true
+					table.insert(merged, n)
+				end
+			end
+			-- Keep defaults first, then file extras
+			for _, name in ipairs(DEFAULT_WALKABLE_MATERIALS) do
+				add(name)
+			end
+			for _, name in ipairs(data.materials) do
+				add(name)
+			end
+			C.NAV_STONE_PATH_MATERIALS = merged
+		else
+			ensureWalkableList()
+		end
+		if S.ui and S.ui.refreshWalkableMaterials then
+			S.ui.refreshWalkableMaterials()
+		end
+		return #ensureWalkableList()
+	end
+
+	function M.addWalkableMaterial(name: any): (boolean, string?)
+		local n = M.normalizeMaterialName(name)
+		if not n then
+			return false, nil
+		end
+		if M.isStonePathMaterial(n) then
+			return false, n -- already present
+		end
+		table.insert(ensureWalkableList(), n)
+		M.saveWalkableMaterials()
+		if S.ui and S.ui.refreshWalkableMaterials then
+			S.ui.refreshWalkableMaterials()
+		end
+		return true, n
+	end
+
+	function M.removeWalkableMaterial(name: any): boolean
+		local n = M.normalizeMaterialName(name)
+		if not n then
+			return false
+		end
+		local list = ensureWalkableList()
+		for i = #list, 1, -1 do
+			if M.normalizeMaterialName(list[i]) == n then
+				table.remove(list, i)
+			end
+		end
+		-- Never leave the list empty
+		if #list == 0 then
+			for _, d in ipairs(DEFAULT_WALKABLE_MATERIALS) do
+				table.insert(list, d)
+			end
+		end
+		M.saveWalkableMaterials()
+		if S.ui and S.ui.refreshWalkableMaterials then
+			S.ui.refreshWalkableMaterials()
+		end
+		return true
+	end
+
+	function M.resetWalkableMaterials(): number
+		C.NAV_STONE_PATH_MATERIALS = {}
+		for _, name in ipairs(DEFAULT_WALKABLE_MATERIALS) do
+			table.insert(C.NAV_STONE_PATH_MATERIALS, name)
+		end
+		M.saveWalkableMaterials()
+		if S.ui and S.ui.refreshWalkableMaterials then
+			S.ui.refreshWalkableMaterials()
+		end
+		return #C.NAV_STONE_PATH_MATERIALS
+	end
+
+	-- Probe feet and append Terrain/Mesh Material to walkable list.
+	-- Returns: added(bool), materialName, kind ("terrain"|"part"|…), detail status
+	function M.addWalkableTileFromFeet(): (boolean, string?, string?, string)
+		local pos = U.getLivePlayerVector and U.getLivePlayerVector()
+		if not pos then
+			return false, nil, nil, "no character"
+		end
+		local info: any? = nil
+		if S.MeshOutline and S.MeshOutline.probeStandingFloor then
+			info = S.MeshOutline.probeStandingFloor(pos)
+		end
+		if not info then
+			local sample = M.sampleFloor(pos.X, pos.Z, pos.Y, { allowAnyFloor = true, requireClear = false })
+			if sample then
+				info = {
+					kind = sample.isTerrain and "terrain" or "part",
+					material = sample.material,
+					path = sample.path,
+					name = sample.instance and sample.instance.Name or nil,
+				}
+			end
+		end
+		if not info then
+			return false, nil, nil, "no floor under feet"
+		end
+		local kind = tostring(info.kind or "?")
+		local mat = M.normalizeMaterialName(info.material)
+		if not mat then
+			return false, nil, kind, string.format("no material (%s %s)", kind, tostring(info.name or info.path or ""))
+		end
+		local added, name = M.addWalkableMaterial(mat)
+		if added then
+			return true, name, kind, string.format(
+				"added %s (%s)%s",
+				tostring(name),
+				kind,
+				info.name and (" " .. tostring(info.name)) or ""
+			)
+		end
+		return false, name or mat, kind, string.format("already walkable: %s (%s)", tostring(name or mat), kind)
 	end
 
 	function M.stonePathOnly(): boolean
@@ -268,7 +470,7 @@ return function(S)
 	end
 
 	-- Sample walkable floor under world XZ.
-	-- Stone-path mode: only Terrain materials in NAV_STONE_PATH_MATERIALS; no wall-pinch.
+	-- Stone-path mode: Terrain OR MeshPart floors whose Material is in the walkable list.
 	function M.sampleFloor(x: number, z: number, yHint: number?, opts: any?): any?
 		opts = opts or {}
 		local allowAny = opts.allowAnyFloor == true
@@ -301,16 +503,25 @@ return function(S)
 		if isBarrierInstance(inst) then
 			return nil
 		end
-		if isCollideProp(inst) then
-			return nil
-		end
 
 		local matName = hit.Material and tostring(hit.Material) or nil
 		local isTerrain = inst:IsA("Terrain")
+		local walkableMat = M.isStonePathMaterial(matName)
+		-- User-marked walkable materials bypass collide-prop rejection (mesh road tiles).
+		if not walkableMat and isCollideProp(inst) then
+			return nil
+		end
+
 		local okSurface = false
 		if stoneOnly then
-			-- Only walk on terrain stone roads (not Sandstone dirt, not mesh slabs)
-			okSurface = isTerrain and M.isStonePathMaterial(matName)
+			if walkableMat then
+				if isTerrain then
+					okSurface = true
+				elseif inst:IsA("BasePart") then
+					local bp = inst :: BasePart
+					okSurface = bp.CanCollide == true
+				end
+			end
 		elseif isTerrain then
 			okSurface = true
 		elseif inst:IsA("BasePart") then
@@ -337,6 +548,7 @@ return function(S)
 				return nil
 			end
 		end
+		local isStone = walkableMat and (isTerrain or (inst:IsA("BasePart") and (inst :: BasePart).CanCollide))
 		return {
 			pos = pos,
 			normal = hit.Normal,
@@ -344,7 +556,7 @@ return function(S)
 			instance = inst,
 			path = inst:GetFullName(),
 			isTerrain = isTerrain,
-			isStonePath = isTerrain and M.isStonePathMaterial(matName),
+			isStonePath = isStone == true,
 			distance = hit.Distance,
 			wallClearance = clear,
 		}
@@ -1608,6 +1820,11 @@ return function(S)
 		end
 		return M.followPath(path, opts)
 	end
+
+	-- Merge persisted walkable materials (Waypoints "Add walkable tile")
+	task.defer(function()
+		M.loadWalkableMaterials()
+	end)
 
 	return M
 end

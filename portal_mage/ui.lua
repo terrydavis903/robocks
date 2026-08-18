@@ -991,6 +991,76 @@ return function(S)
 			end
 		end)
 
+		---------------------------------------------------------------------------
+		-- Walkable tiles (stone-path materials under feet)
+		---------------------------------------------------------------------------
+		ry += 6
+		mkLabel(wpRoot, "— Walkable tiles (A* materials) —", ry)
+		ry += 18
+		local walkMatLab = Instance.new("TextLabel")
+		walkMatLab.Name = "WalkableMaterials"
+		walkMatLab.Size = UDim2.new(1, -16, 0, 36)
+		walkMatLab.Position = UDim2.fromOffset(8, ry)
+		walkMatLab.BackgroundColor3 = Color3.fromRGB(28, 28, 36)
+		walkMatLab.BorderSizePixel = 0
+		walkMatLab.Font = Enum.Font.Code
+		walkMatLab.TextSize = 11
+		walkMatLab.TextColor3 = Color3.fromRGB(180, 200, 160)
+		walkMatLab.TextXAlignment = Enum.TextXAlignment.Left
+		walkMatLab.TextYAlignment = Enum.TextYAlignment.Top
+		walkMatLab.TextWrapped = true
+		walkMatLab.Text = "…"
+		walkMatLab.Parent = wpRoot
+		corner(walkMatLab, 6)
+		local walkMatPad = Instance.new("UIPadding")
+		walkMatPad.PaddingTop = UDim.new(0, 4)
+		walkMatPad.PaddingLeft = UDim.new(0, 6)
+		walkMatPad.PaddingRight = UDim.new(0, 6)
+		walkMatPad.Parent = walkMatLab
+		ry += 40
+
+		local function refreshWalkableLabel()
+			local list = {}
+			if S.Nav and S.Nav.listWalkableMaterials then
+				list = S.Nav.listWalkableMaterials()
+			elseif type(S.Config.NAV_STONE_PATH_MATERIALS) == "table" then
+				list = S.Config.NAV_STONE_PATH_MATERIALS
+			end
+			if #list == 0 then
+				walkMatLab.Text = "(none — defaults load on Nav init)"
+			else
+				walkMatLab.Text = table.concat(list, ", ")
+			end
+		end
+		S.ui.refreshWalkableMaterials = refreshWalkableLabel
+		refreshWalkableLabel()
+
+		local addWalkBtn = mkButton(wpRoot, "Add walkable tile (feet)", ry, Color3.fromRGB(60, 120, 80))
+		addWalkBtn.Size = UDim2.new(1, -16, 0, 26)
+		ry += 30
+		addWalkBtn.MouseButton1Click:Connect(function()
+			if not (S.Nav and S.Nav.addWalkableTileFromFeet) then
+				S.Util.setStatus("Nav not loaded — reload script")
+				return
+			end
+			local _added, _mat, _kind, detail = S.Nav.addWalkableTileFromFeet()
+			refreshWalkableLabel()
+			S.Util.setStatus("Walkable tile: " .. tostring(detail or "failed"))
+		end)
+
+		local resetWalkBtn = mkButton(wpRoot, "Reset walkable to Cobblestone/Asphalt", ry, Color3.fromRGB(90, 70, 70))
+		resetWalkBtn.Size = UDim2.new(1, -16, 0, 24)
+		ry += 30
+		resetWalkBtn.MouseButton1Click:Connect(function()
+			if S.Nav and S.Nav.resetWalkableMaterials then
+				local n = S.Nav.resetWalkableMaterials()
+				refreshWalkableLabel()
+				S.Util.setStatus(string.format("Walkable reset — %d material(s)", n or 0))
+			else
+				S.Util.setStatus("Nav not loaded — reload script")
+			end
+		end)
+
 		wpScroll.CanvasSize = UDim2.fromOffset(0, ry + 12)
 
 		---------------------------------------------------------------------------

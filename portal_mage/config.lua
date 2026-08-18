@@ -145,11 +145,14 @@ return {
 	NAV_BODY_HEIGHTS = { 1.2, 2.4, 3.8 }, -- legacy
 	-- Stone roads only (mesh dumps: Cobblestone = path, Sandstone = sand/dirt).
 	-- Paths are player-safe → no obstacle collision probes along hops.
+	-- Waypoints "Add walkable tile" appends feet Terrain/Mesh Material and persists
+	-- to WALKABLE_MATERIALS_FILE (merged into NAV_STONE_PATH_MATERIALS at load).
 	NAV_STONE_PATH_ONLY = true,
 	NAV_STONE_PATH_MATERIALS = {
 		"Cobblestone", -- stone path (dump feet material)
 		"Asphalt", -- occasional paved connector
 	},
+	WALKABLE_MATERIALS_FILE = "waypoints/walkable_materials.json",
 	NAV_STONE_PATH_SNAP_R = 24, -- studs: snap start/goal to nearest stone if off-path
 	NAV_CLEAR_STEP = 2.5, -- stone continuity samples along hop
 	NAV_HITBOX_PAD = 0.05,

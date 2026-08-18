@@ -29,6 +29,7 @@ S.ui = {
 	setPathRecLabel = function(_on: boolean) end, -- human A* walk recorder
 	setRespawnPathVizLabel = function(_on: boolean) end, -- spawn-path start markers
 	refreshSpawnPaths = function() end, -- refresh spawn-path picker list
+	refreshWalkableMaterials = function() end, -- Waypoints walkable-tile list label
 	setClawBeamLabel = function(_on: boolean) end,
 	setClawPrizeBeamsLabel = function(_on: boolean) end,
 	setClawBestPrizeLabel = function(_on: boolean) end,
