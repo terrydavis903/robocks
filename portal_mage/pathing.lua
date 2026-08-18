@@ -525,6 +525,31 @@ return function(S)
 	local blockedRouteFails = 0
 	local lastPathSig = "" -- detect identical repaths (logical loop)
 
+	-- True if candidate stand gets us meaningfully closer to the enemy.
+	-- Dump 20-55-42: stone-snap pulled goals onto cobble BEHIND the player → face
+	-- thrash (dot≈-0.4) and PATH_NEED timer loops with no W for minutes.
+	local function goalApproachesEnemy(goal: Vector3, playerPos: Vector3, epos: Vector3, range: number): boolean
+		local dPlayer = flatDist(playerPos, epos)
+		local dGoal = flatDist(goal, epos)
+		-- Must sit near the stand band (not a random road tile 20st off)
+		if dGoal > range + 10 then
+			return false
+		end
+		-- Must close distance (even a few studs — fightRange gap is often small)
+		if dGoal >= dPlayer - 0.75 then
+			return false
+		end
+		-- Must not be behind the player relative to the enemy (opposite-side snap)
+		local toEnemy = Vector3.new(epos.X - playerPos.X, 0, epos.Z - playerPos.Z)
+		local toGoal = Vector3.new(goal.X - playerPos.X, 0, goal.Z - playerPos.Z)
+		if toEnemy.Magnitude > 1 and toGoal.Magnitude > 1.5 then
+			if toEnemy.Unit:Dot(toGoal.Unit) < -0.15 then
+				return false
+			end
+		end
+		return true
+	end
+
 	-- Stand on the player-side of the enemy only (small ±yaw). Never opposite-side
 	-- goals — those force long arc paths and look like walking in circles.
 	local function standGoalNear(playerPos: Vector3, epos: Vector3, range: number, angleOffsetRad: number?): Vector3
@@ -537,6 +562,29 @@ return function(S)
 		end
 		local off0 = math.clamp(angleOffsetRad or 0, -0.9, 0.9)
 		local offsets = { off0, off0 + 0.4, off0 - 0.4, off0 + 0.75, off0 - 0.75, 0 }
+
+		local function tryDest(dest: Vector3): Vector3?
+			if nav and nav.sampleFloor then
+				local s = nav.sampleFloor(dest.X, dest.Z, playerPos.Y, { requireClear = false })
+				if s and s.pos and goalApproachesEnemy(s.pos, playerPos, epos, range) then
+					return s.pos
+				end
+			elseif goalApproachesEnemy(dest, playerPos, epos, range) then
+				return Vector3.new(dest.X, playerPos.Y, dest.Z)
+			end
+			-- Tight stone snap only — wide snap was yanking goals back to the player pad
+			if nav and nav.snapToStonePath then
+				local gs = nav.snapToStonePath(dest, 10)
+				if gs and gs.pos and goalApproachesEnemy(gs.pos, playerPos, epos, range) then
+					local snapDist = flatDist(gs.pos, dest)
+					if snapDist <= 10 then
+						return gs.pos
+					end
+				end
+			end
+			return nil
+		end
+
 		for _, off in ipairs(offsets) do
 			local flat = base
 			if math.abs(off) > 1e-4 then
@@ -546,16 +594,13 @@ return function(S)
 					flat = flat.Unit
 				end
 			end
-			local dest = epos + flat * range
-			if nav and nav.sampleFloor then
-				local s = nav.sampleFloor(dest.X, dest.Z, playerPos.Y, { requireClear = false })
-				if s and s.pos then
-					return s.pos
-				end
-			else
-				return Vector3.new(dest.X, playerPos.Y, dest.Z)
+			local hit = tryDest(epos + flat * range)
+			if hit then
+				return hit
 			end
 		end
+		-- Last resort: geometric stand (even off-stone). computePath may still fail,
+		-- but never return a behind-player snap that causes face thrash.
 		local dest = epos + base * range
 		return Vector3.new(dest.X, playerPos.Y, dest.Z)
 	end
@@ -652,24 +697,54 @@ return function(S)
 			end
 		end
 
+		-- Drop routes whose end does not approach the enemy (stone-snap false paths)
+		local function acceptRoute(tryPts: { Vector3 }, tryKind: string, tryGoal: Vector3): boolean
+			if not tryPts or #tryPts < 2 then
+				return false
+			end
+			local endP = tryPts[#tryPts]
+			if not goalApproachesEnemy(endP, playerPos, epos, range)
+				and not goalApproachesEnemy(tryGoal, playerPos, epos, range)
+			then
+				log(string.format(
+					"path REJECT %s end=(%.0f,%.0f) dEnemy=%.1f (no approach)",
+					tryKind,
+					endP.X,
+					endP.Z,
+					flatDist(endP, epos)
+				))
+				return false
+			end
+			return true
+		end
+
+		if #pts >= 2 and not acceptRoute(pts, kind, goal) then
+			pts = {}
+			kind = "none"
+		end
+
 		if #pts < 2 then
 			-- Prefer snap to stone path then straight line on stone
 			local fromP, goalP = playerPos, goal
 			if nav and nav.snapToStonePath then
 				local fs = nav.snapToStonePath(playerPos)
-				local gs = nav.snapToStonePath(goal)
+				local gs = nav.snapToStonePath(goal, 10)
 				if fs and fs.pos then
 					fromP = fs.pos
 				end
-				if gs and gs.pos then
+				if gs and gs.pos and goalApproachesEnemy(gs.pos, playerPos, epos, range) then
 					goalP = gs.pos
 				end
 			end
-			if nav and nav.hasClearWalk and nav.hasClearWalk(fromP, goalP) then
+			if goalApproachesEnemy(goalP, playerPos, epos, range)
+				and nav
+				and nav.hasClearWalk
+				and nav.hasClearWalk(fromP, goalP)
+			then
 				pts = { fromP, goalP }
 				kind = "line:stone"
 				goal = goalP
-			elseif not nav or not nav.hasClearWalk then
+			elseif goalApproachesEnemy(goal, playerPos, epos, range) and (not nav or not nav.hasClearWalk) then
 				pts = { playerPos, goal }
 				kind = "line:nocheck"
 			else
@@ -683,13 +758,17 @@ return function(S)
 					local c, s = math.cos(ang + ringPhase * 0.25), math.sin(ang + ringPhase * 0.25)
 					local flat = Vector3.new(base.X * c - base.Z * s, 0, base.X * s + base.Z * c)
 					local cand = epos + flat.Unit * range
-					if nav.snapToStonePath then
-						local gs = nav.snapToStonePath(cand)
-						if gs and gs.pos then
+					if nav and nav.snapToStonePath then
+						local gs = nav.snapToStonePath(cand, 10)
+						if gs and gs.pos and goalApproachesEnemy(gs.pos, playerPos, epos, range) then
 							cand = gs.pos
 						end
 					end
-					if nav.hasClearWalk(fromP, cand) then
+					if goalApproachesEnemy(cand, playerPos, epos, range)
+						and nav
+						and nav.hasClearWalk
+						and nav.hasClearWalk(fromP, cand)
+					then
 						pts = { fromP, cand }
 						kind = "line:side"
 						goal = cand
@@ -697,6 +776,11 @@ return function(S)
 					end
 				end
 			end
+		end
+
+		if #pts >= 2 and not acceptRoute(pts, kind, goal) then
+			pts = {}
+			kind = "none"
 		end
 
 		if #pts < 2 then
@@ -808,6 +892,25 @@ return function(S)
 				need = true
 				why = "short_path"
 				bumpPathVariety("short_path")
+				-- Dump 20-46-03: short_path/same_path spun for 7+ min at dist=34.5 with
+				-- almost no W. After enough variety, drop hold and pick another mob.
+				if standAngleIdx >= 12 then
+					log(string.format(
+						"path STUCK_ESCAPE angle=%d dist=%.1f → clearHold",
+						standAngleIdx,
+						flatDist(playerPos, epos)
+					))
+					local Targets = T()
+					if Targets and Targets.clearHold then
+						Targets.clearHold("path_stuck_escape")
+					end
+					standAngleIdx = 0
+					ringPhase = 0
+					lastPathSig = ""
+					pathPts = {}
+					pathEnemy = nil
+					return
+				end
 			end
 		end
 		-- Do NOT mid-run hasClearWalk repath (false clear/blocked thrash). Stuck → NO_PROGRESS.

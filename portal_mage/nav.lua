@@ -1551,17 +1551,22 @@ return function(S)
 	-- Validation = stone continuity only (no obstacle collision).
 	local function tryRoute(from: Vector3, goal: Vector3): ({ Vector3 }?, string, { boolean }?)
 		local stoneOnly = M.stonePathOnly()
-		-- Snap endpoints onto stone road
+		-- Snap endpoints onto stone road. Goal snap is tight — a 24st yank used to
+		-- pull stand goals onto cobble behind the player (KA dump 20-55-42).
 		local fromSnap = from
 		local goalSnap = goal
 		if stoneOnly then
 			local fs = M.snapToStonePath(from)
-			local gs = M.snapToStonePath(goal)
+			local gs = M.snapToStonePath(goal, 10)
 			if fs and fs.pos then
 				fromSnap = fs.pos
 			end
 			if gs and gs.pos then
-				goalSnap = gs.pos
+				local yank = Vector3.new(gs.pos.X - goal.X, 0, gs.pos.Z - goal.Z).Magnitude
+				if yank <= 10 then
+					goalSnap = gs.pos
+				end
+				-- else keep geometric goal; grid may fail (caller varies angle)
 			end
 		end
 
