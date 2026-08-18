@@ -999,7 +999,7 @@ return function(S)
 		ry += 18
 		local walkMatLab = Instance.new("TextLabel")
 		walkMatLab.Name = "WalkableMaterials"
-		walkMatLab.Size = UDim2.new(1, -16, 0, 36)
+		walkMatLab.Size = UDim2.new(1, -16, 0, 44)
 		walkMatLab.Position = UDim2.fromOffset(8, ry)
 		walkMatLab.BackgroundColor3 = Color3.fromRGB(28, 28, 36)
 		walkMatLab.BorderSizePixel = 0
@@ -1017,19 +1017,32 @@ return function(S)
 		walkMatPad.PaddingLeft = UDim.new(0, 6)
 		walkMatPad.PaddingRight = UDim.new(0, 6)
 		walkMatPad.Parent = walkMatLab
-		ry += 40
+		ry += 48
 
 		local function refreshWalkableLabel()
-			local list = {}
+			local mats = {}
+			local kws = {}
 			if S.Nav and S.Nav.listWalkableMaterials then
-				list = S.Nav.listWalkableMaterials()
+				mats = S.Nav.listWalkableMaterials()
 			elseif type(S.Config.NAV_STONE_PATH_MATERIALS) == "table" then
-				list = S.Config.NAV_STONE_PATH_MATERIALS
+				mats = S.Config.NAV_STONE_PATH_MATERIALS
 			end
-			if #list == 0 then
+			if S.Nav and S.Nav.listWalkablePathKeywords then
+				kws = S.Nav.listWalkablePathKeywords()
+			elseif type(S.Config.NAV_WALKABLE_PATH_KEYWORDS) == "table" then
+				kws = S.Config.NAV_WALKABLE_PATH_KEYWORDS
+			end
+			local parts = {}
+			if #mats > 0 then
+				table.insert(parts, "mat: " .. table.concat(mats, ", "))
+			end
+			if #kws > 0 then
+				table.insert(parts, "path: " .. table.concat(kws, ", "))
+			end
+			if #parts == 0 then
 				walkMatLab.Text = "(none — defaults load on Nav init)"
 			else
-				walkMatLab.Text = table.concat(list, ", ")
+				walkMatLab.Text = table.concat(parts, "  |  ")
 			end
 		end
 		S.ui.refreshWalkableMaterials = refreshWalkableLabel
@@ -1048,14 +1061,14 @@ return function(S)
 			S.Util.setStatus("Walkable tile: " .. tostring(detail or "failed"))
 		end)
 
-		local resetWalkBtn = mkButton(wpRoot, "Reset walkable to Cobblestone/Asphalt", ry, Color3.fromRGB(90, 70, 70))
+		local resetWalkBtn = mkButton(wpRoot, "Reset walkable (Cobble/Asphalt + GJ_Bridge)", ry, Color3.fromRGB(90, 70, 70))
 		resetWalkBtn.Size = UDim2.new(1, -16, 0, 24)
 		ry += 30
 		resetWalkBtn.MouseButton1Click:Connect(function()
 			if S.Nav and S.Nav.resetWalkableMaterials then
 				local n = S.Nav.resetWalkableMaterials()
 				refreshWalkableLabel()
-				S.Util.setStatus(string.format("Walkable reset — %d material(s)", n or 0))
+				S.Util.setStatus(string.format("Walkable reset — %d entr(y/ies)", n or 0))
 			else
 				S.Util.setStatus("Nav not loaded — reload script")
 			end

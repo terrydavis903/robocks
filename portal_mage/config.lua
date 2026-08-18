@@ -152,6 +152,11 @@ return {
 		"Cobblestone", -- stone path (dump feet material)
 		"Asphalt", -- occasional paved connector
 	},
+	-- Path/name keywords (MeshParts often Plastic with empty TextureID).
+	-- mesh dump 2026-08-17_20-06-58 feet: Workspace.Maps.World.Props.GJ_Bridge.*
+	NAV_WALKABLE_PATH_KEYWORDS = {
+		"GJ_Bridge",
+	},
 	WALKABLE_MATERIALS_FILE = "waypoints/walkable_materials.json",
 	NAV_STONE_PATH_SNAP_R = 24, -- studs: snap start/goal to nearest stone if off-path
 	NAV_CLEAR_STEP = 2.5, -- stone continuity samples along hop

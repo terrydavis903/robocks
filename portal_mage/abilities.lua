@@ -540,12 +540,38 @@ return function(S)
 			if not isWalking() then
 				return
 			end
-			M.ensureSlotOn(slot)
+			-- Arm QS3 and require Slot_Select diamond before holding E.
+			-- Never second-toggle; poll a bit longer if the indicator lags.
+			local armed = M.ensureSlotOn(slot)
 			task.wait(C.SLOT_FIRE_SETTLE or 0.12)
+			if not M.isSlotOn(slot) then
+				local extra = C.SLOT_SELECT_WAIT or 0.55
+				local t1 = os.clock()
+				while isWalking() and (os.clock() - t1) < extra do
+					if M.isSlotOn(slot) then
+						break
+					end
+					task.wait(0.04)
+				end
+			end
+			if not M.isSlotOn(slot) then
+				U.setStatus(string.format(
+					"[buff] QS%d diamond not selected — skip hold E",
+					slot
+				))
+				-- Don't burn the full retry CD on a failed arm
+				S.lastBuffCastAt = os.clock() - math.max(0, (C.COMBAT_BUFF_RETRY_CD or 12) - 2)
+				return
+			end
 			if U.releaseMoveKeys then
 				U.releaseMoveKeys()
 			end
-			U.setStatus(string.format("[buff] HOLD E %.0fs (s%d)", holdFor, slot))
+			U.setStatus(string.format(
+				"[buff] HOLD E %.0fs (s%d diamond=%s)",
+				holdFor,
+				slot,
+				armed and "on" or "on-late"
+			))
 			U.holdKeyCharge(Enum.KeyCode.E, isWalking, holdFor)
 			-- Brief wait for icon to appear
 			local t0 = os.clock()

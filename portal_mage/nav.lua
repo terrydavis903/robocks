@@ -245,8 +245,14 @@ return function(S)
 		return M.wallClearance(pos) + 1e-3 >= need
 	end
 
-	-- Defaults for stone/walkable materials (config + Waypoints "Add walkable tile").
+	-- Defaults for stone/walkable materials + MeshPart path keywords.
+	-- Bridge dump (mesh_2026-08-17_20-06-58): GJ_Bridge plates are Plastic, TextureID empty.
 	local DEFAULT_WALKABLE_MATERIALS = { "Cobblestone", "Asphalt" }
+	local DEFAULT_WALKABLE_PATH_KEYWORDS = { "GJ_Bridge" }
+	local GENERIC_PART_MATERIALS: { [string]: boolean } = {
+		Plastic = true,
+		SmoothPlastic = true,
+	}
 
 	local function walkableFilePath(): string
 		return C.WALKABLE_MATERIALS_FILE or "waypoints/walkable_materials.json"
@@ -267,6 +273,18 @@ return function(S)
 		return s
 	end
 
+	local function normalizeKeyword(kw: any): string?
+		if type(kw) ~= "string" then
+			return nil
+		end
+		local s = string.gsub(kw, "^%s+", "")
+		s = string.gsub(s, "%s+$", "")
+		if s == "" then
+			return nil
+		end
+		return s
+	end
+
 	local function ensureWalkableList(): { string }
 		if type(C.NAV_STONE_PATH_MATERIALS) ~= "table" then
 			C.NAV_STONE_PATH_MATERIALS = {}
@@ -277,6 +295,18 @@ return function(S)
 			end
 		end
 		return C.NAV_STONE_PATH_MATERIALS
+	end
+
+	local function ensurePathKeywordList(): { string }
+		if type(C.NAV_WALKABLE_PATH_KEYWORDS) ~= "table" then
+			C.NAV_WALKABLE_PATH_KEYWORDS = {}
+		end
+		if #C.NAV_WALKABLE_PATH_KEYWORDS == 0 then
+			for _, name in ipairs(DEFAULT_WALKABLE_PATH_KEYWORDS) do
+				table.insert(C.NAV_WALKABLE_PATH_KEYWORDS, name)
+			end
+		end
+		return C.NAV_WALKABLE_PATH_KEYWORDS
 	end
 
 	-- Stone path materials (mesh dump: Cobblestone under stone roads; Sandstone = sand).
@@ -301,9 +331,43 @@ return function(S)
 		return false
 	end
 
+	-- MeshPart floors often share Material=Plastic; match path/name keywords instead.
+	function M.isWalkablePathKeyword(inst: Instance?): boolean
+		if not inst then
+			return false
+		end
+		local path = string.lower(inst:GetFullName())
+		local name = string.lower(inst.Name)
+		for _, kw in ipairs(ensurePathKeywordList()) do
+			local k = string.lower(tostring(kw))
+			if k ~= "" and (string.find(path, k, 1, true) or string.find(name, k, 1, true)) then
+				return true
+			end
+		end
+		return false
+	end
+
+	-- True if this floor sample should be treated as stone-path walkable.
+	function M.isWalkableSurface(inst: Instance?, mat: any): boolean
+		if M.isStonePathMaterial(mat) then
+			return true
+		end
+		return M.isWalkablePathKeyword(inst)
+	end
+
 	function M.listWalkableMaterials(): { string }
 		local out = {}
 		for _, name in ipairs(ensureWalkableList()) do
+			if type(name) == "string" and name ~= "" then
+				table.insert(out, name)
+			end
+		end
+		return out
+	end
+
+	function M.listWalkablePathKeywords(): { string }
+		local out = {}
+		for _, name in ipairs(ensurePathKeywordList()) do
 			if type(name) == "string" and name ~= "" then
 				table.insert(out, name)
 			end
@@ -316,9 +380,10 @@ return function(S)
 		local path = walkableFilePath()
 		local dir = C.WAYPOINT_DIR or "waypoints"
 		local payload = {
-			version = 1,
+			version = 2,
 			updated = os.date("%Y-%m-%d_%H-%M-%S"),
 			materials = M.listWalkableMaterials(),
+			pathKeywords = M.listWalkablePathKeywords(),
 		}
 		local ok, err = pcall(function()
 			if U and U.ensureDir then
@@ -344,31 +409,60 @@ return function(S)
 			end
 			return HttpService:JSONDecode(readfile(path))
 		end)
-		if ok and type(data) == "table" and type(data.materials) == "table" and #data.materials > 0 then
-			local merged = {}
-			local seen: { [string]: boolean } = {}
-			local function add(name: any)
-				local n = M.normalizeMaterialName(name)
-				if n and not seen[n] then
-					seen[n] = true
-					table.insert(merged, n)
+		if ok and type(data) == "table" then
+			if type(data.materials) == "table" and #data.materials > 0 then
+				local merged = {}
+				local seen: { [string]: boolean } = {}
+				local function add(name: any)
+					local n = M.normalizeMaterialName(name)
+					if n and not seen[n] then
+						seen[n] = true
+						table.insert(merged, n)
+					end
 				end
+				for _, name in ipairs(DEFAULT_WALKABLE_MATERIALS) do
+					add(name)
+				end
+				for _, name in ipairs(data.materials) do
+					add(name)
+				end
+				C.NAV_STONE_PATH_MATERIALS = merged
+			else
+				ensureWalkableList()
 			end
-			-- Keep defaults first, then file extras
-			for _, name in ipairs(DEFAULT_WALKABLE_MATERIALS) do
-				add(name)
+			if type(data.pathKeywords) == "table" then
+				local mergedKw = {}
+				local seenKw: { [string]: boolean } = {}
+				local function addKw(name: any)
+					local n = normalizeKeyword(name)
+					if n then
+						local key = string.lower(n)
+						if not seenKw[key] then
+							seenKw[key] = true
+							table.insert(mergedKw, n)
+						end
+					end
+				end
+				for _, name in ipairs(DEFAULT_WALKABLE_PATH_KEYWORDS) do
+					addKw(name)
+				end
+				for _, name in ipairs(data.pathKeywords) do
+					addKw(name)
+				end
+				C.NAV_WALKABLE_PATH_KEYWORDS = mergedKw
+			else
+				ensurePathKeywordList()
 			end
-			for _, name in ipairs(data.materials) do
-				add(name)
-			end
-			C.NAV_STONE_PATH_MATERIALS = merged
 		else
 			ensureWalkableList()
+			ensurePathKeywordList()
 		end
+		-- Always persist so GJ_Bridge lands in the file even on first load
+		M.saveWalkableMaterials()
 		if S.ui and S.ui.refreshWalkableMaterials then
 			S.ui.refreshWalkableMaterials()
 		end
-		return #ensureWalkableList()
+		return #ensureWalkableList() + #ensurePathKeywordList()
 	end
 
 	function M.addWalkableMaterial(name: any): (boolean, string?)
@@ -380,6 +474,25 @@ return function(S)
 			return false, n -- already present
 		end
 		table.insert(ensureWalkableList(), n)
+		M.saveWalkableMaterials()
+		if S.ui and S.ui.refreshWalkableMaterials then
+			S.ui.refreshWalkableMaterials()
+		end
+		return true, n
+	end
+
+	function M.addWalkablePathKeyword(kw: any): (boolean, string?)
+		local n = normalizeKeyword(kw)
+		if not n then
+			return false, nil
+		end
+		local lower = string.lower(n)
+		for _, existing in ipairs(ensurePathKeywordList()) do
+			if string.lower(tostring(existing)) == lower then
+				return false, n
+			end
+		end
+		table.insert(ensurePathKeywordList(), n)
 		M.saveWalkableMaterials()
 		if S.ui and S.ui.refreshWalkableMaterials then
 			S.ui.refreshWalkableMaterials()
@@ -416,15 +529,32 @@ return function(S)
 		for _, name in ipairs(DEFAULT_WALKABLE_MATERIALS) do
 			table.insert(C.NAV_STONE_PATH_MATERIALS, name)
 		end
+		C.NAV_WALKABLE_PATH_KEYWORDS = {}
+		for _, name in ipairs(DEFAULT_WALKABLE_PATH_KEYWORDS) do
+			table.insert(C.NAV_WALKABLE_PATH_KEYWORDS, name)
+		end
 		M.saveWalkableMaterials()
 		if S.ui and S.ui.refreshWalkableMaterials then
 			S.ui.refreshWalkableMaterials()
 		end
-		return #C.NAV_STONE_PATH_MATERIALS
+		return #C.NAV_STONE_PATH_MATERIALS + #C.NAV_WALKABLE_PATH_KEYWORDS
 	end
 
-	-- Probe feet and append Terrain/Mesh Material to walkable list.
-	-- Returns: added(bool), materialName, kind ("terrain"|"part"|…), detail status
+	-- From a part path, prefer a segment containing "bridge" (e.g. GJ_Bridge).
+	local function extractBridgeKeyword(path: string?): string?
+		if type(path) ~= "string" or path == "" then
+			return nil
+		end
+		for seg in string.gmatch(path, "[^%.]+") do
+			if string.find(string.lower(seg), "bridge", 1, true) then
+				return seg
+			end
+		end
+		return nil
+	end
+
+	-- Probe feet and append Terrain/Mesh Material — or a path keyword for Plastic mesh floors.
+	-- Returns: added(bool), token, kind ("terrain"|"part"|…), detail status
 	function M.addWalkableTileFromFeet(): (boolean, string?, string?, string)
 		local pos = U.getLivePlayerVector and U.getLivePlayerVector()
 		if not pos then
@@ -450,6 +580,31 @@ return function(S)
 		end
 		local kind = tostring(info.kind or "?")
 		local mat = M.normalizeMaterialName(info.material)
+
+		-- Generic Plastic MeshParts (bridge plates): prefer path keyword over Material
+		if kind ~= "terrain" and mat and GENERIC_PART_MATERIALS[mat] then
+			local kw = extractBridgeKeyword(info.path)
+			if kw then
+				local added, name = M.addWalkablePathKeyword(kw)
+				if added then
+					return true, name, kind, string.format("added path keyword %s (%s)", tostring(name), kind)
+				end
+				return false, name or kw, kind, string.format("already walkable path: %s", tostring(name or kw))
+			end
+		end
+
+		-- Already walkable via path keyword (e.g. standing on GJ_Bridge)
+		do
+			local pathL = string.lower(tostring(info.path or ""))
+			local nameL = string.lower(tostring(info.name or ""))
+			for _, kw in ipairs(ensurePathKeywordList()) do
+				local k = string.lower(tostring(kw))
+				if k ~= "" and (string.find(pathL, k, 1, true) or string.find(nameL, k, 1, true)) then
+					return false, kw, kind, string.format("already walkable path: %s", kw)
+				end
+			end
+		end
+
 		if not mat then
 			return false, nil, kind, string.format("no material (%s %s)", kind, tostring(info.name or info.path or ""))
 		end
@@ -506,15 +661,16 @@ return function(S)
 
 		local matName = hit.Material and tostring(hit.Material) or nil
 		local isTerrain = inst:IsA("Terrain")
-		local walkableMat = M.isStonePathMaterial(matName)
-		-- User-marked walkable materials bypass collide-prop rejection (mesh road tiles).
-		if not walkableMat and isCollideProp(inst) then
+		local walkable = M.isWalkableSurface(inst, matName)
+		-- User-marked walkable mats / path keywords bypass collide-prop rejection
+		-- (bridge MeshParts are Plastic and otherwise look like props).
+		if not walkable and isCollideProp(inst) then
 			return nil
 		end
 
 		local okSurface = false
 		if stoneOnly then
-			if walkableMat then
+			if walkable then
 				if isTerrain then
 					okSurface = true
 				elseif inst:IsA("BasePart") then
@@ -548,7 +704,7 @@ return function(S)
 				return nil
 			end
 		end
-		local isStone = walkableMat and (isTerrain or (inst:IsA("BasePart") and (inst :: BasePart).CanCollide))
+		local isStone = walkable and (isTerrain or (inst:IsA("BasePart") and (inst :: BasePart).CanCollide))
 		return {
 			pos = pos,
 			normal = hit.Normal,
