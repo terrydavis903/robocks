@@ -1405,7 +1405,11 @@ return function(S)
 		S.pathVizFolder = nil
 	end
 
-	local function ensurePathVizFolder(): Folder
+	local function ensurePathVizFolder(): Folder?
+		-- Never create viz while disabled (would leave green nodes after OFF)
+		if not S.pathVizEnabled then
+			return nil
+		end
 		local f = S.pathVizFolder
 		if f and f.Parent then
 			return f :: Folder
@@ -1431,20 +1435,29 @@ return function(S)
 		p.Transparency = 0.15
 	end
 
-	-- Draw path polyline: amber nodes + cyan segments. Always draws when Path Viz is ON.
+	-- Draw path polyline: green start / amber mid / red end + cyan segments.
 	function M.showPathViz(points: { Vector3 }?, tag: string?)
 		if not S.pathVizEnabled then
+			M.clearPathViz()
 			return
 		end
 		if not points or #points == 0 then
 			M.clearPathViz()
 			return
 		end
+		local epoch = S.pathVizEpoch or 0
 		-- Full-path clearance probes for Clear Hitbox viz (every hop)
 		if S.hitboxVizEnabled and #points >= 2 then
 			M.probeFullPath(points)
 		end
+		if not S.pathVizEnabled or (S.pathVizEpoch or 0) ~= epoch then
+			M.clearPathViz()
+			return
+		end
 		local folder = ensurePathVizFolder()
+		if not folder then
+			return
+		end
 		for _, ch in ipairs(folder:GetChildren()) do
 			ch:Destroy()
 		end
@@ -1455,6 +1468,10 @@ return function(S)
 
 		local lift = 1.2 -- sit above floor so it's visible outdoors
 		for i, pt in ipairs(points) do
+			if not S.pathVizEnabled or (S.pathVizEpoch or 0) ~= epoch then
+				M.clearPathViz()
+				return
+			end
 			local node = Instance.new("Part")
 			node.Name = string.format("N%02d", i)
 			node.Shape = Enum.PartType.Ball
@@ -1478,9 +1495,6 @@ return function(S)
 					seg.Parent = folder
 				end
 			end
-		end
-		if U and U.setStatus and tag then
-			-- brief breadcrumb in status is optional; pathing logs more detail
 		end
 	end
 
@@ -1691,36 +1705,31 @@ return function(S)
 	end
 
 	function M.setPathVizEnabled(on: boolean)
-		S.pathVizEnabled = on and true or false
-		if S.ui and S.ui.setPathVizLabel then
-			S.ui.setPathVizLabel(S.pathVizEnabled)
-		end
-		if not S.pathVizEnabled then
+		local want = on and true or false
+		if not want then
+			-- Invalidate in-flight showPathViz draws before clearing
+			S.pathVizEpoch = (S.pathVizEpoch or 0) + 1
+			S.pathVizEnabled = false
 			M.clearPathViz()
-			-- Do not leave clearance probe boxes if they were only drawn for path review
-			-- (full-path probes still live under Clear Hitbox toggle)
+			if S.ui and S.ui.setPathVizLabel then
+				S.ui.setPathVizLabel(false)
+			end
 			if U and U.setStatus then
 				U.setStatus("Path Viz OFF")
 			end
-		else
-			if U and U.setStatus then
-				U.setStatus("Path Viz ON — A* routes draw cyan/amber lines")
-			end
+			return
+		end
+		S.pathVizEnabled = true
+		if S.ui and S.ui.setPathVizLabel then
+			S.ui.setPathVizLabel(true)
+		end
+		if U and U.setStatus then
+			U.setStatus("Path Viz ON — A* routes draw green/amber/cyan markers")
 		end
 	end
 
 	function M.togglePathViz()
 		M.setPathVizEnabled(not S.pathVizEnabled)
-	end
-
-	-- showPathViz must no-op hard when disabled (guards against late async redraw)
-	local _showPathVizImpl = M.showPathViz
-	function M.showPathViz(points: { Vector3 }?, tag: string?)
-		if not S.pathVizEnabled then
-			M.clearPathViz()
-			return
-		end
-		return _showPathVizImpl(points, tag)
 	end
 
 	---------------------------------------------------------------------------

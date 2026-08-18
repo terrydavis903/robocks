@@ -833,8 +833,25 @@ return function(S)
 		lastVizKind = kind
 		pathIdx = 1
 		segBlocked = kind == "blocked"
-		-- Full-path clearance hitboxes for Clear Hitbox viz (every hop, body height)
-		if nav and nav.probeFullPath and #pathPts >= 2 then
+		-- Path Viz OFF → sweep markers every rebuild (stops leftover green nodes)
+		if not S.pathVizEnabled then
+			if nav and nav.clearPathViz then
+				nav.clearPathViz()
+			else
+				pcall(function()
+					for _, ch in ipairs(workspace:GetChildren()) do
+						if ch.Name == "PortalMage_PathViz"
+							or string.find(ch.Name, "PortalMage_PathViz", 1, true) == 1
+						then
+							ch:Destroy()
+						end
+					end
+				end)
+				S.pathVizFolder = nil
+			end
+		end
+		-- Full-path clearance hitboxes for Clear Hitbox viz only (not Path Viz)
+		if S.hitboxVizEnabled and nav and nav.probeFullPath and #pathPts >= 2 then
 			nav.probeFullPath(pathPts)
 		end
 		-- Reset progress so we don't immediately NO_PROGRESS on a fresh path
@@ -1017,6 +1034,17 @@ return function(S)
 		if nav and nav.clearPathViz then
 			nav.clearPathViz()
 		end
+		-- Belt-and-suspenders: destroy any leftover folder even if Nav ref is stale
+		pcall(function()
+			for _, ch in ipairs(workspace:GetChildren()) do
+				if ch.Name == "PortalMage_PathViz"
+					or string.find(ch.Name, "PortalMage_PathViz", 1, true) == 1
+				then
+					ch:Destroy()
+				end
+			end
+		end)
+		S.pathVizFolder = nil
 	end
 
 	---------------------------------------------------------------------------
@@ -1439,6 +1467,11 @@ return function(S)
 				if not playerPos then
 					task.wait(0.1)
 					return
+				end
+
+				-- Path Viz OFF: continuously destroy leftovers (async redraw races)
+				if not S.pathVizEnabled then
+					clearPathVizIfOff()
 				end
 
 				-- Between fights (no living hold): get back on walkable path texture

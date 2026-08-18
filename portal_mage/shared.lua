@@ -107,6 +107,7 @@ S.MeshOutline = nil :: any
 
 -- A* path visualization (neon polyline when pathfinding runs)
 S.pathVizEnabled = false
+S.pathVizEpoch = 0 -- bumped on OFF; showPathViz aborts if epoch changed mid-draw
 S.pathVizFolder = nil :: any
 
 -- Clearance hitbox viz (player box + last hasClearWalk probe samples)
