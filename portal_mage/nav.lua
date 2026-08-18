@@ -1223,32 +1223,63 @@ return function(S)
 		return false
 	end
 
-	-- Bloated Buildings.* MeshParts (pipes/shaft/barrel/whole-tower hulls).
-	-- Dump 02-15-11: player stood ON stone inside Goblin_Tower_Type3 AABB
-	-- (GJ_Tower3_Pipes ~65k stud³) → every Blockcast blocked → KA kind=blocked thrash.
-	local function isBloatedBuildingHull(bp: BasePart): boolean
+	-- Bloated world MeshParts whose Box/Hull fills space over walkable stone.
+	-- Dump 02-15-11: Buildings.Towers hulls. Dump 02-27-27: Vegetation.Trees
+	-- Tree_Dead_Type1 (~27k stud³) CONTAINS the player on the road → every hop blocked.
+	local function isBloatedWorldHull(bp: BasePart): boolean
 		if isBarrierInstance(bp) or isExplicitWallPart(bp) then
-			return false
-		end
-		if isNamedObstacle(bp) then
-			return false
-		end
-		local path = string.lower(bp:GetFullName())
-		if not string.find(path, ".buildings.", 1, true) then
 			return false
 		end
 		local s = bp.Size
 		local volume = s.X * s.Y * s.Z
-		-- Real thin walls are << this; tower/house LODs are tens of thousands.
-		return volume >= 1500
+		if volume < 1500 then
+			return false
+		end
+		local path = string.lower(bp:GetFullName())
+		local n = string.lower(bp.Name)
+		if string.find(path, ".buildings.", 1, true)
+			or string.find(path, ".vegetation.", 1, true)
+			or string.find(path, ".trees.", 1, true)
+			or string.find(n, "tree_", 1, true)
+			or string.find(n, "_tree", 1, true)
+			or volume >= 8000
+		then
+			-- Stall counters stay blocking via isNamedObstacle when low; mega LODs pierce.
+			return true
+		end
+		return false
 	end
 
 	local function partContainsPoint(bp: BasePart, point: Vector3, margin: number): boolean
 		local localPoint = bp.CFrame:PointToObjectSpace(point)
 		local half = bp.Size * 0.5 + Vector3.new(margin, margin, margin)
-		return math.abs(localPoint.X) <= half.X
+		if math.abs(localPoint.X) <= half.X
 			and math.abs(localPoint.Y) <= half.Y
 			and math.abs(localPoint.Z) <= half.Z
+		then
+			return true
+		end
+		-- World AABB fallback (rotated MeshParts / offset collision)
+		local pos = bp.Position
+		local sx, sy, sz = bp.Size.X * 0.5 + margin, bp.Size.Y * 0.5 + margin, bp.Size.Z * 0.5 + margin
+		return math.abs(point.X - pos.X) <= sx
+			and math.abs(point.Y - pos.Y) <= sy
+			and math.abs(point.Z - pos.Z) <= sz
+	end
+
+	local function shouldPierceStructure(bp: BasePart, fromCenter: Vector3, footY: number): boolean
+		if isPierceableOverhang(bp) or isBloatedWorldHull(bp) then
+			return true
+		end
+		if partContainsPoint(bp, fromCenter, 1.0) then
+			return true
+		end
+		-- Stall roofs / plates above mid-body: walk under on stone (dump 02-27-27).
+		local botY = bp.Position.Y - bp.Size.Y * 0.5
+		if botY >= footY + 2.8 and (isNamedObstacle(bp) or isPierceableOverhang(bp)) then
+			return true
+		end
+		return false
 	end
 
 	-- Does this part count as a body collision (not the floor under our feet)?
@@ -1266,12 +1297,11 @@ return function(S)
 		then
 			return true
 		end
-		if isPierceableOverhang(bp) or isBloatedBuildingHull(bp) then
+		local footY = centerPos.Y - boxSize.Y * 0.5
+		if shouldPierceStructure(bp, centerPos, footY) then
 			return false
 		end
 		-- Vertical band first: floors under feet + pure overhangs above head are not walls.
-		-- (Named stalls/awnings used to short-circuit before this and kill valid roads.)
-		local footY = centerPos.Y - boxSize.Y * 0.5
 		local headY = centerPos.Y + boxSize.Y * 0.5
 		local topY = bp.Position.Y + bp.Size.Y * 0.5
 		local botY = bp.Position.Y - bp.Size.Y * 0.5
@@ -1281,7 +1311,12 @@ return function(S)
 		if botY >= headY - 0.15 then
 			return false
 		end
+		-- Named stalls: only block if they occupy the lower body (posts/counters),
+		-- not canopy plates hanging above the road.
 		if isNamedObstacle(bp) then
+			if botY >= footY + 2.8 then
+				return false
+			end
 			return true
 		end
 		if bp:IsA("Terrain") then
@@ -1293,7 +1328,6 @@ return function(S)
 		if isCollideProp(bp) then
 			return true
 		end
-		-- Explicit walls still block; other collide meshes in body band too
 		if isExplicitWallPart(bp) then
 			return true
 		end
@@ -1311,12 +1345,15 @@ return function(S)
 		then
 			return "building"
 		end
+		if string.find(path, "tree", 1, true) or string.find(path, "vegetation", 1, true) then
+			return "tree"
+		end
 		return "structure"
 	end
 
 	-- Sweep player hitbox along the hop with Blockcast (real collision geometry).
-	-- Multi-hit pierce: soffits, gate/roof overhangs, bloated Buildings hulls, and any
-	-- part that already contains the start (standing inside tower AABB on stone).
+	-- Pre-exclude parts already overlapping the start (standing inside tree/tower AABB),
+	-- then multi-hit pierce soffits / overhangs / bloated hulls.
 	local function hopHitsStructure(fromCenter: Vector3, toCenter: Vector3, boxSize: Vector3): (boolean, string?)
 		local flat = Vector3.new(toCenter.X - fromCenter.X, 0, toCenter.Z - fromCenter.Z)
 		local dist = flat.Magnitude
@@ -1325,11 +1362,34 @@ return function(S)
 		end
 		local dir = flat.Unit
 		local cf = CFrame.lookAt(fromCenter, fromCenter + dir)
-		-- Slightly shorter than full body so high arch lintels don't skim-block.
 		local probeSize = Vector3.new(boxSize.X, math.max(1.0, boxSize.Y * 0.82), boxSize.Z)
 		local exclude = clearanceExcludeList()
+		local footY = fromCenter.Y - boxSize.Y * 0.5
+
+		-- Standing inside Tree_Dead / tower hull: Blockcast may not return that part
+		-- first. Overlap at start and pre-pierce anything we should ignore.
+		do
+			local overlap = OverlapParams.new()
+			overlap.FilterType = Enum.RaycastFilterType.Exclude
+			overlap.FilterDescendantsInstances = exclude
+			overlap.RespectCanCollide = true
+			local ok, res = pcall(function()
+				return workspace:GetPartBoundsInBox(cf, probeSize, overlap)
+			end)
+			if ok and type(res) == "table" then
+				for _, inst in ipairs(res) do
+					if inst:IsA("BasePart") then
+						local bp = inst :: BasePart
+						if shouldPierceStructure(bp, fromCenter, footY) then
+							table.insert(exclude, bp)
+						end
+					end
+				end
+			end
+		end
+
 		local castDir = dir * dist
-		for _ = 1, 10 do
+		for _ = 1, 12 do
 			local params = RaycastParams.new()
 			params.FilterType = Enum.RaycastFilterType.Exclude
 			params.FilterDescendantsInstances = exclude
@@ -1341,7 +1401,6 @@ return function(S)
 				return false, nil
 			end
 			local inst = hit.Instance
-			-- Soffit / roof underside: walk-under is valid
 			if hit.Normal.Y < -0.35 then
 				table.insert(exclude, inst)
 				continue
@@ -1351,10 +1410,7 @@ return function(S)
 				continue
 			end
 			local bp = inst :: BasePart
-			if isPierceableOverhang(bp)
-				or isBloatedBuildingHull(bp)
-				or partContainsPoint(bp, fromCenter, 0.75)
-			then
+			if shouldPierceStructure(bp, fromCenter, footY) then
 				table.insert(exclude, bp)
 				continue
 			end
