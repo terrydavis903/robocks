@@ -989,20 +989,19 @@ return function(S)
 				if not ns then
 					continue
 				end
-				-- Height continuity: stone roads stay near-level (log 11-37-41:
-				-- NAV_MAX_DROP_Y=40 let A* walk Y63→53 off the elevated cobble).
+				-- Height continuity
 				local dY = ns.pos.Y - curSample.pos.Y
-				local maxDrop = if M.stonePathOnly()
-					then cfg("NAV_STONE_MAX_DROP_Y", 2.75)
-					else cfg("NAV_MAX_DROP_Y", 40)
+				local maxDrop = cfg("NAV_MAX_DROP_Y", 40)
 				if dY > maxStepY then
 					continue -- climb too high
 				end
 				if dY < -maxDrop then
-					continue -- off-ledge / lower terrace
+					continue -- absurd void
 				end
-				-- Stone roads: no mid-edge collision LOS (paths are guaranteed clear).
-				if not M.stonePathOnly() then
+				-- Wall LOS between cells — including stone mode. Skipping this for
+				-- stone assumed "roads are clear" and A* chorded through walls
+				-- between two cobble samples (user: path through wall, not on stone).
+				do
 					local mid = (curSample.pos + ns.pos) * 0.5
 					local midH = mid + Vector3.new(0, 2.5, 0)
 					local delta = ns.pos - curSample.pos
@@ -1226,11 +1225,14 @@ return function(S)
 		return false
 	end
 
-	-- Bloated world MeshParts whose Box/Hull fills space over walkable stone.
-	-- Dump 02-15-11: Buildings.Towers hulls. Dump 02-27-27: Vegetation.Trees
-	-- Tree_Dead_Type1 (~27k stud³) CONTAINS the player on the road → every hop blocked.
+	-- Only pierce mega hulls that are NOT solid building walls.
+	-- Piercing all .buildings. volume>=1500 let A*/Blockcast walk through house
+	-- wall meshes (user 2026-08-18: through wall, not on stone).
 	local function isBloatedWorldHull(bp: BasePart): boolean
 		if isBarrierInstance(bp) or isExplicitWallPart(bp) then
+			return false
+		end
+		if isNamedObstacle(bp) then
 			return false
 		end
 		local s = bp.Size
@@ -1240,14 +1242,19 @@ return function(S)
 		end
 		local path = string.lower(bp:GetFullName())
 		local n = string.lower(bp.Name)
-		if string.find(path, ".buildings.", 1, true)
-			or string.find(path, ".vegetation.", 1, true)
+		-- Trees / vegetation LODs (dump 02-27-27 Tree_Dead on the road)
+		if string.find(path, ".vegetation.", 1, true)
 			or string.find(path, ".trees.", 1, true)
 			or string.find(n, "tree_", 1, true)
 			or string.find(n, "_tree", 1, true)
-			or volume >= 8000
 		then
-			-- Stall counters stay blocking via isNamedObstacle when low; mega LODs pierce.
+			return true
+		end
+		-- Decorative tower LODs only — not generic building/wall meshes
+		if string.find(n, "pipes", 1, true)
+			or string.find(n, "_shaft", 1, true)
+			or string.find(n, "barrel", 1, true)
+		then
 			return true
 		end
 		return false
@@ -1448,23 +1455,10 @@ return function(S)
 		local hopClear = true
 		local stoneOnly = M.stonePathOnly()
 
-		-- Stone roads: stone continuity + near-level hops + Blockcast body sweep.
+		-- Stone roads: stone continuity + Blockcast body sweep (walls must block).
 		if stoneOnly then
-			local maxStoneDrop = cfg("NAV_STONE_MAX_DROP_Y", 2.75)
-			if (to.Y - from.Y) < -maxStoneDrop then
-				-- Whole hop drops off the elevated road (log 11-37-41 Y63→53).
-				table.insert(samples, {
-					pos = Vector3.new(from.X, from.Y + centerH, from.Z),
-					size = boxSize,
-					dir = dir,
-					blocked = true,
-					note = "stone_drop",
-				})
-				return false, samples
-			end
 			local firstCenter: Vector3? = nil
 			local lastCenter: Vector3? = nil
-			local prevFloorY = from.Y
 			for s = 0, nSteps do
 				local t = math.min(dist, s * step)
 				local alpha = if dist > 1e-4 then t / dist else 0
@@ -1473,28 +1467,26 @@ return function(S)
 				local z = from.Z + dir.Z * t
 				local floor = M.sampleFloor(x, z, hintY, { requireClear = false })
 				local onStone = floor and floor.isStonePath == true
-				local floorY = if floor and floor.pos then floor.pos.Y else hintY
-				local dropStep = floorY - prevFloorY
-				local dropOk = dropStep >= -maxStoneDrop
-				local centerPos = Vector3.new(x, floorY + centerH, z)
+				local centerPos = if floor and floor.pos
+					then Vector3.new(x, floor.pos.Y + centerH, z)
+					else Vector3.new(x, hintY + centerH, z)
 				if not firstCenter then
 					firstCenter = centerPos
 				end
 				lastCenter = centerPos
-				if not onStone or not dropOk then
+				if not onStone then
 					hopClear = false
 				end
 				table.insert(samples, {
 					pos = centerPos,
 					size = boxSize,
 					dir = dir,
-					blocked = (not onStone) or (not dropOk),
-					note = if not dropOk then "stone_drop" elseif onStone then "stone" else "off_stone",
+					blocked = not onStone,
+					note = if onStone then "stone" else "off_stone",
 					material = floor and floor.material or nil,
-					floorY = floorY,
+					floorY = floor and floor.pos.Y or hintY,
 					centerH = centerH,
 				})
-				prevFloorY = floorY
 			end
 			if firstCenter and lastCenter then
 				local hitStruct, structNote = hopHitsStructure(firstCenter, lastCenter, boxSize)
