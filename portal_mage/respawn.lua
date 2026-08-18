@@ -9,12 +9,12 @@ return function(S)
 
 	local lastRespawnClickAt = 0
 
-	local function isDeadOrDying(): boolean
+	-- True only when a Humanoid exists and is dead. Nil character during the
+	-- post-click swap is NOT death (that false-positive aborted regen forever:
+	-- "died mid-regen — aborting old loop" stuck).
+	local function isDefinitelyDead(): boolean
 		local hum = U.getHumanoid and U.getHumanoid()
-		if not hum then
-			return true
-		end
-		return hum.Health <= 0
+		return hum ~= nil and hum.Health <= 0
 	end
 
 	-- True if this post-respawn generation was superseded (died again / new click).
@@ -209,7 +209,7 @@ return function(S)
 		local deadline = os.clock() + cap
 
 		while os.clock() < deadline do
-			if regenAborted(gen) or isDeadOrDying() then
+			if regenAborted(gen) or isDefinitelyDead() then
 				U.setStatus(prefix .. ": died mid-regen — abort for re-respawn")
 				S.respawnRegenAbort = true
 				return false
@@ -237,7 +237,7 @@ return function(S)
 			task.wait(interval)
 		end
 
-		if regenAborted(gen) or isDeadOrDying() then
+		if regenAborted(gen) or isDefinitelyDead() then
 			S.respawnRegenAbort = true
 			return false
 		end
@@ -264,7 +264,7 @@ return function(S)
 		local prefix = statusPrefix or "recover"
 		local aborted = false
 		local ok, err = pcall(function()
-			if regenAborted(gen) or isDeadOrDying() then
+			if regenAborted(gen) or isDefinitelyDead() then
 				aborted = true
 				return
 			end
@@ -286,7 +286,7 @@ return function(S)
 				U.setStatus(prefix .. ": vitals already full")
 			end
 
-			if regenAborted(gen) or isDeadOrDying() then
+			if regenAborted(gen) or isDefinitelyDead() then
 				aborted = true
 				return
 			end
@@ -305,7 +305,7 @@ return function(S)
 				end
 			end
 
-			if regenAborted(gen) or isDeadOrDying() then
+			if regenAborted(gen) or isDefinitelyDead() then
 				aborted = true
 				return
 			end
@@ -408,7 +408,7 @@ return function(S)
 			task.wait(0.2)
 		end
 
-		if regenAborted(gen) or isDeadOrDying() then
+		if regenAborted(gen) or isDefinitelyDead() then
 			S.zRegenBusy = false
 			S.resourceRecoverPhase = nil
 			U.setStatus("Auto-respawn: dead again before regen — waiting for Respawn UI")
@@ -427,7 +427,7 @@ return function(S)
 			end
 			local tS = os.clock()
 			while os.clock() - tS < holdS do
-				if regenAborted(gen) or isDeadOrDying() then
+				if regenAborted(gen) or isDefinitelyDead() then
 					break
 				end
 				task.wait(0.05)
@@ -437,7 +437,7 @@ return function(S)
 			end
 		end
 
-		if regenAborted(gen) or isDeadOrDying() then
+		if regenAborted(gen) or isDefinitelyDead() then
 			S.zRegenBusy = false
 			S.resourceRecoverPhase = nil
 			U.setStatus("Auto-respawn: died during S-hold — re-respawn")
@@ -447,7 +447,7 @@ return function(S)
 		-- allowBusy: we already own zRegenBusy for this generation
 		local ready = M.runZRegenSequence("Auto-respawn", { gen = gen, allowBusy = true })
 
-		if regenAborted(gen) or isDeadOrDying() then
+		if regenAborted(gen) or isDefinitelyDead() then
 			S.zRegenBusy = false
 			S.resourceRecoverPhase = nil
 			U.setStatus("Auto-respawn: died mid-regen — will click Respawn again")
@@ -496,7 +496,7 @@ return function(S)
 			U.ensureWeaponDrawn(C.WEAPON_EQUIP_WAIT or 1.5, true)
 		end
 
-		if regenAborted(gen) or isDeadOrDying() then
+		if regenAborted(gen) or isDefinitelyDead() then
 			S.zRegenBusy = false
 			return
 		end
@@ -514,7 +514,7 @@ return function(S)
 		if S.PathRecord and S.PathRecord.tryPlayClosestSpawnPath then
 			local matchStuds = C.RESPAWN_PATH_MATCH_STUDS or 64
 			local used = S.PathRecord.tryPlayClosestSpawnPath(matchStuds)
-			if regenAborted(gen) or isDeadOrDying() then
+			if regenAborted(gen) or isDefinitelyDead() then
 				return
 			end
 			if not used then
@@ -534,7 +534,7 @@ return function(S)
 			end
 		end
 
-		if regenAborted(gen) or isDeadOrDying() then
+		if regenAborted(gen) or isDefinitelyDead() then
 			return
 		end
 
@@ -565,7 +565,7 @@ return function(S)
 
 		if not started and not S.walking then
 			for attempt = 1, 6 do
-				if regenAborted(gen) or isDeadOrDying() then
+				if regenAborted(gen) or isDefinitelyDead() then
 					return
 				end
 				if S.walking then
@@ -628,17 +628,19 @@ return function(S)
 			return
 		end
 
-		-- Died mid-regen / mid-egress: Respawn UI is up again. Abort the stale
-		-- loop so we keep auto-respawning instead of sitting stuck on zRegenBusy.
+		-- Only interrupt an in-flight post-respawn if we are *actually* dead again.
+		-- Respawn UI can linger after our own click while zRegenBusy=true — aborting
+		-- that killed the new loop and stuck status on "died mid-regen".
 		if S.zRegenBusy or S.spawnEgressBusy then
+			if not isDefinitelyDead() then
+				return -- legitimate regen / egress still running
+			end
 			S.respawnRegenAbort = true
 			S.spawnEgressBusy = false
-			-- Preserve KA resume intent across the re-death
 			if S.respawnResumeWalk or S.proximityResumeWalk then
 				S.respawnResumeWalk = true
 			end
-			U.setStatus("Auto-respawn: died mid-regen — aborting old loop")
-			-- Fall through after brief yield so wait loops see abort
+			U.setStatus("Auto-respawn: died mid-regen — re-clicking Respawn")
 			task.wait(0.05)
 			S.zRegenBusy = false
 		end
