@@ -147,7 +147,11 @@ return {
 	NAV_MAX_STEP_Y = 7, -- max climb between A* cells
 	-- Walk-off drops: next node lower by this much = just hold W (gravity). Not a wall.
 	NAV_DROP_ALLOW_DY = 2.0,
-	NAV_MAX_DROP_Y = 40, -- A* may step down this far (ascent still NAV_MAX_STEP_Y)
+	NAV_MAX_DROP_Y = 40, -- any-floor A* may step down this far (ascent still NAV_MAX_STEP_Y)
+	-- Stone roads: KA log 11-37-41 walked Y=63→53 off the elevated path onto a
+	-- lower ledge (same WPS forever, NO_PROGRESS). Keep stone steps near-level.
+	NAV_STONE_MAX_DROP_Y = 2.75,
+	NAV_STONE_ELEV_BAND = 5.0, -- path end must stay within this of start Y
 	NAV_MAX_SNAP_Y = 10,
 	NAV_ARRIVE_STUDS = 2.5,
 	NAV_WALL_CLEARANCE = 1.6, -- unused when stone-path-only (no pinch checks)

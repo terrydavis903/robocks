@@ -752,6 +752,18 @@ return function(S)
 				))
 				return false
 			end
+			-- Stay on the elevated stone road — log 11-37-41 paths ended ~10studs
+			-- below start Y and stuck on the lower ledge forever.
+			local elevBand = C.NAV_STONE_ELEV_BAND or 5.0
+			if (endP.Y - playerPos.Y) < -elevBand then
+				log(string.format(
+					"path REJECT %s endY=%.0f startY=%.0f (off-elev)",
+					tryKind,
+					endP.Y,
+					playerPos.Y
+				))
+				return false
+			end
 			-- Recorded corridor mid-segments are trusted, but the join from the live
 			-- player onto wp1 must stay on stone (dump 02-24-48 off-path cut).
 			if tryKind == "spawn_corridor" then
@@ -873,20 +885,19 @@ return function(S)
 			end
 		end
 
-		-- Stand-band unreachable (enemy off stone / lower terrace): still walk stone
-		-- that closes distance. Dump 02-15-11: only BLOCKED thrash at dist≈54 with
-		-- goals at y=106 while player on y=112 stone under tower AABB.
+		-- Stand-band unreachable: walk stone that closes distance, but stay on the
+		-- same elevation. Log 11-37-41 stone:progress walked Y63→53 off the road.
 		if #pts < 2 and nav and nav.computePath then
-			local progressGoal = epos
+			local elevBand = C.NAV_STONE_ELEV_BAND or 5.0
+			local progressGoal: Vector3? = nil
 			if nav.snapToStonePath then
 				local gs = nav.snapToStonePath(epos, 28)
-				if gs and gs.pos then
+				if gs and gs.pos and math.abs(gs.pos.Y - playerPos.Y) <= elevBand then
 					progressGoal = gs.pos
 				end
 			end
 			local dNow = flatDist(playerPos, epos)
-			local dProg = flatDist(progressGoal, epos)
-			if dProg < dNow - 2 then
+			if progressGoal and flatDist(progressGoal, epos) < dNow - 2 then
 				local tryPts, tryKind = nav.computePath(playerPos, progressGoal, {
 					maxGoals = maxGoals,
 					ringN = 6,
@@ -897,23 +908,23 @@ return function(S)
 					and not (type(tryKind) == "string" and string.sub(tryKind, 1, 7) == "blocked")
 				then
 					local endP = tryPts[#tryPts]
-					if flatDist(endP, epos) < dNow - 2 then
-						local hopOk = true
-						if nav.pathSegmentsClear then
-							hopOk = nav.pathSegmentsClear(tryPts)
-						end
-						if hopOk then
-							pts = tryPts
-							kind = "stone:progress"
-							goal = endP
-							log(string.format(
-								"path stone:progress wps=%d → %s dEnemy=%.1f→%.1f",
-								#pts,
-								enemy.Name,
-								dNow,
-								flatDist(endP, epos)
-							))
-						end
+					local elevOk = (endP.Y - playerPos.Y) >= -elevBand
+					local closer = flatDist(endP, epos) < dNow - 2
+					local hopOk = elevOk and closer
+					if hopOk and nav.pathSegmentsClear then
+						hopOk = nav.pathSegmentsClear(tryPts)
+					end
+					if hopOk then
+						pts = tryPts
+						kind = "stone:progress"
+						goal = endP
+						log(string.format(
+							"path stone:progress wps=%d → %s dEnemy=%.1f→%.1f",
+							#pts,
+							enemy.Name,
+							dNow,
+							flatDist(endP, epos)
+						))
 					end
 				end
 			end

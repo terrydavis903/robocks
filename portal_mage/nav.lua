@@ -989,14 +989,17 @@ return function(S)
 				if not ns then
 					continue
 				end
-				-- Height continuity: tight on climbs, generous on drops (walk off ledge)
+				-- Height continuity: stone roads stay near-level (log 11-37-41:
+				-- NAV_MAX_DROP_Y=40 let A* walk Y63→53 off the elevated cobble).
 				local dY = ns.pos.Y - curSample.pos.Y
-				local maxDrop = cfg("NAV_MAX_DROP_Y", 40)
+				local maxDrop = if M.stonePathOnly()
+					then cfg("NAV_STONE_MAX_DROP_Y", 2.75)
+					else cfg("NAV_MAX_DROP_Y", 40)
 				if dY > maxStepY then
 					continue -- climb too high
 				end
 				if dY < -maxDrop then
-					continue -- absurd void
+					continue -- off-ledge / lower terrace
 				end
 				-- Stone roads: no mid-edge collision LOS (paths are guaranteed clear).
 				if not M.stonePathOnly() then
@@ -1445,10 +1448,23 @@ return function(S)
 		local hopClear = true
 		local stoneOnly = M.stonePathOnly()
 
-		-- Stone roads: stone continuity + Blockcast body sweep (not MeshPart AABB overlap).
+		-- Stone roads: stone continuity + near-level hops + Blockcast body sweep.
 		if stoneOnly then
+			local maxStoneDrop = cfg("NAV_STONE_MAX_DROP_Y", 2.75)
+			if (to.Y - from.Y) < -maxStoneDrop then
+				-- Whole hop drops off the elevated road (log 11-37-41 Y63→53).
+				table.insert(samples, {
+					pos = Vector3.new(from.X, from.Y + centerH, from.Z),
+					size = boxSize,
+					dir = dir,
+					blocked = true,
+					note = "stone_drop",
+				})
+				return false, samples
+			end
 			local firstCenter: Vector3? = nil
 			local lastCenter: Vector3? = nil
+			local prevFloorY = from.Y
 			for s = 0, nSteps do
 				local t = math.min(dist, s * step)
 				local alpha = if dist > 1e-4 then t / dist else 0
@@ -1457,26 +1473,28 @@ return function(S)
 				local z = from.Z + dir.Z * t
 				local floor = M.sampleFloor(x, z, hintY, { requireClear = false })
 				local onStone = floor and floor.isStonePath == true
-				local centerPos = if floor and floor.pos
-					then Vector3.new(x, floor.pos.Y + centerH, z)
-					else Vector3.new(x, hintY + centerH, z)
+				local floorY = if floor and floor.pos then floor.pos.Y else hintY
+				local dropStep = floorY - prevFloorY
+				local dropOk = dropStep >= -maxStoneDrop
+				local centerPos = Vector3.new(x, floorY + centerH, z)
 				if not firstCenter then
 					firstCenter = centerPos
 				end
 				lastCenter = centerPos
-				if not onStone then
+				if not onStone or not dropOk then
 					hopClear = false
 				end
 				table.insert(samples, {
 					pos = centerPos,
 					size = boxSize,
 					dir = dir,
-					blocked = not onStone,
-					note = if onStone then "stone" else "off_stone",
+					blocked = (not onStone) or (not dropOk),
+					note = if not dropOk then "stone_drop" elseif onStone then "stone" else "off_stone",
 					material = floor and floor.material or nil,
-					floorY = floor and floor.pos.Y or hintY,
+					floorY = floorY,
 					centerH = centerH,
 				})
+				prevFloorY = floorY
 			end
 			if firstCenter and lastCenter then
 				local hitStruct, structNote = hopHitsStructure(firstCenter, lastCenter, boxSize)
