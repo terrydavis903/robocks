@@ -624,48 +624,25 @@ return function(S)
 		return cfg("NAV_STONE_PATH_ONLY", true) == true
 	end
 
-	-- Sample walkable floor under world XZ.
-	-- Stone-path mode: Terrain OR MeshPart floors whose Material is in the walkable list.
-	function M.sampleFloor(x: number, z: number, yHint: number?, opts: any?): any?
-		opts = opts or {}
-		local allowAny = opts.allowAnyFloor == true
-		local stoneOnly = M.stonePathOnly() and not allowAny
-		local requireClear = opts.requireClear
-		if requireClear == nil then
-			-- Stone roads: no pinch / collision gating
-			requireClear = not stoneOnly
-		end
-		if stoneOnly then
-			requireClear = false
-		end
-		local rayUp = cfg("NAV_RAY_UP", 50)
-		local rayDown = cfg("NAV_RAY_DOWN", 140)
-		local minNy = cfg("NAV_MIN_NORMAL_Y", 0.45)
-		local y0 = yHint or 50
-		local origin = Vector3.new(x, y0 + rayUp, z)
-		local params = M.rayParams()
-		local hit = workspace:Raycast(origin, Vector3.new(0, -(rayUp + rayDown), 0), params)
-		if not hit then
-			return nil
-		end
-		if hit.Normal.Y < minNy then
-			return nil -- hit a non-floor surface (wall / cliff face)
-		end
+	-- True if this ray hit qualifies as a standable floor for the current mode.
+	local function classifyFloorHit(hit: RaycastResult, stoneOnly: boolean): (boolean, boolean, string?, boolean)
 		local inst = hit.Instance
 		if not inst then
-			return nil
+			return false, false, nil, false
 		end
 		if isBarrierInstance(inst) then
-			return nil
+			return false, false, nil, false
 		end
-
+		if hit.Normal.Y < cfg("NAV_MIN_NORMAL_Y", 0.45) then
+			return false, false, nil, false -- wall / cliff face / underside edge
+		end
 		local matName = hit.Material and tostring(hit.Material) or nil
 		local isTerrain = inst:IsA("Terrain")
 		local walkable = M.isWalkableSurface(inst, matName)
 		-- User-marked walkable mats / path keywords bypass collide-prop rejection
 		-- (bridge MeshParts are Plastic and otherwise look like props).
 		if not walkable and isCollideProp(inst) then
-			return nil
+			return false, walkable, matName, isTerrain
 		end
 
 		local okSurface = false
@@ -692,30 +669,83 @@ return function(S)
 				end
 			end
 		end
-		if not okSurface then
-			return nil
+		return okSurface, walkable, matName, isTerrain
+	end
+
+	-- Sample walkable floor under world XZ.
+	-- Stone-path mode: Terrain OR MeshPart floors whose Material is in the walkable list.
+	-- Pierces non-walkable overhead MeshParts (mesh dump 2026-08-17_20-18-13: Goblin_Gate
+	-- Plastic roofs at y~151 sit above Cobblestone Terrain at y~108 and used to steal the ray).
+	function M.sampleFloor(x: number, z: number, yHint: number?, opts: any?): any?
+		opts = opts or {}
+		local allowAny = opts.allowAnyFloor == true
+		local stoneOnly = M.stonePathOnly() and not allowAny
+		local requireClear = opts.requireClear
+		if requireClear == nil then
+			-- Stone roads: no pinch / collision gating
+			requireClear = not stoneOnly
 		end
-		local pos = hit.Position + hit.Normal.Unit * 0.15
-		local clear = 99
-		if requireClear then
-			clear = M.wallClearance(pos)
-			local need = cfg("NAV_WALL_CLEARANCE", 2.75)
-			if clear + 1e-3 < need then
+		if stoneOnly then
+			requireClear = false
+		end
+		local rayUp = cfg("NAV_RAY_UP", 50)
+		local rayDown = cfg("NAV_RAY_DOWN", 140)
+		local y0 = yHint or 50
+		local topY = y0 + rayUp
+		local bottomY = y0 - rayDown
+		local curOrigin = Vector3.new(x, topY, z)
+		local pierceExclude: { Instance } = {}
+		local maxPierce = 14
+		local traveled = 0
+
+		for _ = 1, maxPierce do
+			local remaining = curOrigin.Y - bottomY
+			if remaining < 0.5 then
 				return nil
 			end
+			local params = M.rayParams(pierceExclude)
+			local hit = workspace:Raycast(curOrigin, Vector3.new(0, -remaining, 0), params)
+			if not hit or not hit.Instance then
+				return nil
+			end
+			traveled += hit.Distance
+
+			local okSurface, walkable, matName, isTerrain = classifyFloorHit(hit, stoneOnly)
+			local inst = hit.Instance
+			if okSurface then
+				local pos = hit.Position + hit.Normal.Unit * 0.15
+				local clear = 99
+				if requireClear then
+					clear = M.wallClearance(pos)
+					local need = cfg("NAV_WALL_CLEARANCE", 2.75)
+					if clear + 1e-3 < need then
+						return nil
+					end
+				end
+				local isStone = walkable and (isTerrain or (inst:IsA("BasePart") and (inst :: BasePart).CanCollide))
+				return {
+					pos = pos,
+					normal = hit.Normal,
+					material = matName,
+					instance = inst,
+					path = inst:GetFullName(),
+					isTerrain = isTerrain,
+					isStonePath = isStone == true,
+					distance = traveled,
+					wallClearance = clear,
+				}
+			end
+
+			-- Rejected hit: pierce past BaseParts so roofs/awnings don't hide the real floor.
+			-- Terrain / barriers end the search (can't punch through the ground or walls).
+			if isTerrain or isBarrierInstance(inst) or not inst:IsA("BasePart") then
+				return nil
+			end
+			table.insert(pierceExclude, inst)
+			-- Continue just below this hit so we don't re-strike the same surface.
+			curOrigin = Vector3.new(x, hit.Position.Y - 0.05, z)
 		end
-		local isStone = walkable and (isTerrain or (inst:IsA("BasePart") and (inst :: BasePart).CanCollide))
-		return {
-			pos = pos,
-			normal = hit.Normal,
-			material = matName,
-			instance = inst,
-			path = inst:GetFullName(),
-			isTerrain = isTerrain,
-			isStonePath = isStone == true,
-			distance = hit.Distance,
-			wallClearance = clear,
-		}
+		return nil
 	end
 
 	function M.sampleFloorAt(world: Vector3, opts: any?): any?
