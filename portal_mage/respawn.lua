@@ -369,6 +369,22 @@ return function(S)
 		return ok and (not U.isSeated()) and U.isWeaponDrawn()
 	end
 
+	-- Drop busy flags for this post-respawn generation. Superseded gens no-op
+	-- so a newer click's sequence keeps ownership.
+	local function endPostRespawnBusy(gen: number, opts: any?)
+		opts = opts or {}
+		if type(gen) == "number" and type(S.postRespawnGen) == "number" and gen ~= S.postRespawnGen then
+			return
+		end
+		S.zRegenBusy = false
+		S.resourceRecoverPhase = nil
+		S.spawnEgressBusy = false
+		if opts.clearResume == true then
+			S.respawnResumeWalk = false
+		end
+		-- keepResumeIfDead: leave respawnResumeWalk armed for the next Respawn click
+	end
+
 	-- After death: wait for character → S nudge → recover → spawn egress → resume KA
 	local function runPostRespawnSequence(gen: number)
 		-- Capture before any flag churn; keep respawnResumeWalk until startWalk succeeds
@@ -386,10 +402,15 @@ return function(S)
 		if shouldResumeWalk then
 			S.respawnResumeWalk = true
 		end
+
+		local function abortDead(msg: string)
+			endPostRespawnBusy(gen, { keepResumeIfDead = true })
+			U.setStatus(msg)
+		end
+
 		task.wait(waitAfterClick)
 		if regenAborted(gen) then
-			S.zRegenBusy = false
-			S.resourceRecoverPhase = nil
+			endPostRespawnBusy(gen, {}) -- superseded: don't touch resume
 			return
 		end
 
@@ -397,8 +418,7 @@ return function(S)
 		local tChar = os.clock()
 		while os.clock() - tChar < 8 do
 			if regenAborted(gen) then
-				S.zRegenBusy = false
-				S.resourceRecoverPhase = nil
+				endPostRespawnBusy(gen, {})
 				return
 			end
 			local hum = U.getHumanoid and U.getHumanoid()
@@ -408,10 +428,12 @@ return function(S)
 			task.wait(0.2)
 		end
 
-		if regenAborted(gen) or isDefinitelyDead() then
-			S.zRegenBusy = false
-			S.resourceRecoverPhase = nil
-			U.setStatus("Auto-respawn: dead again before regen — waiting for Respawn UI")
+		if regenAborted(gen) then
+			endPostRespawnBusy(gen, {})
+			return
+		end
+		if isDefinitelyDead() then
+			abortDead("Auto-respawn: dead again before regen — waiting for Respawn UI")
 			return
 		end
 
@@ -437,20 +459,24 @@ return function(S)
 			end
 		end
 
-		if regenAborted(gen) or isDefinitelyDead() then
-			S.zRegenBusy = false
-			S.resourceRecoverPhase = nil
-			U.setStatus("Auto-respawn: died during S-hold — re-respawn")
+		if regenAborted(gen) then
+			endPostRespawnBusy(gen, {})
+			return
+		end
+		if isDefinitelyDead() then
+			abortDead("Auto-respawn: died during S-hold — re-respawn")
 			return
 		end
 
 		-- allowBusy: we already own zRegenBusy for this generation
 		local ready = M.runZRegenSequence("Auto-respawn", { gen = gen, allowBusy = true })
 
-		if regenAborted(gen) or isDefinitelyDead() then
-			S.zRegenBusy = false
-			S.resourceRecoverPhase = nil
-			U.setStatus("Auto-respawn: died mid-regen — will click Respawn again")
+		if regenAborted(gen) then
+			endPostRespawnBusy(gen, {})
+			return
+		end
+		if isDefinitelyDead() then
+			abortDead("Auto-respawn: died mid-regen — will click Respawn again")
 			return
 		end
 
@@ -468,15 +494,13 @@ return function(S)
 		end
 
 		if not shouldResumeWalk then
-			S.respawnResumeWalk = false
-			S.zRegenBusy = false
+			endPostRespawnBusy(gen, { clearResume = true })
 			return
 		end
 
 		if S.walking then
-			S.respawnResumeWalk = false
 			S.proximityResumeWalk = false
-			S.zRegenBusy = false
+			endPostRespawnBusy(gen, { clearResume = true })
 			U.setStatus("Auto-respawn: Kill Aura already running")
 			return
 		end
@@ -496,8 +520,12 @@ return function(S)
 			U.ensureWeaponDrawn(C.WEAPON_EQUIP_WAIT or 1.5, true)
 		end
 
-		if regenAborted(gen) or isDefinitelyDead() then
-			S.zRegenBusy = false
+		if regenAborted(gen) then
+			endPostRespawnBusy(gen, {})
+			return
+		end
+		if isDefinitelyDead() then
+			abortDead("Auto-respawn: died before egress — waiting for Respawn UI")
 			return
 		end
 
@@ -514,7 +542,12 @@ return function(S)
 		if S.PathRecord and S.PathRecord.tryPlayClosestSpawnPath then
 			local matchStuds = C.RESPAWN_PATH_MATCH_STUDS or 64
 			local used = S.PathRecord.tryPlayClosestSpawnPath(matchStuds)
-			if regenAborted(gen) or isDefinitelyDead() then
+			if regenAborted(gen) then
+				endPostRespawnBusy(gen, {})
+				return
+			end
+			if isDefinitelyDead() then
+				abortDead("Auto-respawn: died during spawn egress — re-respawn")
 				return
 			end
 			if not used then
@@ -534,7 +567,12 @@ return function(S)
 			end
 		end
 
-		if regenAborted(gen) or isDefinitelyDead() then
+		if regenAborted(gen) then
+			endPostRespawnBusy(gen, {})
+			return
+		end
+		if isDefinitelyDead() then
+			abortDead("Auto-respawn: died after egress — re-respawn")
 			return
 		end
 
@@ -544,7 +582,7 @@ return function(S)
 			if threat then
 				S.proximityResumeWalk = true
 				S.proximityPaused = true
-				S.respawnResumeWalk = false
+				endPostRespawnBusy(gen, { clearResume = true })
 				U.setStatus(string.format(
 					"Auto-respawn: egress done — prox blocked (%s @ %.0f); KA when clear",
 					plr and plr.Name or "?",
@@ -565,7 +603,12 @@ return function(S)
 
 		if not started and not S.walking then
 			for attempt = 1, 6 do
-				if regenAborted(gen) or isDefinitelyDead() then
+				if regenAborted(gen) then
+					endPostRespawnBusy(gen, {})
+					return
+				end
+				if isDefinitelyDead() then
+					abortDead("Auto-respawn: died during KA resume retries")
 					return
 				end
 				if S.walking then
@@ -596,23 +639,24 @@ return function(S)
 		end
 
 		if regenAborted(gen) then
+			endPostRespawnBusy(gen, {})
 			return
 		end
 
 		if S.walking then
-			S.respawnResumeWalk = false
 			S.proximityResumeWalk = false
 			S.proximityPaused = false
+			endPostRespawnBusy(gen, { clearResume = true })
 			U.setStatus("Auto-respawn: Kill Aura resumed")
 		else
 			-- Sticky prox handoff if a player appeared during retries
 			if S.proximityGuardEnabled and S.Proximity and select(1, S.Proximity.isThreatNearby()) then
 				S.proximityResumeWalk = true
 				S.proximityPaused = true
-				S.respawnResumeWalk = false
+				endPostRespawnBusy(gen, { clearResume = true })
 				U.setStatus("Auto-respawn: KA deferred to prox clear")
 			else
-				S.respawnResumeWalk = false
+				endPostRespawnBusy(gen, { clearResume = true })
 				U.setStatus(string.format(
 					"Auto-respawn: failed to resume Kill Aura (sit=%s drawn=%s) — toggle manually",
 					tostring(if U.isSeatedHard then U.isSeatedHard() else (U.isSeated and U.isSeated())),

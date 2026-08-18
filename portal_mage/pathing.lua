@@ -1740,9 +1740,16 @@ return function(S)
 			return true
 		end
 		if not opts.fromRespawn then
-			if S.zRegenBusy or S.respawnResumeWalk then
+			-- Only block while regen/egress is *actively* running.
+			-- respawnResumeWalk alone is a sticky intent latch — after an aborted
+			-- post-respawn it used to brick manual KA ON with "finish respawn first"
+			-- forever even though nothing was still running.
+			if S.zRegenBusy or S.spawnEgressBusy then
 				U.setStatus("Kill Aura blocked — finish respawn first")
 				return false
+			end
+			if S.respawnResumeWalk then
+				S.respawnResumeWalk = false
 			end
 		end
 

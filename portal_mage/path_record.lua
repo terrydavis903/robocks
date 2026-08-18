@@ -563,43 +563,51 @@ return function(S)
 		))
 
 		local ok = false
-		local nav = S.Nav
-		if nav and nav.followPath then
-			ok = nav.followPath(slice, {
-				requireWalking = false,
-				snapOnTimeout = false,
-				arriveStuds = arrive,
-				timeout = opts.timeout or C.RESPAWN_PATH_SEG_TIMEOUT or 4.0,
-				useMoveKeys = true,
-				softTurn = true,
-			}) == true
-		else
-			ok = true
-			for i, wp in ipairs(slice) do
-				local hum = U.getHumanoid and U.getHumanoid()
-				if not hum or hum.Health <= 0 then
-					ok = false
-					break
-				end
-				local arrived = U.walkTo(wp.X, wp.Y, wp.Z, {
-					silent = true,
+		local ran, err = pcall(function()
+			local nav = S.Nav
+			if nav and nav.followPath then
+				ok = nav.followPath(slice, {
+					requireWalking = false,
 					snapOnTimeout = false,
 					arriveStuds = arrive,
 					timeout = opts.timeout or C.RESPAWN_PATH_SEG_TIMEOUT or 4.0,
 					useMoveKeys = true,
-					softTurn = i == 1,
-				})
-				if not arrived then
-					ok = false
-					break
+					softTurn = true,
+				}) == true
+			else
+				ok = true
+				for i, wp in ipairs(slice) do
+					local hum = U.getHumanoid and U.getHumanoid()
+					if not hum or hum.Health <= 0 then
+						ok = false
+						break
+					end
+					local arrived = U.walkTo(wp.X, wp.Y, wp.Z, {
+						silent = true,
+						snapOnTimeout = false,
+						arriveStuds = arrive,
+						timeout = opts.timeout or C.RESPAWN_PATH_SEG_TIMEOUT or 4.0,
+						useMoveKeys = true,
+						softTurn = i == 1,
+					})
+					if not arrived then
+						ok = false
+						break
+					end
 				end
 			end
-		end
+		end)
 
 		if U.releaseMoveKeys then
 			U.releaseMoveKeys()
 		end
+		-- Always clear — a thrown error used to leave spawnEgressBusy=true and
+		-- brick KA with "finish respawn first".
 		S.spawnEgressBusy = false
+		if not ran then
+			setStatus("Spawn egress error: " .. tostring(err))
+			return false
+		end
 		if ok then
 			setStatus(string.format("Spawn egress done — %s", tostring(entry.name or entry.id)))
 		else
