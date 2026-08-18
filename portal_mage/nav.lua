@@ -1211,26 +1211,41 @@ return function(S)
 		return true
 	end
 
-	-- Map-bound walls (InvisibleWall / barriers) — always block, even on stone roads.
-	local function hopHitsMapBarrier(centerPos: Vector3, boxSize: Vector3, dir: Vector3): boolean
+	-- Body overlap vs structures (buildings / walls / barriers). Used on stone hops too —
+	-- Cobblestone under a house footprint used to count as "clear" and A* walked through.
+	local function hopHitsStructure(centerPos: Vector3, boxSize: Vector3, dir: Vector3): (boolean, string?)
 		local cf = CFrame.lookAt(centerPos, centerPos + dir)
 		local ok, res = pcall(function()
 			return workspace:GetPartBoundsInBox(cf, boxSize, clearanceOverlapParams())
 		end)
 		if not ok or type(res) ~= "table" then
-			return false
+			return false, nil
 		end
 		for _, inst in ipairs(res) do
-			if inst:IsA("BasePart") and isBarrierInstance(inst :: BasePart) then
-				return true
+			if inst:IsA("BasePart") then
+				local bp = inst :: BasePart
+				if partBlocksBody(bp, centerPos, boxSize) then
+					local path = string.lower(bp:GetFullName())
+					local note = "structure"
+					if isBarrierInstance(bp) or string.find(path, "invisiblewall", 1, true) then
+						note = "map_wall"
+					elseif string.find(path, ".buildings.", 1, true)
+						or string.find(path, "house", 1, true)
+						or string.find(path, "tower", 1, true)
+						or string.find(path, "wall", 1, true)
+					then
+						note = "building"
+					end
+					return true, note
+				end
 			end
 		end
-		return false
+		return false, nil
 	end
 
 	-- Probe one hop.
-	-- Stone-path mode: stone continuity + map barriers (NOT stall/prop clutter).
-	-- Escape / any-floor: full body hitbox vs collide meshes.
+	-- Stone-path mode: stone continuity + body vs buildings/walls (not "roads are always open").
+	-- Any-floor mode: same body hitbox probes.
 	-- Returns clear?, samples (for Clear Hitbox viz).
 	local function sampleHopProbes(from: Vector3, to: Vector3): (boolean, { any })
 		local flat = Vector3.new(to.X - from.X, 0, to.Z - from.Z)
@@ -1250,7 +1265,7 @@ return function(S)
 		local hopClear = true
 		local stoneOnly = M.stonePathOnly()
 
-		-- Stone roads: continuity + InvisibleWall/barriers (never clip map bounds).
+		-- Stone roads: must stay on stone AND not clip buildings / InvisibleWall.
 		if stoneOnly then
 			for s = 0, nSteps do
 				local t = math.min(dist, s * step)
@@ -1263,16 +1278,16 @@ return function(S)
 				local centerPos = if floor and floor.pos
 					then Vector3.new(x, floor.pos.Y + centerH, z)
 					else Vector3.new(x, hintY + centerH, z)
-				local hitWall = hopHitsMapBarrier(centerPos, boxSize, dir)
-				if not onStone or hitWall then
+				local hitStruct, structNote = hopHitsStructure(centerPos, boxSize, dir)
+				if not onStone or hitStruct then
 					hopClear = false
 				end
 				table.insert(samples, {
 					pos = centerPos,
 					size = boxSize,
 					dir = dir,
-					blocked = (not onStone) or hitWall,
-					note = if hitWall then "map_wall" elseif onStone then "stone" else "off_stone",
+					blocked = (not onStone) or hitStruct,
+					note = if hitStruct then (structNote or "structure") elseif onStone then "stone" else "off_stone",
 					material = floor and floor.material or nil,
 					floorY = floor and floor.pos.Y or hintY,
 					centerH = centerH,
