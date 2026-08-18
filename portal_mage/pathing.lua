@@ -1060,24 +1060,27 @@ return function(S)
 				why = "drift"
 			end
 		end
-		-- Finished a short/prefix path but still outside stand band → new path, not W@enemy
+		-- Finished path but still outside the *combat* stand band → repath.
+		-- Log 12-24-51: short_path at dist≈34.7 with range+sticky=34 thrashed forever
+		-- (path end on stone, enemy a few studs further). Give approachStep room to
+		-- walk the last bit to the enemy (range+sticky+6) before declaring short_path.
 		if not need and #pathPts >= 1 and pathIdx >= #pathPts then
 			local last = pathPts[#pathPts]
-			if flatDist(playerPos, last) <= arrive * 1.25 and flatDist(playerPos, epos) > range + sticky then
+			local dEnemy = flatDist(playerPos, epos)
+			local shortFar = range + sticky + 6 -- matches approachStep end-of-path walk
+			if flatDist(playerPos, last) <= arrive * 1.25 and dEnemy > shortFar then
 				need = true
 				why = "short_path"
-				-- Don't rotate stand angles while following a recorded corridor —
-				-- variety was pushing free A* over the human respawn walk.
 				if lastVizKind ~= "spawn_corridor" then
 					bumpPathVariety("short_path")
 				end
-				-- Dump 20-46-03: short_path/same_path spun for 7+ min at dist=34.5 with
-				-- almost no W. After enough variety, drop hold and pick another mob.
-				if standAngleIdx >= 12 then
+				-- Escape sooner when we're close but can't close (was 12 → minutes of thrash)
+				local escapeAt = if dEnemy <= range + 20 then 6 else 12
+				if standAngleIdx >= escapeAt then
 					log(string.format(
 						"path STUCK_ESCAPE angle=%d dist=%.1f → clearHold",
 						standAngleIdx,
-						flatDist(playerPos, epos)
+						dEnemy
 					))
 					local Targets = T()
 					if Targets and Targets.clearHold then
@@ -1116,7 +1119,10 @@ return function(S)
 	-- Advance to next when close; never face enemy mid-path through walls.
 	local function segmentTarget(playerPos: Vector3, epos: Vector3, range: number): (Vector3, string)
 		local distEnemy = flatDist(playerPos, epos)
-		if distEnemy <= range then
+		local sticky = C.KILL_AURA_STICKY or 4
+		-- Match combat stand band (range+sticky). Using bare `range` left us facing
+		-- path nodes at dist 31–34 forever while combat was ready to fight.
+		if distEnemy <= range + sticky then
 			return epos, "enemy"
 		end
 		if #pathPts >= 1 and pathIdx >= 1 and pathIdx <= #pathPts then
@@ -1267,7 +1273,9 @@ return function(S)
 		end
 
 		local dist = flatDist(playerPos, epos)
-		if dist <= range then
+		local sticky = C.KILL_AURA_STICKY or 4
+		-- Stop in the same band combat uses (range+sticky), not bare range.
+		if dist <= range + sticky then
 			faceWithArrows(epos)
 			driveStop()
 			walkingFacing = false
@@ -1281,10 +1289,11 @@ return function(S)
 		local faceDir = Vector3.new(target.X - playerPos.X, 0, target.Z - playerPos.Z)
 		if faceDir.Magnitude < 0.5 then
 			advancePathIndex(playerPos)
-			if pathIdx >= #pathPts and dist > range then
+			if pathIdx >= #pathPts and dist > range + sticky then
 				local nav = Nav()
 				local clearToEnemy = not nav or not nav.hasClearWalk or nav.hasClearWalk(playerPos, epos)
-				if clearToEnemy and dist <= range + (C.KILL_AURA_STICKY or 4) + 6 then
+				-- Last hop toward enemy when path ended just outside stand band
+				if clearToEnemy and dist <= range + sticky + 8 then
 					target = epos
 					segLabel = "enemy"
 					faceDir = Vector3.new(epos.X - playerPos.X, 0, epos.Z - playerPos.Z)
