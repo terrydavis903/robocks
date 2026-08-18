@@ -524,41 +524,12 @@ return function(S)
 	local ringPhase = 0 -- rotate computePath ring so repaths differ
 	local blockedRouteFails = 0
 	local lastPathSig = "" -- detect identical repaths (logical loop)
-	local stoneRecoverGoal: Vector3? = nil
-	local stoneRecoverSince = 0 -- wall-clock when current recover attempt began
-	local stoneRecoverNoProgress = 0
-	local stoneRecoverProgressPos: Vector3? = nil
-	local stoneRecoverResnaps = 0
-	local stoneRecoverGiveUpUntil = 0 -- after abort, don't re-enter for a while
-	local stoneRecoverLastSnap: Vector3? = nil
-
-	-- Feet on walkable path texture (Cobblestone / Asphalt / path keywords)?
-	local function feetOnStone(pos: Vector3): boolean
-		local nav = Nav()
-		if not nav or not nav.stonePathOnly or not nav.stonePathOnly() then
-			return true
-		end
-		if not nav.sampleFloor then
-			return true
-		end
-		local s = nav.sampleFloor(pos.X, pos.Z, pos.Y, { requireClear = false })
-		return s ~= nil and s.isStonePath == true
-	end
-
-	-- Defined after setMoveKey/driveForward/driveStop (Lua local scoping).
-	local tryStoneRecover: (playerPos: Vector3) -> boolean
-
 	-- True if candidate stand gets us meaningfully closer to the enemy.
 	-- Dump 20-55-42: stone-snap pulled goals onto cobble BEHIND the player → face
 	-- thrash (dot≈-0.4) and PATH_NEED timer loops with no W for minutes.
 	local function goalApproachesEnemy(goal: Vector3, playerPos: Vector3, epos: Vector3, range: number): boolean
 		local dPlayer = flatDist(playerPos, epos)
 		local dGoal = flatDist(goal, epos)
-		local escaping = type(S.stonePathEscapeUntil) == "number" and os.clock() < S.stonePathEscapeUntil
-		-- Escape mode: only require closing distance (cross sand gaps)
-		if escaping then
-			return dGoal < dPlayer - 0.5
-		end
 		-- Must sit near the stand band (not a random road tile 20st off)
 		if dGoal > range + 10 then
 			return false
@@ -576,46 +547,6 @@ return function(S)
 			end
 		end
 		return true
-	end
-
-	local function triggerStonePathEscape(why: string, enemyDist: number?)
-		local now = os.clock()
-		local sec = C.NAV_STONE_ESCAPE_SEC or 20
-		local maxSec = C.NAV_STONE_ESCAPE_MAX_SEC or 45
-		if type(S.stonePathEscapeStarted) ~= "number" or S.stonePathEscapeStarted <= 0 or now > (S.stonePathEscapeUntil or 0) then
-			S.stonePathEscapeStarted = now
-			if type(enemyDist) == "number" then
-				S.stonePathEscapeEnemyDist = enemyDist
-			end
-		end
-		local untilT = now + sec
-		local cap = (S.stonePathEscapeStarted or now) + maxSec
-		if untilT > cap then
-			untilT = cap
-		end
-		-- Refresh while still stranded (dump 01-26-46: escape expired → BLOCKED again)
-		if type(S.stonePathEscapeUntil) == "number" and S.stonePathEscapeUntil > now then
-			untilT = math.max(S.stonePathEscapeUntil, untilT)
-			untilT = math.min(untilT, cap)
-		end
-		S.stonePathEscapeUntil = untilT
-		standAngleIdx = 0
-		ringPhase = 0
-		lastPathSig = ""
-		blockedRouteFails = 0
-		pathBuiltAt = 0
-		local left = math.max(0, untilT - now)
-		log(string.format("path STRANDED (%s) — any-floor escape %.0fs left", why, left))
-		U.setStatus(string.format("[path] stranded — soft escape %.0fs (%s)", left, why))
-	end
-
-	local function clearStonePathEscape(why: string?)
-		S.stonePathEscapeUntil = 0
-		S.stonePathEscapeStarted = 0
-		S.stonePathEscapeEnemyDist = nil
-		if why then
-			log(string.format("path escape clear (%s)", why))
-		end
 	end
 
 	-- Stand on the player-side of the enemy only (small ±yaw). Never opposite-side
@@ -871,12 +802,15 @@ return function(S)
 					Targets.clearHold("path_blocked")
 				end
 				blockedRouteFails = 0
-				-- Dump 00-10-44 / 01-26-46: stone island — BLOCKED spiral. Soft-escape.
-				if standAngleIdx >= 6 then
-					triggerStonePathEscape(
-						string.format("blocked angle=%d", standAngleIdx),
+				-- Stay on stone. Soft any-floor escape removed (caused wall-clip stuck).
+				if standAngleIdx >= 8 then
+					standAngleIdx = 0
+					ringPhase = 0
+					lastPathSig = ""
+					log(string.format(
+						"path BLOCKED_ESCAPE angle reset dist=%.1f → clearHold",
 						flatDist(playerPos, epos)
-					)
+					))
 				end
 			end
 		else
@@ -1004,10 +938,9 @@ return function(S)
 					if Targets and Targets.clearHold then
 						Targets.clearHold("path_stuck_escape")
 					end
-					triggerStonePathEscape(
-						string.format("short_path angle=%d", standAngleIdx),
-						flatDist(playerPos, epos)
-					)
+					standAngleIdx = 0
+					ringPhase = 0
+					lastPathSig = ""
 					pathPts = {}
 					pathEnemy = nil
 					return
@@ -1083,13 +1016,6 @@ return function(S)
 		segBlocked = false
 		lastSegLabel = "-"
 		lastPathSig = ""
-		stoneRecoverGoal = nil
-		stoneRecoverSince = 0
-		stoneRecoverNoProgress = 0
-		stoneRecoverProgressPos = nil
-		stoneRecoverResnaps = 0
-		stoneRecoverLastSnap = nil
-		-- keep stoneRecoverGiveUpUntil across clearPathState so abort cooldown survives
 		S.stoneRecoverBusy = false
 	end
 
@@ -1179,175 +1105,7 @@ return function(S)
 		end
 	end
 
-	local function clearStoneRecoverState()
-		stoneRecoverGoal = nil
-		stoneRecoverSince = 0
-		stoneRecoverNoProgress = 0
-		stoneRecoverProgressPos = nil
-		stoneRecoverResnaps = 0
-		stoneRecoverLastSnap = nil
-		S.stoneRecoverBusy = false
-	end
-
-	local function abortStoneRecover(why: string): boolean
-		log(string.format("STONE_RECOVER give up (%s) — resume scan", why))
-		U.setStatus(string.format("[path] stone recover aborted (%s) — finding mob", why))
-		driveStop()
-		clearStoneRecoverState()
-		-- Don't immediately re-enter recover next tick (dump 00-02-33: 3min loop)
-		stoneRecoverGiveUpUntil = os.clock() + (C.NAV_STONE_RECOVER_GIVEUP_CD or 20)
-		return false -- allow ensureEnemy this tick
-	end
-
-	-- Between fights: walk to nearest stone before ensureEnemy. Returns true if
-	-- this tick handled recover (caller must not pick/path to a mob yet).
-	tryStoneRecover = function(playerPos: Vector3): boolean
-		local nav = Nav()
-		if not nav or not nav.stonePathOnly or not nav.stonePathOnly() then
-			clearStoneRecoverState()
-			return false
-		end
-
-		local now = os.clock()
-		if now < stoneRecoverGiveUpUntil then
-			S.stoneRecoverBusy = false
-			return false
-		end
-
-		if feetOnStone(playerPos) then
-			clearStoneRecoverState()
-			return false
-		end
-
-		local arrive = C.NAV_STONE_RECOVER_ARRIVE or 2.8
-		local snapR = C.NAV_STONE_RECOVER_SNAP_R or 40
-		local maxSec = C.NAV_STONE_RECOVER_MAX_SEC or 8
-		local maxResnaps = C.NAV_STONE_RECOVER_MAX_RESNAPS or 3
-
-		-- Hard timeout for the whole recover attempt
-		if stoneRecoverSince > 0 and (now - stoneRecoverSince) >= maxSec then
-			return abortStoneRecover(string.format("timeout %.0fs", maxSec))
-		end
-		if stoneRecoverResnaps >= maxResnaps then
-			return abortStoneRecover(string.format("%d re-snaps", stoneRecoverResnaps))
-		end
-
-		S.stoneRecoverBusy = true
-		if stoneRecoverSince <= 0 then
-			stoneRecoverSince = now
-		end
-
-		-- Close enough to last snap → accept even if Material sample lags / false off-stone
-		if stoneRecoverGoal and flatDist(playerPos, stoneRecoverGoal) <= arrive * 1.15 then
-			log(string.format(
-				"STONE_RECOVER close enough d=%.1f — accept",
-				flatDist(playerPos, stoneRecoverGoal)
-			))
-			clearStoneRecoverState()
-			driveStop()
-			return false
-		end
-
-		local needSnap = stoneRecoverGoal == nil
-		if needSnap then
-			local snap = nav.snapToStonePath and nav.snapToStonePath(playerPos, snapR)
-			-- Avoid picking the same unreachable cell again
-			if snap and snap.pos and stoneRecoverLastSnap then
-				if flatDist(snap.pos, stoneRecoverLastSnap) < 2.5 then
-					-- Spiral further: try a few offset probes
-					local found = nil
-					for _, ang in ipairs({ 0.8, 1.6, 2.4, 3.2, 4.0, 5.0 }) do
-						local r = 8 + stoneRecoverResnaps * 6
-						local cand = Vector3.new(
-							playerPos.X + math.cos(ang) * r,
-							playerPos.Y,
-							playerPos.Z + math.sin(ang) * r
-						)
-						local s2 = nav.snapToStonePath(cand, snapR)
-						if s2 and s2.pos and flatDist(s2.pos, stoneRecoverLastSnap) >= 4 then
-							found = s2
-							break
-						end
-					end
-					snap = found or snap
-				end
-			end
-			if not snap or not snap.pos then
-				return abortStoneRecover("no stone nearby")
-			end
-			stoneRecoverGoal = snap.pos
-			stoneRecoverLastSnap = snap.pos
-			stoneRecoverProgressPos = playerPos
-			stoneRecoverNoProgress = 0
-			pathPts = { playerPos, snap.pos }
-			pathIdx = 2
-			pathEnemy = nil
-			lastVizKind = "stone_recover"
-			pathBuiltAt = now
-			log(string.format(
-				"STONE_RECOVER → (%.0f,%.0f,%.0f) d=%.1f (resnap=%d)",
-				snap.pos.X,
-				snap.pos.Y,
-				snap.pos.Z,
-				flatDist(playerPos, snap.pos),
-				stoneRecoverResnaps
-			))
-		end
-
-		local goal = stoneRecoverGoal :: Vector3
-		local d = flatDist(playerPos, goal)
-
-		-- Face + W toward stone (no hasClearWalk — start is intentionally off-stone)
-		local faceDir = Vector3.new(goal.X - playerPos.X, 0, goal.Z - playerPos.Z)
-		if faceDir.Magnitude < 0.15 then
-			-- On top of snap xz — accept
-			clearStoneRecoverState()
-			driveStop()
-			return false
-		end
-		faceDir = faceDir.Unit
-		local fd = faceWithArrows(goal)
-		local align = C.PATH_WALK_ALIGN_DOT or 0.72
-		if fd < align then
-			setMoveKey(nil)
-			U.setStatus(string.format(
-				"[path] return to stone face=%.2f d=%.1f",
-				fd,
-				d
-			))
-			task.wait(0.05)
-			return true
-		end
-		if U.holdTurnKey then
-			U.holdTurnKey(nil)
-		end
-		driveForward(faceDir, false)
-
-		-- Progress watchdog — re-snap if stuck (wall / bad snap), then eventually give up
-		if not stoneRecoverProgressPos or flatDist(playerPos, stoneRecoverProgressPos) > 1.0 then
-			stoneRecoverProgressPos = playerPos
-			stoneRecoverNoProgress = 0
-		else
-			stoneRecoverNoProgress += 1
-			if stoneRecoverNoProgress >= 40 then -- ~2s of W with no XZ progress
-				stoneRecoverResnaps += 1
-				stoneRecoverGoal = nil
-				stoneRecoverNoProgress = 0
-				log(string.format("STONE_RECOVER re-snap (no progress) n=%d", stoneRecoverResnaps))
-				if stoneRecoverResnaps >= maxResnaps then
-					return abortStoneRecover(string.format("%d re-snaps", stoneRecoverResnaps))
-				end
-			end
-		end
-
-		U.setStatus(string.format(
-			"[path] return to stone d=%.1f (%.0fs)",
-			d,
-			now - stoneRecoverSince
-		))
-		task.wait(0.05)
-		return true
-	end
+	-- Between-fight stone-recover walk removed (stuck over obstacles).
 
 	-- Approach: face A* segment → check HRP aim → only then W/Move.
 	-- Never rotate aggressively while walking; never arrow-spin.
@@ -1595,19 +1353,9 @@ return function(S)
 					clearPathVizIfOff()
 				end
 
-				-- Between fights (no living hold): get back on walkable path texture
-				-- BEFORE picking the next opponent. Off-stone A* is what stuck us.
-				do
-					local hold = S.holdTarget
-					local holdAlive = hold and Targets.isAlive and Targets.isAlive(hold)
-					if not holdAlive then
-						if tryStoneRecover(playerPos) then
-							return
-						end
-					else
-						S.stoneRecoverBusy = false
-					end
-				end
+				-- Between-fight "walk to nearest stone over obstacles" removed —
+				-- it caused more stuck than off-stone starts (user 2026-08-18).
+				S.stoneRecoverBusy = false
 
 				local range = Targets.fightRange()
 				local sticky = C.KILL_AURA_STICKY or 4
@@ -1616,10 +1364,6 @@ return function(S)
 				if not model or not epos then
 					stopMove()
 					clearPathState()
-					-- Still try stone recover while scanning (no mob yet)
-					if tryStoneRecover(playerPos) then
-						return
-					end
 					U.setStatus(string.format("[scan] no enemies ≤%d | %s", Targets.scanRange(), cds()))
 					task.wait(0.2)
 					return
@@ -1628,23 +1372,6 @@ return function(S)
 				-- Always use flat XZ for stand/approach (matches approachStep; avoids
 				-- height-delta deadlock where path "stands" but combat waits).
 				local dist = flatDist(playerPos, epos)
-
-				-- Soft-escape progress: closed enough on enemy → back to stone-only
-				if type(S.stonePathEscapeUntil) == "number" and os.clock() < S.stonePathEscapeUntil then
-					local anchor = S.stonePathEscapeEnemyDist
-					local need = C.NAV_STONE_ESCAPE_PROGRESS or 12
-					if type(anchor) == "number" and dist <= anchor - need then
-						clearStonePathEscape("closed gap")
-					elseif type(S.stonePathEscapeStarted) == "number"
-						and (os.clock() - S.stonePathEscapeStarted) >= (C.NAV_STONE_ESCAPE_MAX_SEC or 45)
-					then
-						clearStonePathEscape("max time")
-					end
-				elseif type(S.stonePathEscapeUntil) == "number" and S.stonePathEscapeUntil > 0
-					and os.clock() >= S.stonePathEscapeUntil
-				then
-					clearStonePathEscape("expired")
-				end
 
 				-- A*/PFS path = movement segments (+ Path Viz when ON)
 				ensurePath(playerPos, epos, model, range)

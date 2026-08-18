@@ -621,11 +621,8 @@ return function(S)
 	end
 
 	function M.stonePathOnly(): boolean
-		-- Soft escape: stranded on a stone island with no route (KA dump 00-10-44 /
-		-- astar 00-12-47 at 1089,-545 — BLOCKED angle spiral). Briefly allow any floor.
-		if type(S.stonePathEscapeUntil) == "number" and os.clock() < S.stonePathEscapeUntil then
-			return false
-		end
+		-- Always respect config. Soft any-floor "escape" was removed — it pathing
+		-- through walls/sand caused more stuck than stone islands (user 2026-08-18).
 		return cfg("NAV_STONE_PATH_ONLY", true) == true
 	end
 

@@ -166,17 +166,8 @@ return {
 	},
 	WALKABLE_MATERIALS_FILE = "waypoints/walkable_materials.json",
 	NAV_STONE_PATH_SNAP_R = 24, -- studs: snap start/goal to nearest stone if off-path
-	-- Between fights: if feet aren't on walkable path, walk here before next mob.
-	-- Dump 00-02-33: infinite re-snap at watchtower when snap cell was unreachable.
-	NAV_STONE_RECOVER_SNAP_R = 40, -- wider search than path snap (pad / sand pockets)
-	NAV_STONE_RECOVER_ARRIVE = 2.8,
-	NAV_STONE_RECOVER_MAX_SEC = 8, -- hard abort → resume mob scan
-	NAV_STONE_RECOVER_MAX_RESNAPS = 3,
-	NAV_STONE_RECOVER_GIVEUP_CD = 20, -- seconds before trying recover again after abort
-	-- Stranded on disconnected stone: allow sand/any floor until progress or cap
-	NAV_STONE_ESCAPE_SEC = 20, -- base window; refreshes while still blocked
-	NAV_STONE_ESCAPE_MAX_SEC = 45, -- hard cap from first trigger
-	NAV_STONE_ESCAPE_PROGRESS = 12, -- studs closer to enemy = escape success
+	-- Between-fight stone-recover / any-floor stranded-escape REMOVED (2026-08-18):
+	-- walking off-stone "over obstacles" clipped walls and stuck more than it helped.
 	NAV_CLEAR_STEP = 2.5, -- stone continuity samples along hop
 	NAV_HITBOX_PAD = 0.05,
 	NAV_HITBOX_SCALE = 0.9,
