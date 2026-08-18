@@ -554,6 +554,11 @@ return function(S)
 	local function goalApproachesEnemy(goal: Vector3, playerPos: Vector3, epos: Vector3, range: number): boolean
 		local dPlayer = flatDist(playerPos, epos)
 		local dGoal = flatDist(goal, epos)
+		local escaping = type(S.stonePathEscapeUntil) == "number" and os.clock() < S.stonePathEscapeUntil
+		-- Escape mode: only require closing distance (cross sand gaps)
+		if escaping then
+			return dGoal < dPlayer - 0.5
+		end
 		-- Must sit near the stand band (not a random road tile 20st off)
 		if dGoal > range + 10 then
 			return false
@@ -571,6 +576,18 @@ return function(S)
 			end
 		end
 		return true
+	end
+
+	local function triggerStonePathEscape(why: string)
+		local sec = C.NAV_STONE_ESCAPE_SEC or 10
+		S.stonePathEscapeUntil = os.clock() + sec
+		standAngleIdx = 0
+		ringPhase = 0
+		lastPathSig = ""
+		blockedRouteFails = 0
+		pathBuiltAt = 0
+		log(string.format("path STRANDED (%s) — any-floor escape %.0fs", why, sec))
+		U.setStatus(string.format("[path] stranded — soft escape %.0fs (%s)", sec, why))
 	end
 
 	-- Stand on the player-side of the enemy only (small ±yaw). Never opposite-side
@@ -818,6 +835,11 @@ return function(S)
 					Targets.clearHold("path_blocked")
 				end
 				blockedRouteFails = 0
+				-- Dump 00-10-44 / astar 00-12-47: stone island at 1089,-545 — every
+				-- angle BLOCKED while cycling mobs. Soft-escape off stone-only.
+				if standAngleIdx >= 8 then
+					triggerStonePathEscape(string.format("blocked angle=%d", standAngleIdx))
+				end
 			end
 		else
 			blockedRouteFails = 0
@@ -944,9 +966,7 @@ return function(S)
 					if Targets and Targets.clearHold then
 						Targets.clearHold("path_stuck_escape")
 					end
-					standAngleIdx = 0
-					ringPhase = 0
-					lastPathSig = ""
+					triggerStonePathEscape(string.format("short_path angle=%d", standAngleIdx))
 					pathPts = {}
 					pathEnemy = nil
 					return
