@@ -222,6 +222,8 @@ return {
 	KILL_AURA_TOO_HIGH_IGNORE = 12, -- seconds before re-considering a released high target
 	KILL_AURA_RETICLE_RELEASE_HOLD = 0.4, -- hold R to unlock reticle
 	KILL_AURA_MAX_PATH_DETOR = 2.2, -- reject paths longer than this × straight (anti-circle)
+	KILL_AURA_LOG = true, -- dumps/killaura_*.log (appendfile only; capped)
+	KILL_AURA_LOG_MAX_KB = 512, -- stop appending after this many KB per session log
 	-- Optional name priority (first match wins). Empty = nearest schema mob only.
 	-- Example: { "ScarecrowGoblin", "PatchHound", "CritterGoblin" }
 	KILL_AURA_PRIORITY = {},

@@ -1023,7 +1023,10 @@ return function(S)
 					gScore[nk] = tent
 					cameFrom[nk] = ck
 					local f = tent + heuristic(nix, niz, gix, giz) * cell
-					table.insert(open, { ix = nix, iz = niz, f = f })
+					-- Cap open churn (lazy A* duplicates); expansion still bounded by maxExpand
+					if #open < (maxExpand * 2) then
+						table.insert(open, { ix = nix, iz = niz, f = f })
+					end
 				end
 			end
 
@@ -1032,8 +1035,9 @@ return function(S)
 			end
 		end
 
-		-- Fallback: try direct to goal floor even if A* failed
-		return { goalSample.pos }
+		-- A* failed — no path (do not return a lone goal point; callers treat that
+		-- as success and walk a useless 1-node / blocked loop).
+		return nil
 	end
 
 	---------------------------------------------------------------------------

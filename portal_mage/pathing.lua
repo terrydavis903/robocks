@@ -53,12 +53,20 @@ return function(S)
 
 	local logFile: string? = nil
 	local logT0 = 0
+	local logBytes = 0
+	local logApproachAt = 0
+	local logApproachLast = ""
+	-- Cap growth: 13-46-15 hit ~950KB / 10k lines in one KA session.
+	local LOG_MAX_BYTES = (C.KILL_AURA_LOG_MAX_KB or 512) * 1024
 
 	local function logOpen()
 		if C.KILL_AURA_LOG == false then
 			return
 		end
 		logT0 = os.clock()
+		logBytes = 0
+		logApproachAt = 0
+		logApproachLast = ""
 		local stamp = os.date("%Y-%m-%d_%H-%M-%S")
 		local dir = C.DUMP_DIR or "dumps"
 		logFile = string.format("%s/killaura_%s.log", dir, stamp)
@@ -66,7 +74,9 @@ return function(S)
 			if U.ensureDir then
 				U.ensureDir(dir)
 			end
-			writefile(logFile, "# portal_mage kill aura v8 L/R pulse face→check→W + full-path hitbox\n# " .. stamp .. "\n")
+			local header = "# portal_mage kill aura v8 L/R pulse face→check→W + full-path hitbox\n# " .. stamp .. "\n"
+			writefile(logFile, header)
+			logBytes = #header
 		end)
 	end
 
@@ -74,14 +84,32 @@ return function(S)
 		if not logFile then
 			return
 		end
+		if logBytes >= LOG_MAX_BYTES then
+			return
+		end
 		local line = string.format("[+%.2fs] %s\n", os.clock() - logT0, msg)
-		pcall(function()
+		-- Never readfile+concat (O(n²) memory). Prefer appendfile; else skip.
+		local ok = pcall(function()
 			if appendfile then
 				appendfile(logFile, line)
-			elseif readfile and writefile and isfile and isfile(logFile) then
-				writefile(logFile, readfile(logFile) .. line)
+			else
+				error("no appendfile")
 			end
 		end)
+		if ok then
+			logBytes += #line
+		end
+	end
+
+	-- Approach W/face spam: log on change or at most ~2/sec (was every 60ms poll).
+	local function logApproach(tag: string, line: string)
+		local now = os.clock()
+		if tag == logApproachLast and (now - logApproachAt) < 0.5 then
+			return
+		end
+		logApproachLast = tag
+		logApproachAt = now
+		log(line)
 	end
 
 	local function stopMove()
@@ -1530,12 +1558,9 @@ return function(S)
 				-- A*/PFS path = movement segments (+ Path Viz when ON)
 				ensurePath(playerPos, epos, model, range)
 
-						-- Need a clear multi-point path. Never force line:enemy through walls.
+				-- Do NOT force a second rebuildPath here — log 13-46-15 double-called
+				-- rebuild every tick while blocked → 1200+ BLOCKED lines / CPU thrash.
 				if #pathPts < 2 then
-					rebuildPath(playerPos, epos, model, range)
-				end
-				if #pathPts < 2 then
-					-- Blocked: stop moving, wait for repath / new enemy
 					driveStop()
 					U.setStatus(string.format(
 						"[path] blocked d=%.1f %s | %s",
@@ -1543,7 +1568,7 @@ return function(S)
 						model.Name,
 						cds()
 					))
-					task.wait(0.2)
+					task.wait(0.35)
 					return
 				end
 
@@ -1598,7 +1623,7 @@ return function(S)
 					or head == "drop"
 					or string.sub(tag, 1, 1) == "W"
 				then
-					log(string.format(
+					logApproach(tag, string.format(
 						"%s yaw=%+.3f hrp=%.2f cam=%.2f enemy=%s dist=%.1f idx=%d/%d kind=%s walk=%s",
 						tag,
 						lastYawErr,
