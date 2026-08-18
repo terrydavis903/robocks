@@ -24,9 +24,10 @@ return {
 	WAYPOINT_DIR = "waypoints",
 	WAYPOINT_FILE = "waypoints/waypoints.json",
 	RESPAWN_PATH_FILE = "waypoints/respawn_paths.json", -- human egress paths after respawn
-	-- After regen: use closest recorded spawn path if its start is within this XZ.
-	-- 3 was too tight (pad jitter / record offset) → missed egress entirely.
-	RESPAWN_PATH_MATCH_STUDS = 12,
+	-- After regen: use closest recorded spawn path if start OR any sample is within
+	-- this XZ. Dump 00-01-13: pad at (1038,-679) vs path start (1009,-670) ≈30st —
+	-- 12st start-only match skipped egress entirely.
+	RESPAWN_PATH_MATCH_STUDS = 64,
 	RESPAWN_PATH_WP_SPACING = 3.5, -- thin recorded samples while following egress
 	RESPAWN_PATH_VIZ_SPACING = 5.0, -- studs between viz nodes when Respawn points ON
 	RESPAWN_PATH_ARRIVE = 2.8,

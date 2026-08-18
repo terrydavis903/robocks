@@ -401,7 +401,7 @@ return function(S)
 
 		-- Spawn egress BEFORE prox gate — leave the pad even if players are nearby.
 		if S.PathRecord and S.PathRecord.tryPlayClosestSpawnPath then
-			local matchStuds = C.RESPAWN_PATH_MATCH_STUDS or 12
+			local matchStuds = C.RESPAWN_PATH_MATCH_STUDS or 64
 			local used = S.PathRecord.tryPlayClosestSpawnPath(matchStuds)
 			if not used then
 				U.setStatus(string.format(

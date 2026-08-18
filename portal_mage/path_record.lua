@@ -446,9 +446,32 @@ return function(S)
 		return Vector3.new(st.x, st.y or 0, st.z)
 	end
 
-	-- Flat XZ distance to path start. Returns entry + dist, or nil if none within maxStuds.
+	-- Min flat XZ distance to path start OR any recorded sample.
+	local function pathProximity(pos: Vector3, p: any): (number, number)
+		local best = math.huge
+		local dStart = math.huge
+		local st = spawnStartVec(p)
+		if st then
+			dStart = Vector3.new(pos.X - st.X, 0, pos.Z - st.Z).Magnitude
+			best = dStart
+		end
+		local samples = p and p.samples
+		if type(samples) == "table" then
+			for _, s in ipairs(samples) do
+				if type(s) == "table" and type(s.x) == "number" and type(s.z) == "number" then
+					local d = Vector3.new(pos.X - s.x, 0, pos.Z - s.z).Magnitude
+					if d < best then
+						best = d
+					end
+				end
+			end
+		end
+		return best, dStart
+	end
+
+	-- Closest path by start/sample proximity. Returns entry + score, or nil if none within maxStuds.
 	function M.findClosestSpawnPath(maxStuds: number?): (any?, number?)
-		local lim = maxStuds or C.RESPAWN_PATH_MATCH_STUDS or 12
+		local lim = maxStuds or C.RESPAWN_PATH_MATCH_STUDS or 64
 		local pos = U.getLivePlayerVector and U.getLivePlayerVector()
 		if not pos then
 			return nil, nil
@@ -456,26 +479,25 @@ return function(S)
 		local best: any? = nil
 		local bestD = math.huge
 		local nearestD = math.huge
+		local nearestName = "?"
 		for _, p in ipairs(S.spawnPaths or {}) do
-			local st = spawnStartVec(p)
-			if st then
-				local d = Vector3.new(pos.X - st.X, 0, pos.Z - st.Z).Magnitude
-				if d < nearestD then
-					nearestD = d
-				end
-				if d <= lim and d < bestD then
-					best = p
-					bestD = d
-				end
+			local score = pathProximity(pos, p)
+			if score < nearestD then
+				nearestD = score
+				nearestName = tostring(p.name or p.id or "?")
+			end
+			if score <= lim and score < bestD then
+				best = p
+				bestD = score
 			end
 		end
 		if best then
 			return best, bestD
 		end
-		-- Expose nearest distance via status when nothing matched (debug pad jitter)
-		if nearestD < math.huge and nearestD > lim then
+		if nearestD < math.huge then
 			setStatus(string.format(
-				"Spawn egress: nearest start %.1fst > limit %.0fst",
+				"Spawn egress: nearest %s @ %.1fst > limit %.0fst — skip",
+				nearestName,
 				nearestD,
 				lim
 			))
@@ -484,7 +506,7 @@ return function(S)
 	end
 
 	-- Walk a recorded spawn egress path (samples). Does not start Kill Aura.
-	-- Returns true if followed to end (or already at end); false on cancel/fail.
+	-- If already mid-path (pad offset), resume from nearest waypoint toward finish.
 	function M.playSpawnPath(entry: any, opts: any?): boolean
 		opts = opts or {}
 		if type(entry) ~= "table" then
@@ -496,34 +518,64 @@ return function(S)
 			return false
 		end
 		local spacing = opts.spacing or C.RESPAWN_PATH_WP_SPACING or 3.5
+		local arrive = opts.arriveStuds or C.RESPAWN_PATH_ARRIVE or 2.8
 		local wps = samplesToWaypoints(samples, spacing)
 		if #wps < 1 then
 			return false
 		end
 
+		-- Resume from closest waypoint (don't walk back to start when pad is mid-route)
+		local pos = U.getLivePlayerVector and U.getLivePlayerVector()
+		local startIdx = 1
+		if pos then
+			local bestI, bestD = 1, math.huge
+			for i, wp in ipairs(wps) do
+				local d = Vector3.new(pos.X - wp.X, 0, pos.Z - wp.Z).Magnitude
+				if d < bestD then
+					bestD = d
+					bestI = i
+				end
+			end
+			startIdx = bestI
+			if startIdx < #wps and bestD <= arrive then
+				startIdx += 1
+			end
+		end
+		local slice: { Vector3 } = {}
+		for i = startIdx, #wps do
+			table.insert(slice, wps[i])
+		end
+		if #slice < 1 then
+			setStatus(string.format(
+				"Spawn egress: already at end of %s",
+				tostring(entry.name or entry.id)
+			))
+			return true
+		end
+
 		S.spawnEgressBusy = true
 		setStatus(string.format(
-			"Spawn egress: %s (%d wps from %d samples)",
+			"Spawn egress: %s (%d/%d wps, from #%d)",
 			tostring(entry.name or entry.id),
+			#slice,
 			#wps,
-			#samples
+			startIdx
 		))
 
 		local ok = false
 		local nav = S.Nav
 		if nav and nav.followPath then
-			ok = nav.followPath(wps, {
+			ok = nav.followPath(slice, {
 				requireWalking = false,
 				snapOnTimeout = false,
-				arriveStuds = opts.arriveStuds or C.RESPAWN_PATH_ARRIVE or 2.8,
+				arriveStuds = arrive,
 				timeout = opts.timeout or C.RESPAWN_PATH_SEG_TIMEOUT or 4.0,
 				useMoveKeys = true,
 				softTurn = true,
 			}) == true
 		else
-			-- Fallback: sequential Util.walkTo
 			ok = true
-			for i, wp in ipairs(wps) do
+			for i, wp in ipairs(slice) do
 				local hum = U.getHumanoid and U.getHumanoid()
 				if not hum or hum.Health <= 0 then
 					ok = false
@@ -532,7 +584,7 @@ return function(S)
 				local arrived = U.walkTo(wp.X, wp.Y, wp.Z, {
 					silent = true,
 					snapOnTimeout = false,
-					arriveStuds = opts.arriveStuds or C.RESPAWN_PATH_ARRIVE or 2.8,
+					arriveStuds = arrive,
 					timeout = opts.timeout or C.RESPAWN_PATH_SEG_TIMEOUT or 4.0,
 					useMoveKeys = true,
 					softTurn = i == 1,
@@ -556,27 +608,29 @@ return function(S)
 		return ok
 	end
 
-	-- After regen: if a spawn-path start is within match studs, play it.
-	-- Returns true if a path was found and playback ran (even if incomplete).
+	-- After regen: play closest recorded spawn path within match studs (start or sample).
 	function M.tryPlayClosestSpawnPath(maxStuds: number?): boolean
-		if not S.spawnPaths or #S.spawnPaths == 0 then
-			if M.loadSpawnPaths then
-				M.loadSpawnPaths()
+		-- Always reload so executor disk paths stay current
+		if M.loadSpawnPaths then
+			local n = M.loadSpawnPaths()
+			if n == 0 then
+				setStatus("Spawn egress: no paths in respawn_paths.json — skip")
+				return false
 			end
+		elseif not S.spawnPaths or #S.spawnPaths == 0 then
+			setStatus("Spawn egress: spawnPaths empty — skip")
+			return false
 		end
-		local lim = maxStuds or C.RESPAWN_PATH_MATCH_STUDS or 12
+		local lim = maxStuds or C.RESPAWN_PATH_MATCH_STUDS or 64
 		local entry, dist = M.findClosestSpawnPath(lim)
 		if not entry then
-			setStatus(string.format(
-				"Spawn egress: no path start within %.0fst — skipping pathing",
-				lim
-			))
 			return false
 		end
 		setStatus(string.format(
-			"Spawn egress: closest %s @ %.1fst",
+			"Spawn egress: closest %s @ %.1fst (limit %.0f)",
 			tostring(entry.name or entry.id),
-			dist or -1
+			dist or -1,
+			lim
 		))
 		M.playSpawnPath(entry)
 		return true
