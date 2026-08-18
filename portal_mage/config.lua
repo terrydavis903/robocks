@@ -28,6 +28,10 @@ return {
 	-- this XZ. Dump 00-01-13: pad at (1038,-679) vs path start (1009,-670) ≈30st —
 	-- 12st start-only match skipped egress entirely.
 	RESPAWN_PATH_MATCH_STUDS = 64,
+	-- KA may only *follow* a recorded corridor when already this close to it.
+	-- Dump 02-24-48: MATCH=64 preferred spawn_corridor whose nearest WP was 23st
+	-- away → beeline off stone to join. Respawn egress still uses MATCH_STUDS.
+	RESPAWN_CORRIDOR_JOIN_STUDS = 10,
 	RESPAWN_PATH_WP_SPACING = 3.5, -- thin recorded samples while following egress
 	RESPAWN_PATH_VIZ_SPACING = 5.0, -- studs between viz nodes when Respawn points ON
 	RESPAWN_PATH_ARRIVE = 2.8,

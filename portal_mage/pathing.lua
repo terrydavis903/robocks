@@ -665,21 +665,34 @@ return function(S)
 		local kind = "none"
 		local maxGoals = C.NAV_PATH_MAX_GOALS or 6
 
-		-- Prefer recorded spawn corridor when standing on/near one (human stone route).
-		-- Free A* from the pad often invents wall-clips; respawn_paths.json is the truth.
+		-- Prefer recorded spawn corridor ONLY when already on/near it (JOIN_STUDS).
+		-- Dump 02-24-48: prefer yanked us 23st off stone to the corridor start.
 		do
 			local PR = S.PathRecord
 			if PR and PR.buildCorridorToward then
 				local corridor = PR.buildCorridorToward(epos, C.RESPAWN_PATH_MATCH_STUDS or 64)
 				if type(corridor) == "table" and #corridor >= 3 then
 					local endP = corridor[#corridor]
-					if flatDist(endP, epos) < flatDist(playerPos, epos) - 3 then
+					local joinDist = flatDist(playerPos, corridor[1])
+					local joinLim = C.RESPAWN_CORRIDOR_JOIN_STUDS or 10
+					local joinOk = joinDist <= joinLim
+					if joinOk and nav and nav.hasClearWalk and joinDist > 2 then
+						joinOk = nav.hasClearWalk(playerPos, corridor[1]) == true
+					end
+					if joinOk and flatDist(endP, epos) < flatDist(playerPos, epos) - 3 then
 						pts = corridor
 						kind = "spawn_corridor"
 						goal = endP
 						log(string.format(
-							"path spawn_corridor (prefer) wps=%d → %s",
+							"path spawn_corridor (prefer) wps=%d join=%.1f → %s",
 							#pts,
+							joinDist,
+							enemy.Name
+						))
+					elseif type(corridor) == "table" and not joinOk then
+						log(string.format(
+							"path skip spawn_corridor join=%.1f (stay on stone) → %s",
+							joinDist,
 							enemy.Name
 						))
 					end
@@ -739,12 +752,27 @@ return function(S)
 				))
 				return false
 			end
-			-- Never accept a wall-clipping polyline (recorded spawn corridors are trusted)
-			if tryKind ~= "spawn_corridor"
-				and nav
-				and nav.pathSegmentsClear
-				and not nav.pathSegmentsClear(tryPts)
-			then
+			-- Recorded corridor mid-segments are trusted, but the join from the live
+			-- player onto wp1 must stay on stone (dump 02-24-48 off-path cut).
+			if tryKind == "spawn_corridor" then
+				local joinDist = flatDist(playerPos, tryPts[1])
+				local joinLim = C.RESPAWN_CORRIDOR_JOIN_STUDS or 10
+				if joinDist > joinLim then
+					log(string.format(
+						"path REJECT spawn_corridor join=%.1f (too far)",
+						joinDist
+					))
+					return false
+				end
+				if joinDist > 2 and nav and nav.hasClearWalk
+					and not nav.hasClearWalk(playerPos, tryPts[1])
+				then
+					log("path REJECT spawn_corridor (off-stone join)")
+					return false
+				end
+				return true
+			end
+			if nav and nav.pathSegmentsClear and not nav.pathSegmentsClear(tryPts) then
 				log(string.format("path REJECT %s (wall/clearance)", tryKind))
 				return false
 			end
@@ -816,22 +844,27 @@ return function(S)
 			kind = "none"
 		end
 
-		-- Free A* failed: follow recorded respawn corridor (human stone route) toward enemy
-		-- instead of inventing a wall-clip / sand cut. Dump 01-47-07: stood on spawn_1009
-		-- while A* stayed BLOCKED — corridor is the intended egress.
+		-- Free A* failed: follow recorded corridor only if already on/near it.
 		if #pts < 2 then
 			local PR = S.PathRecord
 			if PR and PR.buildCorridorToward then
 				local corridor = PR.buildCorridorToward(epos, C.RESPAWN_PATH_MATCH_STUDS or 64)
 				if type(corridor) == "table" and #corridor >= 2 then
 					local endP = corridor[#corridor]
-					if flatDist(endP, epos) < flatDist(playerPos, epos) - 2 then
+					local joinDist = flatDist(playerPos, corridor[1])
+					local joinLim = C.RESPAWN_CORRIDOR_JOIN_STUDS or 10
+					local joinOk = joinDist <= joinLim
+					if joinOk and nav and nav.hasClearWalk and joinDist > 2 then
+						joinOk = nav.hasClearWalk(playerPos, corridor[1]) == true
+					end
+					if joinOk and flatDist(endP, epos) < flatDist(playerPos, epos) - 2 then
 						pts = corridor
 						kind = "spawn_corridor"
 						goal = endP
 						log(string.format(
-							"path spawn_corridor wps=%d → %s dEnemy=%.1f",
+							"path spawn_corridor wps=%d join=%.1f → %s dEnemy=%.1f",
 							#pts,
+							joinDist,
 							enemy.Name,
 							flatDist(endP, epos)
 						))

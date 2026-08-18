@@ -675,6 +675,13 @@ return function(S)
 			end
 		end
 
+		-- Must already be on/near the corridor. Far matches (dump 02-24-48: 23st)
+		-- made KA walk a sand beeline to the first waypoint.
+		local joinLim = C.RESPAWN_CORRIDOR_JOIN_STUDS or 10
+		if dPlayer > joinLim then
+			return nil
+		end
+
 		-- Among all samples, pick the one closest to the enemy goal
 		local iGoal, dGoal = iPlayer, flat(wps[iPlayer], goal)
 		for i, wp in ipairs(wps) do
@@ -706,13 +713,15 @@ return function(S)
 		if #slice < 2 then
 			return nil
 		end
+		-- Start from live position so we don't backtrack to a slightly offset sample
+		slice[1] = pos
 		setStatus(string.format(
-			"Spawn corridor: %s #%d→#%d (%d wps) @ %.1fst",
+			"Spawn corridor: %s #%d→#%d (%d wps) join=%.1fst",
 			tostring(entry.name or entry.id),
 			iPlayer,
 			iGoal,
 			#slice,
-			score or -1
+			dPlayer
 		))
 		return slice
 	end
